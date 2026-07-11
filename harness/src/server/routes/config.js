@@ -19,6 +19,9 @@ const ALLOWED = new Set([
   'device_name',
   'stt_model',
   'tts_model',
+  'dictation_cleanup',
+  'cleanup_model',
+  'mobile_base_dir',
   'apk_url',
 ]);
 

@@ -108,12 +108,18 @@
   <!-- CLAUDE -->
   <div id="claude" class="hidden">
     <button id="cmic" class="mic">🎙️ Tap to talk</button>
+    <div class="row" style="margin-top:8px">
+      <button id="convo" style="flex:1">🔁 Start conversation</button>
+      <label class="row" style="flex:0 0 auto; gap:6px; font-size:13px"><input type="checkbox" id="cleanup" checked style="width:auto" /> ✨ Clean up</label>
+    </div>
+    <div id="convostatus" class="muted" style="min-height:18px; margin:6px 2px"></div>
     <div class="row">
       <input id="ctext" placeholder="…or type a command" enterkeyhint="send" />
       <button id="csend" class="primary">Send</button>
     </div>
     <div class="card" id="result" hidden>
       <div class="k">You said</div><div id="transcript"></div>
+      <div id="heard" class="muted" style="font-size:12px"></div>
       <div class="k" style="margin-top:10px">Claude</div><div id="summary"></div>
       <button id="replay" class="ghost hidden" style="margin-top:10px">▶ Replay</button>
     </div>
@@ -151,6 +157,7 @@
 
   function show(m){
     mode=m;
+    if(m!=='claude' && convo.on) convoStop();
     for(const id of ['home','terminal','claude']) $(id).classList.toggle('hidden', id!==m);
     $('back').classList.toggle('hidden', m==='home');
     if(screenTimer){ clearInterval(screenTimer); screenTimer=null; }
@@ -214,17 +221,86 @@
   };
 
   // ---------- CLAUDE ----------
+  function showResult(d){
+    $('result').hidden=false;
+    const said=d.refined||d.transcript||'';
+    $('transcript').textContent=said;
+    $('heard').textContent=(d.cleaned && d.transcript && d.transcript!==said)?('heard: '+d.transcript):'';
+    $('summary').textContent=d.summary||d.responseText||'';
+    $('replay').classList.toggle('hidden', !d.audioUrl);
+  }
   async function sendClaude(factory){
     setState('working…');
     try{
       const {body,headers}=factory();
       const r=await fetch(base+'/api/command',{method:'POST',headers:{...H,...headers},body});
       const d=await r.json(); if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
-      $('result').hidden=false; $('transcript').textContent=d.transcript||''; $('summary').textContent=d.summary||d.responseText||''; setState('ready');
-      if(d.audioUrl){ $('replay').classList.remove('hidden'); playAudioUrl(d.audioUrl); } else $('replay').classList.add('hidden');
+      showResult(d); setState('ready');
+      if(d.audioUrl) playAudioUrl(d.audioUrl);
     }catch(e){ setState('idle'); err(e.message); }
   }
   $('csend').onclick=()=>{ const t=$('ctext').value.trim(); if(!t) return; $('ctext').value=''; sendClaude(()=>({body:JSON.stringify({sessionId,text:t}),headers:{'Content-Type':'application/json'}})); };
+
+  // ---------- continuous conversation (voice-activity detection) ----------
+  const convo={ on:false, stream:null, ctx:null, analyser:null, rec:null, chunks:[], speech:false, silenceStart:0, speechStart:0, startAt:0, tId:null };
+  const SPEECH_RMS=0.03, SILENCE_MS=1500, MIN_SPEECH_MS=350, MAX_TURN_MS=30000;
+  function cleanupOn(){ return $('cleanup').checked; }
+  function cstatus(t){ $('convostatus').textContent=t; }
+  function convoBtn(){ $('convo').textContent = convo.on ? '⏹ End conversation' : '🔁 Start conversation'; $('convo').classList.toggle('primary', convo.on); }
+  async function convoStart(){
+    unlockAudio();
+    try{ convo.stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
+    catch(e){ err('Mic: '+e.message); return; }
+    const AC=window.AudioContext||window.webkitAudioContext; convo.ctx=new AC();
+    const src=convo.ctx.createMediaStreamSource(convo.stream);
+    convo.analyser=convo.ctx.createAnalyser(); convo.analyser.fftSize=1024; src.connect(convo.analyser);
+    convo.on=true; convoBtn(); listenTurn();
+  }
+  function convoStop(){
+    convo.on=false; if(convo.tId){ clearTimeout(convo.tId); convo.tId=null; }
+    try{ if(convo.rec&&convo.rec.state!=='inactive') convo.rec.stop(); }catch{}
+    if(convo.stream){ convo.stream.getTracks().forEach(t=>t.stop()); convo.stream=null; }
+    if(convo.ctx){ try{ convo.ctx.close(); }catch{} convo.ctx=null; }
+    convo.analyser=null; convoBtn(); cstatus('');
+  }
+  function listenTurn(){
+    if(!convo.on) return;
+    cstatus('🎧 listening… (just speak)');
+    const mime=pickMime(); convo.rec=new MediaRecorder(convo.stream, mime?{mimeType:mime}:undefined); convo.chunks=[];
+    convo.rec.ondataavailable=e=>e.data.size&&convo.chunks.push(e.data);
+    convo.rec.onstop=()=>processTurn();
+    convo.rec.start(); convo.speech=false; convo.silenceStart=0; convo.speechStart=0; convo.startAt=performance.now();
+    monitor();
+  }
+  function monitor(){
+    if(!convo.on||!convo.analyser) return;
+    const buf=new Uint8Array(convo.analyser.fftSize); convo.analyser.getByteTimeDomainData(buf);
+    let sum=0; for(let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; sum+=v*v; } const rms=Math.sqrt(sum/buf.length);
+    const now=performance.now();
+    if(rms>SPEECH_RMS){ if(!convo.speech){ convo.speech=true; convo.speechStart=now; cstatus('🗣️ recording…'); } convo.silenceStart=0; }
+    else if(convo.speech){ if(!convo.silenceStart) convo.silenceStart=now; else if(now-convo.silenceStart>SILENCE_MS && now-convo.speechStart>MIN_SPEECH_MS){ return endTurn(); } }
+    if(convo.speech && now-convo.startAt>MAX_TURN_MS) return endTurn();
+    convo.tId=setTimeout(monitor, 80);
+  }
+  function endTurn(){ if(convo.tId){ clearTimeout(convo.tId); convo.tId=null; } try{ if(convo.rec&&convo.rec.state!=='inactive') convo.rec.stop(); }catch{} }
+  async function processTurn(){
+    const chunks=convo.chunks; convo.chunks=[];
+    if(!convo.on) return;
+    if(!chunks.length||!convo.speech){ listenTurn(); return; } // nothing said, keep listening
+    const type=convo.rec.mimeType||'audio/webm'; const ext=type.includes('mp4')?'mp4':type.includes('ogg')?'ogg':'webm';
+    const blob=new Blob(chunks,{type});
+    cstatus('💭 Claude is working…'); setState('working…');
+    try{
+      const fd=new FormData(); fd.append('audio',blob,'clip.'+ext); fd.append('sessionId',sessionId); fd.append('cleanup',String(cleanupOn()));
+      const r=await fetch(base+'/api/command',{method:'POST',headers:H,body:fd}); const d=await r.json();
+      if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+      showResult(d); setState('ready');
+      if(d.audioUrl){ cstatus('🔊 speaking…'); await speakAndWait(d.audioUrl); }
+    }catch(e){ setState('idle'); err(e.message); }
+    if(convo.on) listenTurn();
+  }
+  function speakAndWait(u){ return new Promise(res=>{ const full=base+u+(authQS?(u.includes('?')?'&':'?')+authQS:''); lastAudio=full; player.src=full; player.onended=()=>{ player.onended=null; res(); }; const p=player.play(); if(p&&p.catch) p.catch(()=>res()); }); }
+  $('convo').onclick=()=>{ convo.on?convoStop():convoStart(); };
   $('ctext').addEventListener('keydown',e=>{ if(e.key==='Enter') $('csend').click(); });
   $('replay').onclick=()=>{ if(lastAudio) playUrl(lastAudio); };
 
@@ -246,7 +322,7 @@
     const r=await fetch(base+'/api/transcribe',{method:'POST',headers:H,body:fd}); const d=await r.json(); if(!r.ok) throw new Error(d.error||('HTTP '+r.status)); return d.text||'';
   }
   // claude mic → full command pipeline
-  $('cmic').onclick=()=>record($('cmic'),(blob,ext)=>{ const fd=new FormData(); fd.append('audio',blob,'clip.'+ext); fd.append('sessionId',sessionId); sendClaude(()=>({body:fd,headers:{}})); });
+  $('cmic').onclick=()=>record($('cmic'),(blob,ext)=>{ const fd=new FormData(); fd.append('audio',blob,'clip.'+ext); fd.append('sessionId',sessionId); fd.append('cleanup',String($('cleanup').checked)); sendClaude(()=>({body:fd,headers:{}})); });
   // terminal mic → transcribe → run as shell command
   $('tmic').onclick=()=>record($('tmic'),async(blob,ext)=>{ try{ const t=await transcribe(blob,ext); $('tinput').value=t; runShell(t.trim()); }catch(e){ err(e.message); } });
   // path mic → transcribe → fill path field

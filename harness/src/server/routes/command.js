@@ -10,6 +10,7 @@ import { getConfig } from '../../config.js';
 import { getSession } from '../../services/sessionManager.js';
 import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js';
 import { transcribe } from '../../services/whisper.js';
+import { refineTranscript } from '../../services/refine.js';
 import { synthesize } from '../../services/elevenlabs.js';
 import { playLocal } from '../../services/audio.js';
 import { broadcastResponse } from '../ws.js';
@@ -32,15 +33,26 @@ router.post('/', upload.single('audio'), async (req, res) => {
     if (!session) return res.status(404).json({ error: 'session not found' });
     if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
 
+    const fromAudio = !req.body.text && !!req.file;
     let transcript = (req.body.text || '').trim();
     if (!transcript && req.file) {
       transcript = (await transcribe(req.file.buffer, req.file.originalname || 'audio.wav')).trim();
     }
     if (!transcript) return res.status(400).json({ error: 'no text or audio provided' });
 
-    insertInteraction.run(session.id, 'user', transcript, null, null);
+    // Wispr-Flow-style cleanup: rewrite raw dictation into a clean instruction.
+    // Applies to voice input only (typed text is already deliberate). Toggle via
+    // request `cleanup` flag, else the dictation_cleanup config (default on).
+    const wantCleanup =
+      req.body.cleanup !== undefined
+        ? req.body.cleanup === true || req.body.cleanup === 'true'
+        : getConfig('dictation_cleanup', 'on') !== 'off';
+    let sent = transcript;
+    if (fromAudio && wantCleanup) sent = await refineTranscript(transcript);
 
-    const result = await executeCommand(session, transcript);
+    insertInteraction.run(session.id, 'user', sent, null, null);
+
+    const result = await executeCommand(session, sent);
     const summary = summarizeForSpeech(result.text);
 
     // Synthesize spoken summary (best-effort; a TTS failure must not fail the
@@ -68,7 +80,9 @@ router.post('/', upload.single('audio'), async (req, res) => {
     broadcastResponse({ sessionId: session.id, interactionId, summary, audioUrl });
 
     res.json({
-      transcript,
+      transcript, // raw (what you said)
+      refined: sent, // what was actually sent to Claude (cleaned, if enabled)
+      cleaned: sent !== transcript,
       responseText: result.text,
       summary,
       audioUrl,
