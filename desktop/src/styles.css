@@ -235,3 +235,90 @@ label {
   color: var(--accent-fg);
   border-color: var(--accent);
 }
+
+/* dashboard */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+.session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.session-card:hover {
+  border-color: var(--border-strong);
+}
+.session-card strong {
+  font-size: 14px;
+}
+
+/* state badges — pills with subtle full border + tint (no accent rails) */
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  background: var(--bg);
+  white-space: nowrap;
+}
+.badge.busy {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.badge.response_ready {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.badge.dead {
+  opacity: 0.6;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* conversation bubbles */
+.bubble {
+  max-width: 82%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.bubble.user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.bubble.claude {
+  align-self: flex-start;
+}
+.bubble-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.bubble-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mini {
+  margin-top: 6px;
+  padding: 3px 9px;
+  font-size: 12px;
+  border-radius: 6px;
+}

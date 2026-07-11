@@ -10,11 +10,16 @@
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Router } from 'express';
+import db from '../../db.js';
 import { listSessions, getSession, createSession, killSession, renameSession } from '../../services/sessionManager.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('sessions-route');
 const router = Router();
+
+const selHistory = db.prepare(
+  'SELECT id, direction, text, summary, audio_path, created_at FROM interactions WHERE session_id = ? ORDER BY id ASC'
+);
 
 router.get('/', (req, res) => {
   res.json({ sessions: listSessions() });
@@ -41,6 +46,20 @@ router.get('/:id', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   res.json(session);
+});
+
+router.get('/:id/history', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  const interactions = selHistory.all(Number(req.params.id)).map((r) => ({
+    id: r.id,
+    direction: r.direction,
+    text: r.text,
+    summary: r.summary,
+    hasAudio: !!r.audio_path, // never expose the filesystem path
+    created_at: r.created_at,
+  }));
+  res.json({ interactions });
 });
 
 router.post('/:id/kill', (req, res) => {
