@@ -22,6 +22,22 @@ export function buildApp() {
   app.disable('x-powered-by');
   app.use(express.json({ limit: '2mb' }));
 
+  // Scoped CORS: reflect only localhost origins and file:// ('null'). This lets
+  // the Electron renderer (dev http://localhost:5173, prod file://) call the API
+  // without opening it to arbitrary websites — important because localhost
+  // requests bypass bearer auth.
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && (origin === 'null' || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin))) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Device-Id');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
+
   // Auth gate for the whole API surface.
   app.use('/api', authMiddleware);
 
