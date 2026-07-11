@@ -38,6 +38,10 @@ export async function apiPost(path, body) {
   );
 }
 
+export async function apiDelete(path) {
+  return handle(await fetch(baseUrl + path, { method: 'DELETE' }));
+}
+
 export async function apiPostForm(path, formData) {
   return handle(await fetch(baseUrl + path, { method: 'POST', body: formData }));
 }
@@ -122,3 +126,10 @@ export const resumeArchive = (uuid) => apiPost(`/api/archive/${encodeURIComponen
 // --- chat view (conversation log) ---
 export const sessionMessages = (id, after = 0) => apiGet(`/api/sessions/${id}/messages?after=${after}`);
 export const sendChat = (id, text) => apiPost(`/api/sessions/${id}/chat`, { text });
+
+// --- chat composer controls ---
+export const sessionMode = (id) => apiGet(`/api/sessions/${id}/mode`);
+export const sessionKey = (id, key) => apiPost(`/api/sessions/${id}/key`, { key });
+export const listPrompts = () => apiGet('/api/prompts');
+export const savePrompt = (text, label) => apiPost('/api/prompts', { text, label });
+export const deletePrompt = (id) => apiDelete(`/api/prompts/${id}`);

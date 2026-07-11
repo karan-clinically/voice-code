@@ -92,6 +92,13 @@ ipcMain.handle('dialog:pickFolder', async () => {
   if (res.canceled || !res.filePaths.length) return null;
   return res.filePaths[0];
 });
+// Pick a local file → return its absolute path so the chat composer can hand it
+// to Claude Code (which reads local paths directly, no upload needed on desktop).
+ipcMain.handle('dialog:pickFile', async () => {
+  const res = await dialog.showOpenDialog(win, { properties: ['openFile'] });
+  if (res.canceled || !res.filePaths.length) return null;
+  return res.filePaths[0];
+});
 ipcMain.handle('shell:openExternal', (_e, url) => shell.openExternal(url));
 
 // If the clipboard holds an image, write it to a temp PNG and return the path so

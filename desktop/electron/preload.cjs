@@ -6,6 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('cvh', {
   appInfo: () => ipcRenderer.invoke('app:info'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  pickFile: () => ipcRenderer.invoke('dialog:pickFile'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   clipboardImagePath: () => ipcRenderer.invoke('clipboard:imageToTemp'),
   onHarnessLog: (cb) => {

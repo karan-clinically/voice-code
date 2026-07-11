@@ -2,15 +2,14 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sessionMessages, sendChat } from '../lib/api.js';
+import ChatComposer from './ChatComposer.jsx';
 
 // Claude-app-style conversation view over a live session. Renders the harness's
 // conversation log (assistant turns from the Stop hook, user turns from this box)
 // as markdown bubbles, polling incrementally. Overlays the terminal pane; the
 // xterm stays mounted underneath so the PTY/scrollback survive the toggle.
-export default function ChatView({ session, active }) {
+export default function ChatView({ session, active, notify }) {
   const [messages, setMessages] = useState([]);
-  const [text, setText] = useState('');
-  const [sending, setSending] = useState(false);
   const lastId = useRef(0);
   const scrollRef = useRef(null);
   const pinnedBottom = useRef(true);
@@ -52,11 +51,7 @@ export default function ChatView({ session, active }) {
     if (el) pinnedBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
   };
 
-  async function send() {
-    const t = text.trim();
-    if (!t || sending) return;
-    setText('');
-    setSending(true);
+  async function submit(t) {
     // Optimistic user bubble (the server also records it; poll will reconcile).
     setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', text: t, _local: true }]);
     pinnedBottom.current = true;
@@ -64,12 +59,11 @@ export default function ChatView({ session, active }) {
       await sendChat(session.id, t);
     } catch {
       setMessages((prev) => [...prev, { id: `err-${Date.now()}`, role: 'system', text: 'Failed to send — is the session alive?' }]);
-    } finally {
-      setSending(false);
     }
   }
 
   const busy = session.state === 'busy';
+  const lastAssistantText = [...messages].reverse().find((m) => m.role === 'assistant')?.text || '';
 
   return (
     <div className={'chat-pane' + (active ? ' active' : '')}>
@@ -87,24 +81,7 @@ export default function ChatView({ session, active }) {
         )}
         {busy && <div className="chat-working">working…</div>}
       </div>
-      <div className="chat-bar">
-        <textarea
-          className="chat-input"
-          rows={1}
-          placeholder="Message this session…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-        />
-        <button className="tool chat-send" onClick={send} disabled={sending || !text.trim()}>
-          {sending ? '…' : 'Send'}
-        </button>
-      </div>
+      <ChatComposer session={session} onSubmit={submit} lastAssistantText={lastAssistantText} notify={notify} />
     </div>
   );
 }

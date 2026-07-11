@@ -251,7 +251,7 @@ export default function Dashboard({ onOpenWizard }) {
                 onApi={registerApi}
                 notify={notify}
               />
-              {modeOf(s.id) === 'chat' && <ChatView session={s} active={s.id === activeId} />}
+              {modeOf(s.id) === 'chat' && <ChatView session={s} active={s.id === activeId} notify={notify} />}
             </React.Fragment>
           ))
         )}
