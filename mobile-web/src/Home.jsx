@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { listSessions, createSession, transcribe } from './lib/api.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
 
-export default function Home({ onOpen, notify }) {
+export default function Home({ onOpen, onHistory, notify }) {
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
   const [sessions, setSessions] = useState([]);
   const [picking, setPicking] = useState(false);
@@ -43,6 +43,8 @@ export default function Home({ onOpen, notify }) {
     <div>
       <header className="topbar">
         <h1>Voice Harness</h1>
+        <div className="spacer" />
+        <button className="ghost" onClick={onHistory} title="Search & resume past sessions">🕘 History</button>
       </header>
 
       <div className="card stack">

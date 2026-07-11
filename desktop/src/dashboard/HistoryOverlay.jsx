@@ -131,19 +131,25 @@ export default function HistoryOverlay({ onClose, onResume, notify }) {
   );
 }
 
-// Render an FTS snippet, highlighting the … match markers.
+// FTS snippet: the backend wraps matched terms in U+0001 .. U+0002 (control chars,
+// so highlighting cannot collide with brackets in code). Split on those markers
+// and render the wrapped runs as <mark>. Marker chars are built at runtime to
+// keep the source pure ASCII.
+const MARK_A = String.fromCharCode(1);
+const MARK_B = String.fromCharCode(2);
 function renderSnippet(text) {
   const parts = [];
-  const re = /([^]*)/g;
-  let last = 0;
-  let m;
   let i = 0;
-  while ((m = re.exec(text))) {
-    if (m.index > last) parts.push(text.slice(last, m.index));
-    parts.push(<mark key={i++}>{m[1]}</mark>);
-    last = re.lastIndex;
+  let k = 0;
+  while (i < text.length) {
+    const a = text.indexOf(MARK_A, i);
+    if (a === -1) { parts.push(text.slice(i)); break; }
+    if (a > i) parts.push(text.slice(i, a));
+    const b = text.indexOf(MARK_B, a + 1);
+    if (b === -1) { parts.push(text.slice(a + 1)); break; }
+    parts.push(<mark key={k++}>{text.slice(a + 1, b)}</mark>);
+    i = b + 1;
   }
-  if (last < text.length) parts.push(text.slice(last));
   return parts;
 }
 

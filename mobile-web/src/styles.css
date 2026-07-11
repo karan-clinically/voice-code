@@ -167,6 +167,43 @@ button.ghost:hover { background: var(--surface-2); }
 .sv-state.busy { color: var(--warn-text); }
 .sv-state.ready { color: var(--success); }
 
+/* full-screen History view */
+.history-view {
+  position: fixed; inset: 0; z-index: 10; background: var(--bg); display: flex; flex-direction: column; gap: 10px;
+  padding: calc(env(safe-area-inset-top) + 8px) 12px calc(env(safe-area-inset-bottom) + 10px);
+}
+.hist-top { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.hist-search { flex: 1 1 auto; }
+.hist-chips { display: flex; gap: 7px; overflow-x: auto; flex: 0 0 auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+.chip {
+  flex: 0 0 auto; padding: 6px 12px; font-size: 13px; border-radius: 999px;
+  background: var(--surface); color: var(--muted); border: 1px solid var(--border-strong); box-shadow: none; font-weight: 500;
+}
+.chip.on { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); }
+.chip-n { color: var(--muted-2); font-size: 12px; }
+.hist-scroll { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.hist-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 15px 16px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 7px;
+}
+.hist-card-title { font-size: 16px; font-weight: 600; color: var(--text); line-height: 1.3; }
+.hist-live { margin-left: 8px; font-size: 12px; font-weight: 600; color: var(--success); white-space: nowrap; }
+.hist-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.hist-proj { color: var(--text-2); font-weight: 500; }
+.hist-sep { opacity: 0.5; }
+.hist-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.hist-tag {
+  font-size: 12px; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--muted); font-family: var(--mono);
+}
+.hist-tag.mcp { color: var(--success); }
+.hist-snip {
+  font-size: 13.5px; color: var(--text-2); line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.hist-snip mark { background: var(--accent-tint); color: var(--accent); border-radius: 3px; padding: 0 2px; }
+.hist-resume { align-self: flex-start; margin-top: 3px; }
+
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 code { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--border);

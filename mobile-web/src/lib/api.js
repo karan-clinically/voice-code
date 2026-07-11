@@ -54,6 +54,12 @@ export const transcribe = async (blob, ext) => {
 export const commandText = (sessionId, text) => jpost('/api/command', { sessionId, text });
 export const commandAudio = (fd) => jform('/api/command', fd);
 
+// --- session archive (past transcripts) ---
+export const searchArchive = (q = '', project = '') =>
+  jget('/api/archive?' + new URLSearchParams({ q, ...(project ? { project } : {}) }).toString());
+export const archiveProjects = () => jget('/api/archive/projects');
+export const resumeArchive = (uuid) => jpost(`/api/archive/${encodeURIComponent(uuid)}/resume`);
+
 export async function sayBlobUrl(text) {
   const r = await fetch(base + '/api/tts/say', {
     method: 'POST',

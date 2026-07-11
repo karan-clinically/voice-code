@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import Home from './Home.jsx';
 import SessionView from './SessionView.jsx';
 import ShellView from './ShellView.jsx';
+import History from './History.jsx';
 
 export default function App() {
-  const [route, setRoute] = useState('home'); // home | shell | claude
+  const [route, setRoute] = useState('home'); // home | shell | claude | history
   const [session, setSession] = useState(null);
   const [error, setError] = useState('');
 
@@ -28,7 +29,8 @@ export default function App() {
           {error}
         </div>
       )}
-      {route === 'home' && <Home onOpen={openSession} notify={notify} />}
+      {route === 'home' && <Home onOpen={openSession} onHistory={() => setRoute('history')} notify={notify} />}
+      {route === 'history' && <History onOpen={openSession} onBack={goHome} notify={notify} />}
       {route === 'shell' && (
         <ShellView
           session={session}
