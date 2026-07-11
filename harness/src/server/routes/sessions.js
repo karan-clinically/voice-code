@@ -11,7 +11,11 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Router } from 'express';
 import db from '../../db.js';
-import { listSessions, getSession, createSession, killSession, renameSession } from '../../services/sessionManager.js';
+import { getConfig } from '../../config.js';
+import {
+  listSessions, getSession, createSession, killSession, renameSession,
+  sendInput, readScreen, setKind,
+} from '../../services/sessionManager.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('sessions-route');
@@ -27,14 +31,16 @@ router.get('/', (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const rawCwd = (req.body?.cwd || '').trim();
-    if (!rawCwd) return res.status(400).json({ error: 'cwd is required' });
+    const kind = req.body?.kind === 'shell' ? 'shell' : 'claude';
+    const base = getConfig('mobile_base_dir', 'C:\\AI');
+    // cwd optional: defaults to the projects base (handy for phone shell sessions).
+    const rawCwd = (req.body?.cwd || '').trim() || base;
     const cwd = resolve(rawCwd); // normalize slashes + make absolute (Windows-safe)
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
-      return res.status(400).json({ error: 'cwd is not an existing directory' });
+      return res.status(400).json({ error: `folder not found: ${cwd}` });
     }
     const label = req.body?.label || null;
-    const session = await createSession({ cwd, label });
+    const session = await createSession({ cwd, label, kind });
     res.status(201).json(session);
   } catch (err) {
     log.error(`create session error: ${err.message}`);
@@ -62,6 +68,45 @@ router.get('/:id/history', (req, res) => {
   res.json({ interactions });
 });
 
+// Raw terminal input (shell navigation from the phone).
+router.post('/:id/input', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  try {
+    await sendInput(req.params.id, req.body?.text || '', { submit: req.body?.submit !== false });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Current rendered screen + best-guess current directory (from the PS prompt).
+router.get('/:id/screen', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  try {
+    const screen = await readScreen(req.params.id, { full: false });
+    res.json({ screen, promptCwd: parsePromptCwd(screen) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Launch Claude Code inside a shell session, then treat it as a claude session.
+router.post('/:id/launch-claude', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  try {
+    await sendInput(req.params.id, 'claude', { submit: true });
+    setKind(req.params.id, 'claude');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/:id/kill', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
@@ -75,5 +120,11 @@ router.post('/:id/rename', (req, res) => {
   const label = (req.body?.label || '').trim() || null;
   res.json(renameSession(req.params.id, label));
 });
+
+// Extract the current directory from the last PowerShell prompt (`PS C:\path>`).
+function parsePromptCwd(screen) {
+  const matches = [...screen.matchAll(/PS\s+([A-Za-z]:\\[^\n>]*?)>/g)];
+  return matches.length ? matches[matches.length - 1][1].trim() : null;
+}
 
 export default router;

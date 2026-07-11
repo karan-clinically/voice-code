@@ -161,6 +161,32 @@ audio is cached at `~/.claude-voice-harness/audio/` (replay via `GET /api/tts/:i
 
 ---
 
+## Using it from your phone (mobile web client)
+
+The harness serves a mobile page at **`/m`** — no native app needed. Open it in your
+phone's browser over Tailscale.
+
+1. Install Tailscale on the phone (same tailnet as the PC).
+2. Enable HTTPS so the microphone works (browsers block mic on plain HTTP):
+   ```
+   tailscale serve --bg 4620
+   ```
+   This publishes `https://<your-machine>.<tailnet>.ts.net/` → the harness (tailnet-private,
+   automatic TLS). Because it proxies as localhost, no token is needed on that URL.
+3. On the phone, open `https://<your-machine>.<tailnet>.ts.net/m`.
+
+The mobile page lets you, entirely from the phone:
+- **Start Claude in a folder** — type/speak a path, Claude launches there.
+- **Start a shell to navigate** — opens PowerShell in your projects base (`C:\AI` by default,
+  set via the `mobile_base_dir` config key). `cd`/`ls` by typing or voice, tap **🔊 Where am I**
+  to hear the current directory, then **🚀 Launch Claude** to hand off — after which you send
+  commands (and slash-commands) by voice or text and hear the spoken summary.
+- **Resume** any live session.
+
+> A `502` on the phone means the harness isn't running on the PC (the tunnel has nothing to
+> forward to) — start the desktop app or the harness. If the tunnel mapping drifts, re-run
+> `tailscale serve --bg 4620`.
+
 ## Data & config locations
 
 - Database: `~/.claude-voice-harness/harness.db`

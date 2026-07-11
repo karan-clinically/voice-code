@@ -28,8 +28,8 @@ const tokenByDb = new Map(); // dbId -> CVH_SESSION_ID token
 const dbByToken = new Map(); // token -> dbId
 
 const insertSession = db.prepare(`
-  INSERT INTO sessions (tmux_session, tmux_pane, label, cwd, git_repo, git_branch, state, last_seen_at)
-  VALUES (@tmux_session, @tmux_pane, @label, @cwd, @git_repo, @git_branch, @state, @last_seen_at)
+  INSERT INTO sessions (tmux_session, tmux_pane, label, cwd, git_repo, git_branch, state, last_seen_at, kind)
+  VALUES (@tmux_session, @tmux_pane, @label, @cwd, @git_repo, @git_branch, @state, @last_seen_at, @kind)
 `);
 const updState = db.prepare('UPDATE sessions SET state = ?, last_seen_at = ? WHERE id = ?');
 const touchSeen = db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?');
@@ -60,12 +60,20 @@ function decorate(row) {
   return { ...row, ptyId, alive };
 }
 
-// Spawn Claude Code in a new session and register it in the DB. The correlation
-// token is injected as CVH_SESSION_ID so a Stop hook that chooses to forward it
-// can map back to this exact session (primary matching is by cwd).
-export async function createSession({ cwd, label = null } = {}) {
+// Spawn a new session and register it in the DB. kind 'claude' launches Claude
+// Code directly; kind 'shell' launches PowerShell (for phone navigate-then-
+// launch-claude). The correlation token is injected as CVH_SESSION_ID so a Stop
+// hook can map back to this session (primary matching is by cwd).
+export async function createSession({ cwd, label = null, kind = 'claude' } = {}) {
   const token = randomUUID();
-  const view = terminal.spawnSession({ cwd, label, env: { CVH_SESSION_ID: token } });
+  const isShell = kind === 'shell';
+  const view = terminal.spawnSession({
+    cwd,
+    label,
+    env: { CVH_SESSION_ID: token },
+    command: isShell ? 'powershell.exe' : undefined,
+    args: isShell ? ['-NoLogo', '-NoExit'] : [],
+  });
   const git = await terminal.getGitInfo(view.cwd);
   const now = new Date().toISOString();
   const info = insertSession.run({
@@ -77,6 +85,7 @@ export async function createSession({ cwd, label = null } = {}) {
     git_branch: git.branch,
     state: 'idle',
     last_seen_at: now,
+    kind,
   });
   const dbId = Number(info.lastInsertRowid);
   dbIdByPty.set(view.id, dbId);
@@ -119,6 +128,26 @@ export function renameSession(id, label) {
   updLabel.run(label, Number(id));
   sessionEvents.emit('change');
   return getSession(id);
+}
+
+const updKind = db.prepare('UPDATE sessions SET kind = ? WHERE id = ?');
+export function setKind(id, kind) {
+  updKind.run(kind, Number(id));
+  sessionEvents.emit('change');
+  return getSession(id);
+}
+
+// Raw terminal I/O (used by the phone's shell-navigation mode).
+export async function sendInput(id, text, opts) {
+  const ptyId = ptyIdByDb.get(Number(id));
+  if (!ptyId) throw new Error('session has no live PTY');
+  return terminal.sendText(ptyId, text, opts);
+}
+
+export async function readScreen(id, opts) {
+  const ptyId = ptyIdByDb.get(Number(id));
+  if (!ptyId) throw new Error('session has no live PTY');
+  return terminal.captureScreenFlushed(ptyId, opts);
 }
 
 export function killSession(id) {

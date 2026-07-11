@@ -61,6 +61,13 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
     CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at);
   `);
+
+  // Additive migration: session kind ('claude' | 'shell'). Ignored if present.
+  try {
+    db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT DEFAULT 'claude'");
+  } catch {
+    /* column already exists */
+  }
 }
 
 export default db;
