@@ -193,6 +193,29 @@ Entirely from the phone you can:
 > Tailscale `serve` root off port 4620. The harness **self-heals** the `serve` mapping every 60s
 > (disable with `tailscale_serve=off`); to fix manually: `tailscale serve --bg 4620`.
 
+## Session Archive & Resume
+
+Every Claude Code session is already written to disk at
+`~/.claude/projects/<slugified-cwd>/<session-uuid>.jsonl` (the filename **is** the
+session id). The harness indexes those transcripts — across **all** your projects —
+into a local SQLite **FTS5** full-text index over prompts + responses, refreshed
+incrementally by file mtime (a rescan of ~125 sessions is a few milliseconds). No
+logging is added; it reads what Claude Code already records.
+
+- **Desktop** — the **🕘 History** button opens a search drawer: type to full-text
+  search, filter by project, and each result shows title · project · date · prompt
+  count · skills/MCP used · a highlighted snippet. **Resume** reopens that
+  conversation as a live terminal tab (`claude --resume` in its original folder).
+- **Phone** — the **🕘 History** entry on Home gives the same searchable list;
+  **Resume** drops you straight into the live session view.
+- Sessions that are **currently open** are flagged `live` in the archive (the
+  harness records each session's Claude UUID from the Stop hook), so current and
+  archived sessions cross-reference.
+
+> Resume needs the session's **original working directory** to still exist —
+> Claude resolves `--resume <id>` per-project, so a moved/deleted folder shows
+> "Folder gone" instead of a Resume button.
+
 ## Keeping the harness running
 
 For the phone to work whenever the PC is on, the harness must run independently. This session set up
@@ -236,6 +259,11 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/sessions/:id/launch-claude` | POST | run `claude` in a shell session |
 | `/api/sessions/:id/kill` `/rename` | POST | manage |
 | `/api/fs/list` | GET | list subdirs/drives for the folder picker (localhost only) |
+| `/api/archive` | GET | search past sessions (`?q=` FTS, `?project=` filter; recent when no `q`) |
+| `/api/archive/projects` | GET | distinct projects (filter facet) |
+| `/api/archive/:uuid` | GET | one archived session + first prompts (preview) |
+| `/api/archive/:uuid/resume` | POST | reopen `claude --resume <uuid>` in its original cwd → new live session |
+| `/api/archive/reindex` | POST | force a rescan of the transcript corpus |
 | `/api/command` | POST | JSON `{text,sessionId}` or multipart `audio`+`sessionId`+`cleanup` |
 | `/api/transcribe` | POST | multipart `audio` → `{text}` (STT only) |
 | `/api/tts/:interactionId` | GET | replay cached mp3 |
