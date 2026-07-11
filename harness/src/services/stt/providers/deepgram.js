@@ -9,22 +9,14 @@
 // DEEPGRAM_API_KEY). Audio is sent as-is; Deepgram auto-detects the container
 // (webm/opus from MediaRecorder, wav, mp3…) so no encoding param is needed.
 
-import { DeepgramClient } from '@deepgram/sdk';
 import { getConfig } from '../../../config.js';
+import { deepgramClient as client, deepgramKey } from '../../deepgramClient.js';
 import { makeLogger } from '../../../util/logger.js';
 
 const log = makeLogger('stt:deepgram');
 const DEFAULT_MODEL = 'nova-3';
 const MAX_BYTES = 25 * 1024 * 1024;
 const KEEPALIVE_MS = 8000; // Deepgram drops the socket after ~10s of no audio.
-
-let cached = { key: null, client: null };
-function client() {
-  const key = getConfig('deepgram_api_key');
-  if (!key) throw new Error('Deepgram API key not configured');
-  if (cached.key !== key) cached = { key, client: new DeepgramClient({ apiKey: key }) };
-  return cached.client;
-}
 
 export async function transcribeBatch(buffer, { model, language } = {}) {
   if (!buffer || buffer.length === 0) throw new Error('empty audio buffer');
@@ -52,7 +44,7 @@ export async function transcribeBatch(buffer, { model, language } = {}) {
 // accumulated final text is available through getText()/onClose. Deepgram emits
 // several is_final segments per utterance, so we concatenate them ourselves.
 export async function createStream({ model, language, onOpen, onPartial, onError, onClose } = {}) {
-  const key = getConfig('deepgram_api_key');
+  const key = deepgramKey();
   if (!key) throw new Error('Deepgram API key not configured');
   const m = model || getConfig('stt_model', DEFAULT_MODEL);
 

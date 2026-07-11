@@ -46,16 +46,23 @@ export function getAllConfig() {
   return out;
 }
 
-// The keys the harness needs before it can run the full voice pipeline.
-// Deepgram powers STT; `openai_api_key` is optional (dictation cleanup only) so
-// it is not gated here.
-export const REQUIRED_KEYS = [
-  'deepgram_api_key',
-  'elevenlabs_api_key',
-  'elevenlabs_voice_id',
-  'pairing_token',
-];
+// The keys the harness always needs. Deepgram powers STT; `openai_api_key` is
+// optional (dictation cleanup only) so it is not gated here.
+export const REQUIRED_KEYS = ['deepgram_api_key', 'pairing_token'];
+
+// TTS needs exactly one working provider — ElevenLabs is no longer mandatory.
+// Deepgram (Aura-2) reuses the STT key and has a default voice, so this is
+// satisfied the moment the Deepgram key exists; an install that explicitly picks
+// ElevenLabs must supply its key *and* a voice.
+export function isTtsReady() {
+  const hasDeepgram = !!getConfig('deepgram_api_key');
+  const hasEleven = !!getConfig('elevenlabs_api_key') && !!getConfig('elevenlabs_voice_id');
+  const provider = getConfig('tts_provider');
+  if (provider === 'elevenlabs') return hasEleven;
+  if (provider === 'deepgram') return hasDeepgram;
+  return hasEleven || hasDeepgram;
+}
 
 export function isFirstRun() {
-  return REQUIRED_KEYS.some((k) => !getConfig(k));
+  return REQUIRED_KEYS.some((k) => !getConfig(k)) || !isTtsReady();
 }

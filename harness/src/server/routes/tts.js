@@ -3,19 +3,18 @@
 import { existsSync } from 'node:fs';
 import { Router } from 'express';
 import db from '../../db.js';
-import { getConfig } from '../../config.js';
-import { synthesize } from '../../services/elevenlabs.js';
+import { synthesize } from '../../services/tts/index.js';
 
 const router = Router();
 const sel = db.prepare('SELECT audio_path FROM interactions WHERE id = ?');
 
 // Speak arbitrary text (used by the phone to read back the current directory).
+// Whichever TTS provider is active answers; the phone gets mp3 either way.
 router.post('/say', async (req, res) => {
   try {
     const text = (req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: 'text required' });
-    const voiceId = req.body?.voiceId || getConfig('elevenlabs_voice_id');
-    const audio = await synthesize(text, voiceId);
+    const audio = await synthesize(text, { voiceId: req.body?.voiceId });
     res.type('audio/mpeg');
     res.sendFile(audio.path);
   } catch (err) {

@@ -12,7 +12,7 @@ import { getConfig } from '../../config.js';
 import { getSession } from '../../services/sessionManager.js';
 import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js';
 import { recordUserMessage } from '../../services/conversation.js';
-import { synthesize } from '../../services/elevenlabs.js';
+import { synthesize, isConfigured as ttsConfigured } from '../../services/tts/index.js';
 import { playLocal } from '../../services/audio.js';
 import { broadcastResponse } from '../ws.js';
 import { makeLogger } from '../../util/logger.js';
@@ -21,7 +21,7 @@ const log = makeLogger('command');
 const router = Router();
 
 const insertInteraction = db.prepare(
-  'INSERT INTO interactions (session_id, direction, text, summary, audio_path) VALUES (?, ?, ?, ?, ?)'
+  'INSERT INTO interactions (session_id, direction, text, summary, audio_path, tts_chars) VALUES (?, ?, ?, ?, ?, ?)'
 );
 
 router.post('/', async (req, res) => {
@@ -37,25 +37,29 @@ router.post('/', async (req, res) => {
     const sent = (req.body.text || '').trim();
     if (!sent) return res.status(400).json({ error: 'text is required' });
 
-    insertInteraction.run(session.id, 'user', sent, null, null);
+    insertInteraction.run(session.id, 'user', sent, null, null, null);
     recordUserMessage(session.id, sent); // Chat-view conversation log
 
     const result = await executeCommand(session, sent);
     const summary = summarizeForSpeech(result.text);
 
-    // Synthesize spoken summary (best-effort; a TTS failure must not fail the
-    // command — the text response is still returned).
+    // Synthesize spoken summary with whichever provider is active (best-effort; a
+    // TTS failure must not fail the command — the text response is still returned).
     let audioPath = null;
-    const voiceId = getConfig('elevenlabs_voice_id');
-    if (getConfig('elevenlabs_api_key') && voiceId && summary) {
+    let ttsChars = null;
+    if (summary && ttsConfigured()) {
+      const t0 = Date.now();
       try {
-        audioPath = (await synthesize(summary, voiceId)).path;
+        const audio = await synthesize(summary);
+        audioPath = audio.path;
+        ttsChars = audio.chars;
+        log.info(`TTS ${audio.provider}/${audio.voiceId}: ${audio.chars} chars in ${Date.now() - t0}ms`);
       } catch (err) {
         log.warn(`TTS failed: ${err.message}`);
       }
     }
 
-    const claudeRow = insertInteraction.run(session.id, 'claude', result.text, summary, audioPath);
+    const claudeRow = insertInteraction.run(session.id, 'claude', result.text, summary, audioPath, ttsChars);
     const interactionId = Number(claudeRow.lastInsertRowid);
 
     // Local speaker playback per configured target (fire-and-forget).

@@ -79,6 +79,14 @@ function migrate(db) {
     /* column already exists */
   }
 
+  // Additive migration: characters billed for this interaction's TTS, so voice
+  // spend is visible per provider later. NULL for user rows / when TTS was off.
+  try {
+    db.exec('ALTER TABLE interactions ADD COLUMN tts_chars INTEGER');
+  } catch {
+    /* column already exists */
+  }
+
   // Session Archive: metadata + FTS5 index over the ~/.claude/projects/*.jsonl
   // transcripts. Populated incrementally by services/archiveIndex.js (by mtime).
   db.exec(`

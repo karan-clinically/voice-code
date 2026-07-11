@@ -3,30 +3,42 @@
 // output_format query param. Default model eleven_turbo_v2_5 (low latency, good
 // quality); eleven_flash_v2_5 is the faster/cheaper alternative — override with
 // the `tts_model` config key. Uses native fetch (no HTTP client dependency).
+//
+// Behaviour is unchanged from the pre-provider-split version; it now just
+// conforms to the shared provider contract (see ../index.js).
 
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AUDIO_DIR } from '../db.js';
-import { getConfig } from '../config.js';
-import { makeLogger } from '../util/logger.js';
+import { AUDIO_DIR } from '../../../db.js';
+import { getConfig } from '../../../config.js';
+import { makeLogger } from '../../../util/logger.js';
 
-const log = makeLogger('elevenlabs');
+const log = makeLogger('tts:elevenlabs');
 const BASE = 'https://api.elevenlabs.io/v1';
 const DEFAULT_MODEL = 'eleven_turbo_v2_5';
 const DEFAULT_FORMAT = 'mp3_44100_128';
 
-// Synthesize `text` with `voiceId`, write mp3 to the audio cache, return
-// { id, path, filename }.
-export async function synthesize(text, voiceId, { modelId, outputFormat } = {}) {
+export const label = 'ElevenLabs';
+
+export function isConfigured() {
+  return !!getConfig('elevenlabs_api_key');
+}
+
+export function getVoiceId() {
+  return getConfig('elevenlabs_voice_id') || null;
+}
+
+export async function synthesize(text, { voiceId, modelId, outputFormat } = {}) {
   const apiKey = getConfig('elevenlabs_api_key');
   if (!apiKey) throw new Error('ElevenLabs API key not configured');
-  if (!voiceId) throw new Error('no ElevenLabs voice selected');
+  const voice = voiceId || getVoiceId();
+  if (!voice) throw new Error('no ElevenLabs voice selected');
   if (!text || !text.trim()) throw new Error('empty text');
 
   const model = modelId || getConfig('tts_model', DEFAULT_MODEL);
   const format = outputFormat || DEFAULT_FORMAT;
-  const url = `${BASE}/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${format}`;
+  const url = `${BASE}/text-to-speech/${encodeURIComponent(voice)}?output_format=${format}`;
 
   let resp;
   try {
@@ -52,7 +64,7 @@ export async function synthesize(text, voiceId, { modelId, outputFormat } = {}) 
   const buf = Buffer.from(await resp.arrayBuffer());
   await writeFile(path, buf);
   log.info(`synthesized ${text.length} chars via ${model} -> ${filename} (${buf.length}B)`);
-  return { id, path, filename };
+  return { id, path, filename, voiceId: voice, chars: text.length };
 }
 
 // List available voices for the voice picker (wizard).
