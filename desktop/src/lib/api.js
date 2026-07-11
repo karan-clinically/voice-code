@@ -61,3 +61,28 @@ export function openWs(onMessage) {
 export function ttsUrl(interactionId) {
   return `${baseUrl}/api/tts/${interactionId}`;
 }
+
+// --- wizard / config ---
+export const configState = () => apiGet('/api/config/state');
+export const saveConfig = (obj) => apiPost('/api/config', obj);
+export const listVoices = () => apiGet('/api/voices');
+export const pairingPayload = () => apiGet('/api/pairing/payload');
+export const regenToken = () => apiPost('/api/pairing/regen');
+export const tailscaleDetect = () => apiGet('/api/tunnel/tailscale');
+
+export async function previewVoiceUrl(voiceId) {
+  const r = await fetch(baseUrl + '/api/voices/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voiceId }),
+  });
+  if (!r.ok) throw new Error('voice preview failed');
+  return URL.createObjectURL(await r.blob());
+}
+
+// --- sessions / command ---
+export const listSessions = () => apiGet('/api/sessions');
+export const createSession = (cwd, label) => apiPost('/api/sessions', { cwd, label });
+export const killSession = (id) => apiPost(`/api/sessions/${id}/kill`, {});
+export const renameSession = (id, label) => apiPost(`/api/sessions/${id}/rename`, { label });
+export const sendCommand = (sessionId, text) => apiPost('/api/command', { sessionId, text });

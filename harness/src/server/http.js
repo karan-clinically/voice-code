@@ -12,6 +12,10 @@ import transcribeRouter from './routes/transcribe.js';
 import commandRouter from './routes/command.js';
 import hooksRouter from './routes/hooks.js';
 import ttsRouter from './routes/tts.js';
+import configRouter from './routes/config.js';
+import voicesRouter from './routes/voices.js';
+import tunnelRouter from './routes/tunnel.js';
+import pairingRouter from './routes/pairing.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -50,6 +54,10 @@ export function buildApp() {
   app.use('/api/command', commandRouter);
   app.use('/api/hooks', hooksRouter);
   app.use('/api/tts', ttsRouter);
+  app.use('/api/config', configRouter);
+  app.use('/api/voices', voicesRouter);
+  app.use('/api/tunnel', tunnelRouter);
+  app.use('/api/pairing', pairingRouter);
 
   // JSON 404 + error handler so nothing leaks HTML/stack traces.
   app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));
