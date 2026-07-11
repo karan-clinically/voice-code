@@ -204,6 +204,18 @@ sends to the live session.
   scrollback survive toggling back and forth.
 - The reply appears formatted as the turn completes.
 
+The chat input is a **"code container"** (like the Claude Code app): an auto-grow
+text field with a control row underneath —
+- a **mode pill** that cycles the session's permission mode **Ask → Auto-accept →
+  Plan → Bypass** (it sends Shift+Tab to the live session and reads the mode back
+  off the TUI footer),
+- a **mic** (dictate into the field), a **replay** button (speaks the last reply
+  again via TTS), a **"/"** button that opens a scrollable **saved-prompts** picker
+  (insert / save-current / delete; stored globally in the harness DB),
+- an **attach** button (desktop native file picker; the phone uploads and inserts
+  the stored path — Claude reads local paths), and
+- a context **send / stop** button (Stop sends Esc to interrupt Claude mid-turn).
+
 > **How the chat log is built.** Harness-spawned Claude sessions don't persist a
 > transcript to disk while running (verified), so the harness records the
 > conversation itself: **assistant** turns come from the Stop hook (so this view
@@ -279,6 +291,11 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/sessions/:id/launch-claude` | POST | run `claude` in a shell session |
 | `/api/sessions/:id/messages` | GET | Chat-view conversation log (`?after=<id>` for incremental) |
 | `/api/sessions/:id/chat` | POST | Chat-view send: record `{text}` + submit it to the live session |
+| `/api/sessions/:id/key` | POST | Composer control key `{key}` — `cycle-mode` (Shift+Tab) or `stop` (Esc) |
+| `/api/sessions/:id/mode` | GET | Current permission mode read off the TUI (`ask`\|`auto`\|`plan`\|`bypass`) |
+| `/api/sessions/:id/attach` | POST | Upload a file → returns a local `{path}` to drop into the message |
+| `/api/prompts` | GET/POST | Saved-prompt snippets (list / create) for the "/" picker |
+| `/api/prompts/:id` | DELETE | Delete a saved prompt |
 | `/api/sessions/:id/kill` `/rename` | POST | manage |
 | `/api/fs/list` | GET | list subdirs/drives for the folder picker (localhost only) |
 | `/api/archive` | GET | search past sessions (`?q=` FTS, `?project=` filter; recent when no `q`) |
