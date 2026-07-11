@@ -22,9 +22,13 @@ function safeEqual(a, b) {
 export function authMiddleware(req, res, next) {
   if (isLocalhost(req)) return next();
   const token = getConfig('pairing_token');
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
   const header = req.get('authorization') || '';
   const m = header.match(/^Bearer\s+(.+)$/i);
-  if (token && m && safeEqual(m[1], token)) return next();
+  const bearer = m ? m[1] : null;
+  // Also accept ?token= for GET media/WS where headers can't be set (e.g. <audio src>).
+  const query = typeof req.query.token === 'string' ? req.query.token : null;
+  if ((bearer && safeEqual(bearer, token)) || (query && safeEqual(query, token))) return next();
   return res.status(401).json({ error: 'unauthorized' });
 }
 

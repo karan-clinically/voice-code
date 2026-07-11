@@ -49,6 +49,12 @@ export function buildApp() {
     res.json({ ok: true, version: pkg.version });
   });
 
+  // Mobile web client (served shell; its API calls are gated normally). Reached
+  // from the phone browser over Tailscale — ideally via `tailscale serve` HTTPS
+  // so the microphone works.
+  const mobilePage = join(__dirname, '../mobile/index.html');
+  app.get(['/m', '/mobile'], (req, res) => res.sendFile(mobilePage));
+
   app.use('/api/sessions', sessionsRouter);
   app.use('/api/transcribe', transcribeRouter);
   app.use('/api/command', commandRouter);
