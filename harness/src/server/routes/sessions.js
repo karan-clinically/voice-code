@@ -34,7 +34,9 @@ router.post('/', async (req, res) => {
     const kind = req.body?.kind === 'shell' ? 'shell' : 'claude';
     const base = getConfig('mobile_base_dir', 'C:\\AI');
     // cwd optional: defaults to the projects base (handy for phone shell sessions).
-    const rawCwd = (req.body?.cwd || '').trim() || base;
+    // Strip quotes (Windows paths can't contain them) — users often type/dictate
+    // a shell-style quoted path like C:\AI\'voice harness'.
+    const rawCwd = (req.body?.cwd || '').trim().replace(/["']/g, '') || base;
     const cwd = resolve(rawCwd); // normalize slashes + make absolute (Windows-safe)
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
       return res.status(400).json({ error: `folder not found: ${cwd}` });
