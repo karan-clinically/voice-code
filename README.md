@@ -193,6 +193,26 @@ Entirely from the phone you can:
 > Tailscale `serve` root off port 4620. The harness **self-heals** the `serve` mapping every 60s
 > (disable with `tailscale_serve=off`); to fix manually: `tailscale serve --bg 4620`.
 
+## Two views per session: Terminal & Chat
+
+Each session has a **Terminal | Chat** toggle (desktop tabs and the phone session
+view). **Terminal** is the raw xterm — the real Claude Code TUI. **Chat** is a
+Claude-app-style conversation: markdown-formatted bubbles with a text box that
+sends to the live session.
+
+- On desktop the terminal stays mounted under the chat overlay, so the PTY and
+  scrollback survive toggling back and forth.
+- The reply appears formatted as the turn completes.
+
+> **How the chat log is built.** Harness-spawned Claude sessions don't persist a
+> transcript to disk while running (verified), so the harness records the
+> conversation itself: **assistant** turns come from the Stop hook (so this view
+> needs the hook installed), **user** turns from the chat box / voice command, and
+> a **resumed** session is seeded once from its on-disk transcript. A prompt typed
+> directly into the raw terminal isn't captured (its reply still shows) — and
+> interactive moments (permission prompts, plan approval, slash-menus) only render
+> in the Terminal view.
+
 ## Session Archive & Resume
 
 Every Claude Code session is already written to disk at
@@ -257,6 +277,8 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/sessions/:id/screen` | GET | rendered terminal (`?full=1&color=1` for colored HTML) |
 | `/api/sessions/:id/input` | POST | raw shell input `{text}` |
 | `/api/sessions/:id/launch-claude` | POST | run `claude` in a shell session |
+| `/api/sessions/:id/messages` | GET | Chat-view conversation log (`?after=<id>` for incremental) |
+| `/api/sessions/:id/chat` | POST | Chat-view send: record `{text}` + submit it to the live session |
 | `/api/sessions/:id/kill` `/rename` | POST | manage |
 | `/api/fs/list` | GET | list subdirs/drives for the folder picker (localhost only) |
 | `/api/archive` | GET | search past sessions (`?q=` FTS, `?project=` filter; recent when no `q`) |
