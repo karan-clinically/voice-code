@@ -2,8 +2,8 @@
 
 A voice-first control layer for [Claude Code](https://claude.com/claude-code). Speak (or type) a
 command, have it typed into a specific Claude Code session on your PC, and hear the response read
-back via ElevenLabs. It uses your existing Claude Code subscription — the harness only pays for
-Deepgram speech-to-text and ElevenLabs text-to-speech.
+back aloud. It uses your existing Claude Code subscription — the harness only pays for
+Deepgram speech-to-text and text-to-speech (ElevenLabs is an optional alternative voice).
 
 **Voice is review-before-send.** Dictation never reaches a Claude session on its own: the transcript
 lands in the command box on whichever device you spoke into, you edit it if you like, and only
@@ -33,7 +33,8 @@ on Windows using **node-pty (ConPTY)** instead:
 ```
 Desktop app (Electron+React)  ──localhost REST+WS──►  Harness (Node, :4620)
                                                         ├─ node-pty → claude sessions
-                                                        ├─ Deepgram (STT) · ElevenLabs (TTS)
+                                                        ├─ Deepgram (STT + Aura-2 TTS)
+                                                        ├─ ElevenLabs (optional TTS)
                                                         └─ SQLite (better-sqlite3)
 Phone (Phase 2) ──Tailscale + bearer token──────────►  same API
 ```
@@ -47,7 +48,10 @@ Phone (Phase 2) ──Tailscale + bearer token──────────► 
   existing, already-authenticated `claude` — no re-login, no Anthropic API cost.
 - **git** (used to show each session's repo/branch).
 - A **Deepgram API key** (STT — get one at [console.deepgram.com](https://console.deepgram.com); new
-  accounts include free credit, no card required) and an **ElevenLabs API key** (TTS).
+  accounts include free credit, no card required). The same key does **both** speech-to-text and
+  text-to-speech, so this is the only key you need.
+- Optionally an **ElevenLabs API key** — only if you want its more expressive voices instead of
+  Deepgram's Aura-2.
 - Optionally an **OpenAI API key** — used only for Wispr-style dictation cleanup, never for STT.
 - **Tailscale** (optional, for phone access later) — already detected automatically if installed.
 
@@ -69,11 +73,12 @@ npm install        # installs harness + desktop workspaces (builds native node-p
 
 Launch the desktop app (below). The **setup wizard** walks you through:
 
-1. **API keys** — paste your Deepgram + ElevenLabs keys and pick a voice (with a live preview button).
-   There is a **Test transcription** button that records 3s from your mic and shows what Deepgram
-   heard, plus a **Batch / Live stream** dictation toggle (see below). Keys are stored locally in
-   SQLite at `~/.claude-voice-harness/harness.db` and used server-side only — they are never sent to
-   your phone.
+1. **API keys** — paste your Deepgram key (that alone is enough: it does both STT and the voice), then
+   pick a voice. There is a **Test transcription** button that records 3s from your mic and shows what
+   Deepgram heard, a **Batch / Live stream** dictation toggle, and a **Deepgram / ElevenLabs** voice
+   toggle with a **Test voice** button (see below). An ElevenLabs key is optional. Keys are stored
+   locally in SQLite at `~/.claude-voice-harness/harness.db` and used server-side only — they are
+   never sent to your phone.
 2. **Tunnel** — Tailscale (auto-detected), local-network-only, or a custom URL.
 3. **Claude hook** — copy the Stop-hook snippet (below) into your Claude settings.
 4. **Pairing** — a QR code for the future phone app.
@@ -229,6 +234,29 @@ Notes:
 - The Deepgram key never leaves the harness — the phone streams audio to *your PC*, which talks to
   Deepgram.
 
+## Voice (text-to-speech): two providers
+
+Spoken replies come from one of two providers, chosen in desktop **Settings (⚙)** or on the phone's
+**Home** screen. Both write an mp3 to `~/.claude-voice-harness/audio/`, so replay (`/api/tts/:id`),
+desktop speakers and phone playback all behave identically regardless of provider.
+
+| Provider | Voice | Notes |
+| --- | --- | --- |
+| **Deepgram Aura-2** | 51 voices (`aura-2-*`) | **No extra signup** — same key and free credit as STT. Utility-grade: clear and fast, built for agent replies rather than narration. Streaming-first, so synthesis starts almost immediately. |
+| **ElevenLabs** | your account's voices | More expressive and natural. Needs its own key + subscription. |
+
+For short spoken command summaries — the thing this harness actually does — Aura-2 is usually plenty.
+Keep ElevenLabs if you care about voice quality.
+
+Defaults are chosen so nothing changes under you: if ElevenLabs is already configured it stays
+active; a fresh install (Deepgram key only) gets Aura-2. Switching providers only affects *new*
+replies — previously synthesized audio replays with the voice it was made in.
+
+`interactions.tts_chars` records characters synthesized per reply, so voice spend is auditable.
+
+> **Not yet:** streaming playback. Aura-2 can stream audio as it renders, but the local player takes
+> a file path rather than a pipe, so v1 writes the mp3 then plays it. Tracked as a follow-up.
+
 ## Two views per session: Terminal & Chat
 
 Each session has a **Terminal | Chat** toggle (desktop tabs and the phone session
@@ -341,12 +369,12 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/archive/reindex` | POST | force a rescan of the transcript corpus |
 | `/api/command` | POST | JSON `{text,sessionId}` — **text only**; audio never reaches a pty in one hop |
 | `/api/transcribe` | POST | multipart `audio` → `{text}` (batch STT; text goes to the command box) |
-| `/api/stt/mode` | GET · POST | dictation mode `{mode:'batch'\|'stream'}` — shared by desktop + phone |
+| `/api/settings` | GET · POST | non-secret prefs (`stt_mode`, `tts_provider`, voice ids) — phone-reachable; **API keys can be neither read nor written here** |
 | `/api/tts/:interactionId` | GET | replay cached mp3 |
 | `/api/tts/say` | POST | speak arbitrary `{text}` → mp3 |
 | `/api/hooks/stop` | POST | Claude Stop hook (localhost only) |
 | `/api/config/state` · `/api/config` | GET · POST | wizard config (localhost only) |
-| `/api/voices` · `/api/voices/preview` | GET · POST | ElevenLabs voices (localhost only) |
+| `/api/voices?provider=` · `/api/voices/preview` | GET · POST | voices for a TTS provider + sample (localhost only) |
 | `/api/tunnel/tailscale` | GET | Tailscale detection (localhost only) |
 | `/api/pairing/payload` · `/api/pairing/regen` | GET · POST | QR payload / new token (localhost only) |
 | `/ws` | WS | live `sessions` / `state` / `response` / `log` events |
