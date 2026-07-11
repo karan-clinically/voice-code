@@ -34,6 +34,7 @@ const insertSession = db.prepare(`
 const updState = db.prepare('UPDATE sessions SET state = ?, last_seen_at = ? WHERE id = ?');
 const touchSeen = db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?');
 const updLabel = db.prepare('UPDATE sessions SET label = ? WHERE id = ?');
+const updClaudeId = db.prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ?');
 const selAll = db.prepare('SELECT * FROM sessions ORDER BY id DESC');
 const selOne = db.prepare('SELECT * FROM sessions WHERE id = ?');
 
@@ -62,17 +63,21 @@ function decorate(row) {
 
 // Spawn a new session and register it in the DB. kind 'claude' launches Claude
 // Code directly; kind 'shell' launches PowerShell (for phone navigate-then-
-// launch-claude). The correlation token is injected as CVH_SESSION_ID so a Stop
-// hook can map back to this session (primary matching is by cwd).
-export async function createSession({ cwd, label = null, kind = 'claude' } = {}) {
+// launch-claude). Pass `resumeId` (a Claude session UUID) to reopen a past
+// conversation via `claude --resume <id>` — the cwd MUST be that transcript's
+// original directory or Claude reports "No conversation found". The correlation
+// token is injected as CVH_SESSION_ID so a Stop hook can map back to this session
+// (primary matching is by cwd).
+export async function createSession({ cwd, label = null, kind = 'claude', resumeId = null } = {}) {
   const token = randomUUID();
   const isShell = kind === 'shell';
+  const claudeArgs = resumeId ? ['--resume', resumeId] : [];
   const view = terminal.spawnSession({
     cwd,
     label,
     env: { CVH_SESSION_ID: token },
     command: isShell ? 'powershell.exe' : undefined,
-    args: isShell ? ['-NoLogo', '-NoExit'] : [],
+    args: isShell ? ['-NoLogo', '-NoExit'] : claudeArgs,
   });
   const git = await terminal.getGitInfo(view.cwd);
   const now = new Date().toISOString();
@@ -92,6 +97,9 @@ export async function createSession({ cwd, label = null, kind = 'claude' } = {})
   ptyIdByDb.set(dbId, view.id);
   tokenByDb.set(dbId, token);
   dbByToken.set(token, dbId);
+  // A resumed session already knows its Claude UUID — link it to its archive row
+  // up front (the Stop hook does the same for freshly-started sessions).
+  if (resumeId) updClaudeId.run(resumeId, dbId);
   log.info(`registered session db#${dbId} (pty ${view.id}) cwd=${view.cwd} repo=${git.repo || '-'}`);
   sessionEvents.emit('change');
   return getSession(dbId);
@@ -128,6 +136,15 @@ export function renameSession(id, label) {
   updLabel.run(label, Number(id));
   sessionEvents.emit('change');
   return getSession(id);
+}
+
+// Record the Claude Code session UUID for a live session (from the Stop hook, or
+// set up front for a resumed session). Idempotent: only writes on change.
+export function setClaudeSessionId(id, claudeSessionId) {
+  if (!claudeSessionId) return;
+  const row = selOne.get(Number(id));
+  if (!row || row.claude_session_id === claudeSessionId) return;
+  updClaudeId.run(claudeSessionId, Number(id));
 }
 
 const updKind = db.prepare('UPDATE sessions SET kind = ? WHERE id = ?');

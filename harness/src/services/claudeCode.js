@@ -116,6 +116,14 @@ function waitForCompletion(session, ptyId, sentAt, timeoutMs) {
 // in-flight command by CVH_SESSION_ID token (if forwarded) or cwd, else — if
 // exactly one command is in flight — that one.
 export function signalStop({ sessionId, cwd, lastAssistantMessage, stopReason, transcriptPath }) {
+  // Link the live session to its Claude transcript: session_id here is Claude's
+  // real session UUID (the archive key). Persisting it lets the archive flag a
+  // session that's currently live and cross-reference current <-> archived.
+  if (sessionId) {
+    const liveId = findSessionForBroadcast(sessionId, cwd);
+    if (liveId != null) sessions.setClaudeSessionId(liveId, sessionId);
+  }
+
   // Broadcast a 'turn' for every completed turn — including ones typed straight
   // into the terminal (no in-flight executeCommand). Lets the desktop speak the
   // reply on demand. Independent of the pending-command match below.
