@@ -54,10 +54,14 @@ export const transcribe = async (blob, ext) => {
 };
 export const commandText = (sessionId, text) => jpost('/api/command', { sessionId, text });
 
-// --- dictation (STT) ---
-// Shared batch|stream mode, persisted harness-side so it survives app restarts.
-export const getSttMode = async () => (await jget('/api/stt/mode')).mode || 'batch';
-export const setSttMode = (mode) => jpost('/api/stt/mode', { mode });
+// --- settings (non-secret prefs; API keys are NOT reachable from the phone) ---
+export const getSettings = () => jget('/api/settings');
+export const saveSettings = (patch) => jpost('/api/settings', patch);
+
+// Shared batch|stream dictation mode, persisted harness-side so it survives
+// app restarts and is the same setting the desktop sees.
+export const getSttMode = async () => (await getSettings()).stt_mode || 'batch';
+export const setSttMode = (mode) => saveSettings({ stt_mode: mode });
 export const sttWsUrl = (lang) => {
   const qs = new URLSearchParams();
   if (lang) qs.set('lang', lang);

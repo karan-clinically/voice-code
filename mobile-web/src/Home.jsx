@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { listSessions, createSession, transcribe } from './lib/api.js';
-import { MicButton, FolderPicker, SttModeToggle, basename } from './components.jsx';
+import { MicButton, FolderPicker, SttModeToggle, TtsProviderToggle, basename } from './components.jsx';
 
 export default function Home({ onOpen, onHistory, notify }) {
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
@@ -57,6 +57,15 @@ export default function Home({ onOpen, onHistory, notify }) {
             </div>
           </div>
           <SttModeToggle notify={notify} />
+        </div>
+        <div className="row" style={{ alignItems: 'center' }}>
+          <div style={{ flex: 1 }}>
+            <strong>Voice</strong>
+            <div className="muted">
+              Aura-2 is fast and clear (no extra signup); ElevenLabs is more expressive.
+            </div>
+          </div>
+          <TtsProviderToggle notify={notify} />
         </div>
       </div>
 

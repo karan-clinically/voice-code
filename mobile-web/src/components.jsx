@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { sessionScreen, fsList, getSttMode, setSttMode } from './lib/api.js';
+import { sessionScreen, fsList, getSttMode, setSttMode, getSettings, saveSettings } from './lib/api.js';
 import { tapRecord } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 
@@ -45,6 +45,49 @@ export function SttModeToggle({ notify }) {
       </button>
       <button className={'seg-btn' + (mode === 'stream' ? ' on' : '')} onClick={() => choose('stream')}>
         Live
+      </button>
+    </div>
+  );
+}
+
+// Which voice reads replies back. Mirrors the desktop setting (same config key);
+// the ElevenLabs option is offered only when a key for it exists on the PC — the
+// phone learns that as a boolean and never sees the key itself.
+export function TtsProviderToggle({ notify }) {
+  const [provider, setProvider] = useState('deepgram');
+  const [elevenOk, setElevenOk] = useState(false);
+
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        setElevenOk(!!s.elevenlabs_available);
+        setProvider(s.tts_provider || (s.elevenlabs_available ? 'elevenlabs' : 'deepgram'));
+      })
+      .catch(() => {});
+  }, []);
+
+  const choose = async (p) => {
+    const prev = provider;
+    setProvider(p); // optimistic
+    try {
+      await saveSettings({ tts_provider: p });
+    } catch (e) {
+      setProvider(prev);
+      notify?.(e.message);
+    }
+  };
+
+  return (
+    <div className="seg" title="Which voice reads Claude's replies back">
+      <button className={'seg-btn' + (provider === 'deepgram' ? ' on' : '')} onClick={() => choose('deepgram')}>
+        Aura-2
+      </button>
+      <button
+        className={'seg-btn' + (provider === 'elevenlabs' ? ' on' : '')}
+        onClick={() => elevenOk && choose('elevenlabs')}
+        disabled={!elevenOk}
+      >
+        ElevenLabs
       </button>
     </div>
   );
