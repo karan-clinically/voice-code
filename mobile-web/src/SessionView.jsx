@@ -1,18 +1,17 @@
 import React, { useState } from 'react';
-import { commandText, commandAudio, mediaUrl } from './lib/api.js';
+import { commandText, mediaUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
-import { MicButton, Terminal, basename } from './components.jsx';
+import { DictationMic, Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
 
-// Full-screen Claude session — terminal is the main view. The conversation mode
-// (VAD) code is retained in lib/audio.js but not surfaced here; the cleanup
-// toggle defaults on.
+// Full-screen Claude session — terminal is the main view. Voice dictates into the
+// command box for review; only Send reaches the pty. The conversation mode (VAD)
+// code is retained in lib/audio.js but not surfaced here.
 export default function SessionView({ session, onBack, notify }) {
   const [text, setText] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState(session.state || 'idle');
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
-  const cleanup = true;
   const title = 'Claude · ' + (session.label || basename(session.cwd));
 
   async function runResult(promise) {
@@ -32,13 +31,6 @@ export default function SessionView({ session, onBack, notify }) {
     setText('');
     setExpanded(false);
     runResult(commandText(session.id, t));
-  }
-  function sendAudio(blob, ext) {
-    const fd = new FormData();
-    fd.append('audio', blob, 'clip.' + ext);
-    fd.append('sessionId', session.id);
-    fd.append('cleanup', String(cleanup));
-    runResult(commandAudio(fd));
   }
 
   const stateCls = 'sv-state' + (state === 'working…' ? ' busy' : state === 'ready' ? ' ready' : '');
@@ -60,7 +52,7 @@ export default function SessionView({ session, onBack, notify }) {
         <>
           <Terminal sessionId={session.id} className="sv-term" />
           <div className="sv-bar">
-            <MicButton className="micbtn" onBlob={sendAudio} notify={notify} />
+            <DictationMic className="micbtn" text={text} setText={setText} notify={notify} />
             <textarea
               className={'sv-input' + (expanded ? ' expanded' : '')}
               rows={1}

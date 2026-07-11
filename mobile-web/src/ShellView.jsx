@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { sessionScreenPlain, sessionInput, launchClaudeIn, transcribe, sayBlobUrl } from './lib/api.js';
+import { sessionScreenPlain, sessionInput, launchClaudeIn, sayBlobUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
-import { MicButton, Terminal } from './components.jsx';
+import { DictationMic, Terminal } from './components.jsx';
 
 // Shell session: navigate with cd/ls (type or voice), hear the current
 // directory, then launch Claude in place.
@@ -73,17 +73,7 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
         <button className="primary" onClick={launch} disabled={launching}>🚀 Launch Claude</button>
       </div>
       <div className="sv-bar">
-        <MicButton
-          className="micbtn"
-          onBlob={async (blob, ext) => {
-            try {
-              run((await transcribe(blob, ext)).trim());
-            } catch (e) {
-              notify(e.message);
-            }
-          }}
-          notify={notify}
-        />
+        <DictationMic className="micbtn" text={cmd} setText={setCmd} notify={notify} />
         <textarea
           className="sv-input"
           rows={1}

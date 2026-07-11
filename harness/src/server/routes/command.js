@@ -1,31 +1,30 @@
-// POST /api/command — the voice pipeline. Accepts JSON {text, sessionId} or
-// multipart audio + sessionId. Flow: (STT if audio) -> type into session ->
-// wait for completion -> record interactions -> return response. Summary + TTS
-// are added in step 8.
+// POST /api/command — run text in a session. JSON {text, sessionId} only.
+// Flow: type into session -> wait for completion -> record interactions ->
+// return response (summary + TTS).
+//
+// Deliberately text-only: audio never reaches a pty in one hop. Voice goes
+// through /api/transcribe (batch) or /ws/stt (live), lands in the client's
+// command box for review, and is sent here only when the user presses Send.
 
 import { Router } from 'express';
-import multer from 'multer';
 import db from '../../db.js';
 import { getConfig } from '../../config.js';
 import { getSession } from '../../services/sessionManager.js';
 import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js';
 import { recordUserMessage } from '../../services/conversation.js';
-import { transcribeBatch } from '../../services/stt/index.js';
-import { refineTranscript } from '../../services/refine.js';
 import { synthesize } from '../../services/elevenlabs.js';
 import { playLocal } from '../../services/audio.js';
 import { broadcastResponse } from '../ws.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('command');
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 26 * 1024 * 1024 } });
 const router = Router();
 
 const insertInteraction = db.prepare(
   'INSERT INTO interactions (session_id, direction, text, summary, audio_path) VALUES (?, ?, ?, ?, ?)'
 );
 
-router.post('/', upload.single('audio'), async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const sessionId = req.body.sessionId || req.query.sessionId;
     if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
@@ -34,22 +33,9 @@ router.post('/', upload.single('audio'), async (req, res) => {
     if (!session) return res.status(404).json({ error: 'session not found' });
     if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
 
-    const fromAudio = !req.body.text && !!req.file;
-    let transcript = (req.body.text || '').trim();
-    if (!transcript && req.file) {
-      transcript = (await transcribeBatch(req.file.buffer, { language: req.body.language })).trim();
-    }
-    if (!transcript) return res.status(400).json({ error: 'no text or audio provided' });
-
-    // Wispr-Flow-style cleanup: rewrite raw dictation into a clean instruction.
-    // Applies to voice input only (typed text is already deliberate). Toggle via
-    // request `cleanup` flag, else the dictation_cleanup config (default on).
-    const wantCleanup =
-      req.body.cleanup !== undefined
-        ? req.body.cleanup === true || req.body.cleanup === 'true'
-        : getConfig('dictation_cleanup', 'on') !== 'off';
-    let sent = transcript;
-    if (fromAudio && wantCleanup) sent = await refineTranscript(transcript);
+    // The user reviewed this text in the command box and pressed Send.
+    const sent = (req.body.text || '').trim();
+    if (!sent) return res.status(400).json({ error: 'text is required' });
 
     insertInteraction.run(session.id, 'user', sent, null, null);
     recordUserMessage(session.id, sent); // Chat-view conversation log
@@ -82,9 +68,7 @@ router.post('/', upload.single('audio'), async (req, res) => {
     broadcastResponse({ sessionId: session.id, interactionId, summary, audioUrl });
 
     res.json({
-      transcript, // raw (what you said)
-      refined: sent, // what was actually sent to Claude (cleaned, if enabled)
-      cleaned: sent !== transcript,
+      transcript: sent, // what was sent to Claude
       responseText: result.text,
       summary,
       audioUrl,

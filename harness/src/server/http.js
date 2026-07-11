@@ -9,6 +9,7 @@ import { authMiddleware } from './auth.js';
 import { makeLogger } from '../util/logger.js';
 import sessionsRouter from './routes/sessions.js';
 import transcribeRouter from './routes/transcribe.js';
+import sttRouter from './routes/stt.js';
 import commandRouter from './routes/command.js';
 import hooksRouter from './routes/hooks.js';
 import ttsRouter from './routes/tts.js';
@@ -63,6 +64,7 @@ export function buildApp() {
 
   app.use('/api/sessions', sessionsRouter);
   app.use('/api/transcribe', transcribeRouter);
+  app.use('/api/stt', sttRouter);
   app.use('/api/command', commandRouter);
   app.use('/api/hooks', hooksRouter);
   app.use('/api/tts', ttsRouter);

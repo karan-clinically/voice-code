@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { listSessions, createSession, transcribe } from './lib/api.js';
-import { MicButton, FolderPicker, basename } from './components.jsx';
+import { MicButton, FolderPicker, SttModeToggle, basename } from './components.jsx';
 
 export default function Home({ onOpen, onHistory, notify }) {
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
@@ -46,6 +46,19 @@ export default function Home({ onOpen, onHistory, notify }) {
         <div className="spacer" />
         <button className="ghost" onClick={onHistory} title="Search & resume past sessions">🕘 History</button>
       </header>
+
+      <div className="card stack">
+        <div className="row" style={{ alignItems: 'center' }}>
+          <div style={{ flex: 1 }}>
+            <strong>Dictation</strong>
+            <div className="muted">
+              Batch transcribes when you stop; Live shows words as you speak. Either way the text lands in the box —
+              nothing sends until you tap Send.
+            </div>
+          </div>
+          <SttModeToggle notify={notify} />
+        </div>
+      </div>
 
       <div className="card stack">
         <h2>Start Claude in a folder</h2>

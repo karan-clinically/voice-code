@@ -53,7 +53,18 @@ export const transcribe = async (blob, ext) => {
   return (await jform('/api/transcribe', fd)).text || '';
 };
 export const commandText = (sessionId, text) => jpost('/api/command', { sessionId, text });
-export const commandAudio = (fd) => jform('/api/command', fd);
+
+// --- dictation (STT) ---
+// Shared batch|stream mode, persisted harness-side so it survives app restarts.
+export const getSttMode = async () => (await jget('/api/stt/mode')).mode || 'batch';
+export const setSttMode = (mode) => jpost('/api/stt/mode', { mode });
+export const sttWsUrl = (lang) => {
+  const qs = new URLSearchParams();
+  if (lang) qs.set('lang', lang);
+  if (token) qs.set('token', token);
+  const q = qs.toString();
+  return base.replace(/^http/, 'ws') + '/ws/stt' + (q ? '?' + q : '');
+};
 
 // --- session archive (past transcripts) ---
 export const searchArchive = (q = '', project = '') =>

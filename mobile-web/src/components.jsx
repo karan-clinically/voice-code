@@ -1,8 +1,54 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { sessionScreen, fsList } from './lib/api.js';
+import { sessionScreen, fsList, getSttMode, setSttMode } from './lib/api.js';
 import { tapRecord } from './lib/audio.js';
+import { useDictation } from './lib/dictation.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
+
+// Dictation mic bound to a text box: the transcript lands in `text` for review
+// and is NEVER sent — the caller's Send/Run button is the only way to the pty.
+// In stream mode the words appear live while speaking.
+export function DictationMic({ className, text, setText, notify }) {
+  const { recording, toggle } = useDictation({ text, setText, notify });
+  return (
+    <button
+      type="button"
+      className={(className || 'micbtn') + (recording ? ' rec' : '')}
+      onClick={toggle}
+      title={recording ? 'Tap to stop' : 'Tap to talk'}
+    >
+      🎙️
+    </button>
+  );
+}
+
+// Quick batch|stream toggle. Shared with the desktop (persisted harness-side).
+export function SttModeToggle({ notify }) {
+  const [mode, setMode] = useState('batch');
+  useEffect(() => {
+    getSttMode().then(setMode).catch(() => {});
+  }, []);
+  const choose = async (m) => {
+    const prev = mode;
+    setMode(m); // optimistic
+    try {
+      await setSttMode(m);
+    } catch (e) {
+      setMode(prev);
+      notify?.(e.message);
+    }
+  };
+  return (
+    <div className="seg" title="How voice reaches the box — nothing sends until you tap Send">
+      <button className={'seg-btn' + (mode !== 'stream' ? ' on' : '')} onClick={() => choose('batch')}>
+        Batch
+      </button>
+      <button className={'seg-btn' + (mode === 'stream' ? ' on' : '')} onClick={() => choose('stream')}>
+        Live
+      </button>
+    </div>
+  );
+}
 
 // Tap-to-talk mic. onBlob(blob, ext) receives the recording; caller decides what
 // to do (transcribe, or send as a command).

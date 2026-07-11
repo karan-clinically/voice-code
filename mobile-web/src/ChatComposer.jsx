@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionMode, sessionKey, attachFile, sayBlobUrl, transcribe } from './lib/api.js';
+import { sessionMode, sessionKey, attachFile, sayBlobUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
-import { MicButton } from './components.jsx';
+import { DictationMic } from './components.jsx';
 import PromptsModal from './PromptsModal.jsx';
 
 const MODES = ['ask', 'auto', 'plan', 'bypass'];
@@ -107,18 +107,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
           <span className="mode-zap">⚡</span> {MODE_LABEL[mode]}
         </button>
         <div className="composer-spacer" />
-        <MicButton
-          className="cbtn"
-          onBlob={async (blob, ext) => {
-            try {
-              const t = await transcribe(blob, ext);
-              if (t) insert(t);
-            } catch (e) {
-              notify(e.message);
-            }
-          }}
-          notify={notify}
-        />
+        <DictationMic className="cbtn" text={text} setText={setText} notify={notify} />
         <button className="cbtn" onClick={replay} aria-label="Replay last reply">🔊</button>
         <button className="cbtn" onClick={() => setShowPrompts(true)} aria-label="Saved prompts">/</button>
         <button className="cbtn" onClick={() => fileRef.current?.click()} aria-label="Attach">📎</button>
