@@ -29,13 +29,15 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 // chars from clients). Shift+Tab cycles the permission mode; Esc interrupts.
 const KEY_SEQS = { 'cycle-mode': '\x1b[Z', stop: '\x1b' };
 
-// Footer strings Claude Code shows for each permission mode -> our label.
+// Footer strings Claude Code shows for each permission mode -> our label. Require
+// the trailing "on" so boot-screen chatter (e.g. the "Auto mode is now available"
+// What's-New note) can't be mistaken for the active mode.
 function detectMode(screen) {
   const s = String(screen || '');
-  if (/accept edits/i.test(s)) return 'auto';
-  if (/auto mode/i.test(s)) return 'bypass';
-  if (/plan mode/i.test(s)) return 'plan';
-  return 'ask'; // "manual mode" / default
+  if (/accept edits on/i.test(s)) return 'auto';
+  if (/auto mode on/i.test(s)) return 'bypass';
+  if (/plan mode on/i.test(s)) return 'plan';
+  return 'ask'; // "manual mode on" / default
 }
 
 // Attachments are stored under a safe generated name; only a known set of
