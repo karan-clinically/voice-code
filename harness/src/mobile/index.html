@@ -151,8 +151,16 @@
 
   function err(m){ const e=$('err'); e.textContent=m; e.hidden=false; setTimeout(()=>e.hidden=true,6000); }
   function setState(s){ const el=$('state'); el.textContent=s; el.className='pill'+(s==='working…'?' busy':s==='ready'?' ready':''); }
-  async function jget(p){ const r=await fetch(base+p,{headers:H}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error||('HTTP '+r.status)); return d; }
-  async function jpost(p,b){ const r=await fetch(base+p,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(b||{})}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error||('HTTP '+r.status)); return d; }
+  // Parse a response tolerant of empty/non-JSON bodies (e.g. a 502 from the
+  // tunnel when the harness is down), with a human message.
+  async function parse(r){
+    const t=await r.text(); let d={};
+    if(t){ try{ d=JSON.parse(t); }catch{ d={}; } }
+    if(!r.ok) throw new Error(d.error || (r.status===502||r.status===503?'Harness offline — is it running on the PC?':('HTTP '+r.status)));
+    return d;
+  }
+  async function jget(p){ return parse(await fetch(base+p,{headers:H})); }
+  async function jpost(p,b){ return parse(await fetch(base+p,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(b||{})})); }
   function playAudioUrl(u){ lastAudio = base+u+(authQS?(u.includes('?')?'&':'?')+authQS:''); playUrl(lastAudio); }
 
   function show(m){
@@ -233,8 +241,7 @@
     setState('working…');
     try{
       const {body,headers}=factory();
-      const r=await fetch(base+'/api/command',{method:'POST',headers:{...H,...headers},body});
-      const d=await r.json(); if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+      const d=await parse(await fetch(base+'/api/command',{method:'POST',headers:{...H,...headers},body}));
       showResult(d); setState('ready');
       if(d.audioUrl) playAudioUrl(d.audioUrl);
     }catch(e){ setState('idle'); err(e.message); }
@@ -292,8 +299,7 @@
     cstatus('💭 Claude is working…'); setState('working…');
     try{
       const fd=new FormData(); fd.append('audio',blob,'clip.'+ext); fd.append('sessionId',sessionId); fd.append('cleanup',String(cleanupOn()));
-      const r=await fetch(base+'/api/command',{method:'POST',headers:H,body:fd}); const d=await r.json();
-      if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+      const d=await parse(await fetch(base+'/api/command',{method:'POST',headers:H,body:fd}));
       showResult(d); setState('ready');
       if(d.audioUrl){ cstatus('🔊 speaking…'); await speakAndWait(d.audioUrl); }
     }catch(e){ setState('idle'); err(e.message); }
@@ -319,7 +325,7 @@
   }
   async function transcribe(blob, ext){
     const fd=new FormData(); fd.append('audio',blob,'clip.'+ext);
-    const r=await fetch(base+'/api/transcribe',{method:'POST',headers:H,body:fd}); const d=await r.json(); if(!r.ok) throw new Error(d.error||('HTTP '+r.status)); return d.text||'';
+    const d=await parse(await fetch(base+'/api/transcribe',{method:'POST',headers:H,body:fd})); return d.text||'';
   }
   // claude mic → full command pipeline
   $('cmic').onclick=()=>record($('cmic'),(blob,ext)=>{ const fd=new FormData(); fd.append('audio',blob,'clip.'+ext); fd.append('sessionId',sessionId); fd.append('cleanup',String($('cleanup').checked)); sendClaude(()=>({body:fd,headers:{}})); });
