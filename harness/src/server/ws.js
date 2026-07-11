@@ -12,16 +12,19 @@ import { isLocalhost } from './auth.js';
 import { sessionEvents, listSessions } from '../services/sessionManager.js';
 import { events as claudeEvents } from '../services/claudeCode.js';
 import { createTermWss } from './wsTerm.js';
+import { createSttWss } from './wsStt.js';
 import { logEvents } from '../util/logger.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('ws');
 let wss = null;
 let wssTerm = null;
+let wssStt = null;
 
 export function attachWs(server) {
   wss = new WebSocketServer({ noServer: true });
   wssTerm = createTermWss(); // raw terminal transport (/ws/term)
+  wssStt = createSttWss(); // live speech-to-text relay (/ws/stt)
 
   server.on('upgrade', (req, socket, head) => {
     let pathname = '';
@@ -30,7 +33,8 @@ export function attachWs(server) {
     } catch {
       pathname = '';
     }
-    const target = pathname === '/ws' ? wss : pathname === '/ws/term' ? wssTerm : null;
+    const target =
+      pathname === '/ws' ? wss : pathname === '/ws/term' ? wssTerm : pathname === '/ws/stt' ? wssStt : null;
     if (!target) {
       socket.destroy();
       return;
