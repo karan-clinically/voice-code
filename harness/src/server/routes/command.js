@@ -6,9 +6,12 @@
 import { Router } from 'express';
 import multer from 'multer';
 import db from '../../db.js';
+import { getConfig } from '../../config.js';
 import { getSession } from '../../services/sessionManager.js';
-import { executeCommand } from '../../services/claudeCode.js';
+import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js';
 import { transcribe } from '../../services/whisper.js';
+import { synthesize } from '../../services/elevenlabs.js';
+import { playLocal } from '../../services/audio.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('command');
@@ -37,15 +40,35 @@ router.post('/', upload.single('audio'), async (req, res) => {
     insertInteraction.run(session.id, 'user', transcript, null, null);
 
     const result = await executeCommand(session, transcript);
+    const summary = summarizeForSpeech(result.text);
 
-    const claudeRow = insertInteraction.run(session.id, 'claude', result.text, null, null);
+    // Synthesize spoken summary (best-effort; a TTS failure must not fail the
+    // command — the text response is still returned).
+    let audioPath = null;
+    const voiceId = getConfig('elevenlabs_voice_id');
+    if (getConfig('elevenlabs_api_key') && voiceId && summary) {
+      try {
+        audioPath = (await synthesize(summary, voiceId)).path;
+      } catch (err) {
+        log.warn(`TTS failed: ${err.message}`);
+      }
+    }
+
+    const claudeRow = insertInteraction.run(session.id, 'claude', result.text, summary, audioPath);
+    const interactionId = Number(claudeRow.lastInsertRowid);
+
+    // Local speaker playback per configured target (fire-and-forget).
+    const target = getConfig('tts_playback_target', 'desktop');
+    if (audioPath && (target === 'desktop' || target === 'both')) {
+      playLocal(audioPath).catch(() => {});
+    }
 
     res.json({
       transcript,
       responseText: result.text,
-      summary: null, // step 8
-      audioUrl: null, // step 8
-      interactionId: Number(claudeRow.lastInsertRowid),
+      summary,
+      audioUrl: audioPath ? `/api/tts/${interactionId}` : null,
+      interactionId,
       via: result.via,
       stopReason: result.stopReason,
     });

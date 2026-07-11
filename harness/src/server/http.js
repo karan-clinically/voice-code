@@ -11,6 +11,7 @@ import sessionsRouter from './routes/sessions.js';
 import transcribeRouter from './routes/transcribe.js';
 import commandRouter from './routes/command.js';
 import hooksRouter from './routes/hooks.js';
+import ttsRouter from './routes/tts.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,7 @@ export function buildApp() {
   app.use('/api/transcribe', transcribeRouter);
   app.use('/api/command', commandRouter);
   app.use('/api/hooks', hooksRouter);
+  app.use('/api/tts', ttsRouter);
 
   // JSON 404 + error handler so nothing leaks HTML/stack traces.
   app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));

@@ -203,6 +203,34 @@ function isChrome(line) {
   return false;
 }
 
+// Rule-based summary for TTS (zero extra API cost). Claude Code responses are
+// long and full of code; never speak them raw. Strip code blocks (replaced with
+// a spoken note), markdown markers, collapse whitespace, and cap length — taking
+// first + last paragraph when very long.
+export function summarizeForSpeech(text, maxChars = 600) {
+  if (!text) return '';
+  let t = text;
+  // fenced code blocks -> spoken note
+  t = t.replace(/```[\s\S]*?```/g, (m) => {
+    const n = Math.max(1, m.split('\n').length - 2);
+    return ` (a code block of ${n} lines) `;
+  });
+  t = t.replace(/`([^`]+)`/g, '$1'); // inline code
+  t = t.replace(/^#{1,6}\s+/gm, ''); // headings
+  t = t.replace(/^\s*[-*+]\s+/gm, ''); // bullets
+  t = t.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1'); // emphasis
+  t = t.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
+  if (t.length <= maxChars) return t;
+
+  const paras = t.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (paras.length > 2) {
+    const combined = `${paras[0]} … ${paras[paras.length - 1]}`;
+    if (combined.length <= maxChars) return combined;
+    t = combined;
+  }
+  return `${t.slice(0, maxChars - 1).trim()}…`;
+}
+
 // Compare two directory paths tolerant of slash direction and trailing slash.
 function sameDir(a, b) {
   const norm = (p) => p.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
