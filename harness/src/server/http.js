@@ -53,8 +53,11 @@ export function buildApp() {
   // Mobile web client (served shell; its API calls are gated normally). Reached
   // from the phone browser over Tailscale — ideally via `tailscale serve` HTTPS
   // so the microphone works.
-  const mobilePage = join(__dirname, '../mobile/index.html');
-  app.get(['/m', '/mobile'], (req, res) => res.sendFile(mobilePage));
+  // React (Vite) build lives at mobile-web/dist; base is /m/, so assets are at
+  // /m/assets/*. The hand-written app is kept at ../mobile/index.legacy.html.
+  const mobileDist = join(__dirname, '../../../mobile-web/dist');
+  app.use('/m/assets', express.static(join(mobileDist, 'assets')));
+  app.get(['/m', '/m/', '/mobile'], (req, res) => res.sendFile(join(mobileDist, 'index.html')));
 
   app.use('/api/sessions', sessionsRouter);
   app.use('/api/transcribe', transcribeRouter);
