@@ -16,6 +16,19 @@ function tailscaleBin() {
   return 'tailscale';
 }
 
+// Re-assert `tailscale serve --bg <port>` so the harness re-claims the root path
+// if something else on the machine repoints it. No-ops/fails quietly if
+// Tailscale isn't present.
+export async function ensureServe(port) {
+  try {
+    await pexec(tailscaleBin(), ['serve', '--bg', String(port)], { timeout: 8000 });
+    return true;
+  } catch (err) {
+    log.warn(`tailscale serve re-pin failed: ${err.message}`);
+    return false;
+  }
+}
+
 export async function detectTailscale(port = 4620) {
   try {
     const { stdout } = await pexec(tailscaleBin(), ['status', '--json'], { timeout: 5000 });

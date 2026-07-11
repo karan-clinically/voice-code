@@ -15,6 +15,7 @@ import './db.js'; // side effect: open DB + run migrations
 import { getConfig } from './config.js';
 import { buildApp } from './server/http.js';
 import { attachWs } from './server/ws.js';
+import { ensureServe } from './services/tunnel.js';
 import { startReconciler, stopReconciler } from './services/sessionManager.js';
 import * as terminal from './services/terminal.js';
 import { makeLogger } from './util/logger.js';
@@ -33,6 +34,18 @@ server.on('error', (err) => {
 });
 
 startReconciler();
+
+// Self-heal the Tailscale serve mapping (something on this machine keeps
+// repointing the root path). Only keeps the loop if the first re-pin succeeds
+// (i.e. Tailscale is present). Disable with tailscale_serve=off.
+if (getConfig('tailscale_serve', 'on') !== 'off') {
+  ensureServe(PORT).then((ok) => {
+    if (!ok) return;
+    log.info('tailscale serve self-heal enabled (re-pin every 60s)');
+    const timer = setInterval(() => ensureServe(PORT).catch(() => {}), 60_000);
+    timer.unref?.();
+  });
+}
 
 let shuttingDown = false;
 function shutdown(signal) {
