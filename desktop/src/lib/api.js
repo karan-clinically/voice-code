@@ -85,15 +85,12 @@ export async function transcribeAudio(blob, ext = 'webm', { cleanup = true } = {
   return handle(await fetch(baseUrl + '/api/transcribe', { method: 'POST', body: fd }));
 }
 
-// Speak arbitrary text → returns an object URL for the mp3.
-export async function ttsSay(text) {
-  const r = await fetch(baseUrl + '/api/tts/say', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
-  if (!r.ok) throw new Error('tts failed');
-  return URL.createObjectURL(await r.blob());
+// Speak arbitrary text. Returns a URL for an <audio>/Audio element to fetch
+// itself, so playback starts on the first mp3 frames (~300ms) instead of after
+// the full render. Buffering this into a Blob first would throw the streaming
+// away — hand the URL to the element, don't fetch() it.
+export function ttsSayUrl(text) {
+  return `${baseUrl}/api/tts/say?text=${encodeURIComponent(text)}`;
 }
 
 // --- wizard / config ---

@@ -69,6 +69,20 @@ export async function synthesize(text, { voiceId } = {}) {
   return { id, path, filename, voiceId: voice, chars: text.length };
 }
 
+// Progressive synthesis. Deepgram starts returning mp3 frames long before the
+// render finishes (measured: ~300ms to first byte vs ~2000ms to last), so piping
+// these chunks straight to an <audio> element is what makes Aura-2 feel fast.
+// Buffering the whole response — which synthesize() above does — throws that away.
+export async function synthesizeStream(text, { voiceId } = {}) {
+  if (!deepgramKey()) throw new Error('Deepgram API key not configured');
+  if (!text || !text.trim()) throw new Error('empty text');
+  const voice = voiceId || getVoiceId();
+  if (!voice) throw new Error('no Deepgram voice selected');
+
+  const res = await deepgramClient().speak.v1.audio.generate({ text, model: voice, encoding: 'mp3' });
+  return { stream: res.stream(), voiceId: voice };
+}
+
 export async function listVoices() {
   return AURA2.map((id) => ({ voice_id: id, name: prettyName(id), category: 'aura-2' }));
 }

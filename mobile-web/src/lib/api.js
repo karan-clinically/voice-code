@@ -92,12 +92,11 @@ export const listPrompts = () => jget('/api/prompts');
 export const savePrompt = (text, label) => jpost('/api/prompts', { text, label });
 export const deletePrompt = (id) => jdelete(`/api/prompts/${id}`);
 
-export async function sayBlobUrl(text) {
-  const r = await fetch(base + '/api/tts/say', {
-    method: 'POST',
-    headers: { ...H, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
-  if (!r.ok) throw new Error('say failed');
-  return URL.createObjectURL(await r.blob());
+// Speak arbitrary text. Returns a URL for the <audio> element to fetch itself, so
+// playback starts on the first mp3 frames (~300ms) rather than after the full
+// render — buffering it into a Blob first would throw that streaming away.
+export function sayUrl(text) {
+  const qs = new URLSearchParams({ text });
+  if (token) qs.set('token', token);
+  return base + '/api/tts/say?' + qs.toString();
 }

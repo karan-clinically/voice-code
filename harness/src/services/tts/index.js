@@ -8,6 +8,10 @@
 // Deepgram Aura-2 is utility-grade — clear and fast, built for agent replies
 // rather than narration. Aura-2 needs no extra signup (same key as STT).
 
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { AUDIO_DIR } from '../../db.js';
 import { getConfig } from '../../config.js';
 import * as elevenlabs from './providers/elevenlabs.js';
 import * as deepgram from './providers/deepgram.js';
@@ -43,6 +47,35 @@ export async function synthesize(text, { provider, voiceId } = {}) {
   const name = providers[provider] ? provider : activeProviderName();
   const out = await providers[name].synthesize(text, { voiceId });
   return { ...out, provider: name };
+}
+
+// Progressive synthesis: returns the audio stream immediately so a client can
+// start playing on the first frames, plus `done` — a promise that resolves once
+// a full copy has been tee'd to the audio cache, so replay works exactly as
+// before. Both branches of the tee are drained independently, so the cache is
+// still written even if the listener hangs up early.
+export async function synthesizeStream(text, { provider, voiceId } = {}) {
+  const name = providers[provider] ? provider : activeProviderName();
+  const { stream, voiceId: voice } = await providers[name].synthesizeStream(text, { voiceId });
+
+  const id = randomUUID();
+  const filename = `${id}.mp3`;
+  const path = join(AUDIO_DIR, filename);
+  const [toClient, toCache] = stream.tee();
+
+  const done = (async () => {
+    const chunks = [];
+    const reader = toCache.getReader();
+    for (;;) {
+      const { done: end, value } = await reader.read();
+      if (end) break;
+      chunks.push(Buffer.from(value));
+    }
+    await writeFile(path, Buffer.concat(chunks));
+    return { id, path, filename, provider: name, voiceId: voice, chars: text.length };
+  })();
+
+  return { stream: toClient, done, provider: name, voiceId: voice };
 }
 
 export async function listVoices(provider) {

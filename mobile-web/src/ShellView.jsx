@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { sessionScreenPlain, sessionInput, launchClaudeIn, sayBlobUrl } from './lib/api.js';
+import { sessionScreenPlain, sessionInput, launchClaudeIn, sayUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { DictationMic, Terminal } from './components.jsx';
 
@@ -40,7 +40,7 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
   }
   async function whereami() {
     try {
-      playUrl(await sayBlobUrl(cwd ? 'You are in ' + cwd : 'Directory unknown'));
+      playUrl(sayUrl(cwd ? 'You are in ' + cwd : 'Directory unknown'));
     } catch (e) {
       notify(e.message);
     }

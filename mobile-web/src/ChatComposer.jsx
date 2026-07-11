@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionMode, sessionKey, attachFile, sayBlobUrl } from './lib/api.js';
+import { sessionMode, sessionKey, attachFile, sayUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { DictationMic } from './components.jsx';
 import PromptsModal from './PromptsModal.jsx';
@@ -53,7 +53,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   async function replay() {
     if (!lastAssistantText) return notify('Nothing to replay yet');
     try {
-      playUrl(await sayBlobUrl(lastAssistantText));
+      playUrl(sayUrl(lastAssistantText));
     } catch (e) {
       notify(e.message);
     }

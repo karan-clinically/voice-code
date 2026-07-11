@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionMode, sessionKey, ttsSay, transcribeAudio, configState, sttWsUrl } from '../lib/api.js';
+import { sessionMode, sessionKey, ttsSayUrl, transcribeAudio, configState, sttWsUrl } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
 import { startSttStream } from '../lib/sttStream.js';
 import PromptsModal from './PromptsModal.jsx';
@@ -135,8 +135,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   async function replay() {
     if (!lastAssistantText) return notify?.('Nothing to replay yet');
     try {
-      const url = await ttsSay(lastAssistantText);
-      new Audio(url).play().catch(() => {});
+      new Audio(ttsSayUrl(lastAssistantText)).play().catch(() => {});
     } catch (e) {
       notify?.('Replay failed: ' + e.message);
     }

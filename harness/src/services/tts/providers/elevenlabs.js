@@ -67,6 +67,32 @@ export async function synthesize(text, { voiceId, modelId, outputFormat } = {}) 
   return { id, path, filename, voiceId: voice, chars: text.length };
 }
 
+// Progressive synthesis via the /stream endpoint, so playback can start on the
+// first mp3 frames instead of waiting for the full render.
+export async function synthesizeStream(text, { voiceId, modelId, outputFormat } = {}) {
+  const apiKey = getConfig('elevenlabs_api_key');
+  if (!apiKey) throw new Error('ElevenLabs API key not configured');
+  const voice = voiceId || getVoiceId();
+  if (!voice) throw new Error('no ElevenLabs voice selected');
+  if (!text || !text.trim()) throw new Error('empty text');
+
+  const model = modelId || getConfig('tts_model', DEFAULT_MODEL);
+  const format = outputFormat || DEFAULT_FORMAT;
+  const url = `${BASE}/text-to-speech/${encodeURIComponent(voice)}/stream?output_format=${format}`;
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, model_id: model }),
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    log.error(`TTS stream HTTP ${resp.status}: ${body.slice(0, 200)}`);
+    throw new Error(`TTS failed (HTTP ${resp.status})`);
+  }
+  return { stream: resp.body, voiceId: voice };
+}
+
 // List available voices for the voice picker (wizard).
 export async function listVoices() {
   const apiKey = getConfig('elevenlabs_api_key');

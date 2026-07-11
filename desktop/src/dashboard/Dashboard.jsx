@@ -6,7 +6,7 @@ import {
   killSession,
   openWs,
   transcribeAudio,
-  ttsSay,
+  ttsSayUrl,
 } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
 import Tabs from './Tabs.jsx';
@@ -82,9 +82,9 @@ export default function Dashboard({ onOpenWizard }) {
     if (!speakRef.current || !text) return;
     if (activeRef.current != null && sessionId !== activeRef.current) return; // active session only
     try {
-      const url = await ttsSay(text);
+      // Hand the URL to the element so it streams the mp3 as it renders.
       if (audioRef.current) {
-        audioRef.current.src = url;
+        audioRef.current.src = ttsSayUrl(text);
         audioRef.current.play().catch(() => {});
       }
     } catch {
