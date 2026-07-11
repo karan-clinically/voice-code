@@ -16,7 +16,8 @@ import {
   listSessions, getSession, createSession, killSession, renameSession,
   sendInput, readScreen, readScreenColored, setKind,
 } from '../../services/sessionManager.js';
-import { getMessages, recordUserMessage } from '../../services/conversation.js';
+import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
+import { executeCommand } from '../../services/claudeCode.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('sessions-route');
@@ -82,21 +83,22 @@ router.get('/:id/messages', (req, res) => {
   res.json({ messages, lastId });
 });
 
-// Chat-view send: record the user turn, then submit it to the live session. The
-// assistant reply arrives via the Stop hook and shows up on the next poll.
+// Chat-view send: record the user turn and run it through the completion pipeline
+// in the background (types it in, waits, extracts the reply via the Stop hook or a
+// screen scrape — the same proven path as /command). The assistant reply is
+// recorded when the turn completes and shows up on the next /messages poll.
+// Responds immediately so the chat box stays snappy.
 router.post('/:id/chat', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
   const text = (req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'text is required' });
-  try {
-    recordUserMessage(session.id, text);
-    await sendInput(req.params.id, text, { submit: true });
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  recordUserMessage(session.id, text);
+  executeCommand(session, text)
+    .then((result) => recordAssistantMessage(session.id, result.text))
+    .catch((err) => log.warn(`chat turn failed for db#${session.id}: ${err.message}`));
+  res.json({ ok: true });
 });
 
 // Raw terminal input (shell navigation from the phone).
