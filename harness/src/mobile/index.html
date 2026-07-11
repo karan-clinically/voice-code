@@ -64,6 +64,7 @@
 
   <div id="secWarn" class="banner" hidden>Voice needs an HTTPS (secure) connection — open this via <code>tailscale serve</code>. Typing works either way.</div>
   <div id="err" class="banner err" hidden></div>
+  <audio id="player" playsinline></audio>
 
   <!-- HOME -->
   <div id="home">
@@ -131,11 +132,22 @@
 
   let mode = 'home', sessionId = null, screenTimer = null, lastAudio = null;
 
+  // --- audio unlock: mobile browsers block audio that plays seconds after a tap.
+  // Unlock one reused <audio> element on the first user gesture; then later
+  // programmatic playback (auto-play of Claude's spoken reply) is allowed. ---
+  const SILENT = 'data:audio/wav;base64,UklGRiwAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQgAAACAgICAgICAgA==';
+  const player = $('player');
+  let audioUnlocked = false;
+  function unlockAudio(){ if(audioUnlocked) return; audioUnlocked=true; try{ player.src=SILENT; const p=player.play(); if(p&&p.catch) p.catch(()=>{}); }catch{} }
+  document.addEventListener('touchend', unlockAudio, { once:true, passive:true });
+  document.addEventListener('click', unlockAudio, { once:true });
+  function playUrl(u){ try{ player.src=u; const p=player.play(); if(p&&p.catch) p.catch(()=>{ $('replay').classList.remove('hidden'); }); }catch{ $('replay').classList.remove('hidden'); } }
+
   function err(m){ const e=$('err'); e.textContent=m; e.hidden=false; setTimeout(()=>e.hidden=true,6000); }
   function setState(s){ const el=$('state'); el.textContent=s; el.className='pill'+(s==='working…'?' busy':s==='ready'?' ready':''); }
   async function jget(p){ const r=await fetch(base+p,{headers:H}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error||('HTTP '+r.status)); return d; }
   async function jpost(p,b){ const r=await fetch(base+p,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(b||{})}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error||('HTTP '+r.status)); return d; }
-  function playAudioUrl(u){ lastAudio = base+u+(authQS?(u.includes('?')?'&':'?')+authQS:''); new Audio(lastAudio).play().catch(()=>{}); }
+  function playAudioUrl(u){ lastAudio = base+u+(authQS?(u.includes('?')?'&':'?')+authQS:''); playUrl(lastAudio); }
 
   function show(m){
     mode=m;
@@ -192,7 +204,7 @@
   $('tinput').addEventListener('keydown',e=>{ if(e.key==='Enter') $('tsend').click(); });
   document.querySelectorAll('.quick button[data-cmd]').forEach(b=> b.onclick=()=>runShell(b.dataset.cmd));
   $('whereami').onclick=async()=>{
-    try{ const {promptCwd}=await jget('/api/sessions/'+sessionId+'/screen'); const text=promptCwd?('You are in '+promptCwd):'Directory unknown'; const r=await fetch(base+'/api/tts/say',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({text})}); if(r.ok){ new Audio(URL.createObjectURL(await r.blob())).play().catch(()=>{}); } }
+    try{ const {promptCwd}=await jget('/api/sessions/'+sessionId+'/screen'); const text=promptCwd?('You are in '+promptCwd):'Directory unknown'; const r=await fetch(base+'/api/tts/say',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({text})}); if(r.ok){ playUrl(URL.createObjectURL(await r.blob())); } }
     catch(e){ err(e.message); }
   };
   $('launchClaude').onclick=async()=>{
@@ -214,7 +226,7 @@
   }
   $('csend').onclick=()=>{ const t=$('ctext').value.trim(); if(!t) return; $('ctext').value=''; sendClaude(()=>({body:JSON.stringify({sessionId,text:t}),headers:{'Content-Type':'application/json'}})); };
   $('ctext').addEventListener('keydown',e=>{ if(e.key==='Enter') $('csend').click(); });
-  $('replay').onclick=()=>{ if(lastAudio) new Audio(lastAudio).play().catch(()=>{}); };
+  $('replay').onclick=()=>{ if(lastAudio) playUrl(lastAudio); };
 
   // ---------- shared audio recording ----------
   function pickMime(){ for(const m of ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg']) if(window.MediaRecorder&&MediaRecorder.isTypeSupported(m)) return m; return ''; }
