@@ -204,6 +204,57 @@ button.ghost:hover { background: var(--surface-2); }
 .hist-snip mark { background: var(--accent-tint); color: var(--accent); border-radius: 3px; padding: 0 2px; }
 .hist-resume { align-self: flex-start; margin-top: 3px; }
 
+/* Terminal|Chat segmented toggle */
+.seg { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 999px; overflow: hidden; }
+.seg-btn {
+  padding: 7px 14px; font-size: 13px; border: none; border-radius: 0;
+  background: var(--surface); color: var(--muted); box-shadow: none; font-weight: 500;
+}
+.seg-btn.on { background: var(--accent-tint); color: var(--accent); }
+.seg-btn + .seg-btn { border-left: 1px solid var(--border-strong); }
+
+/* Chat view (fills the session-view column) */
+.chat-scroll {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; gap: 12px; padding: 6px 2px 2px;
+}
+.chat-empty { text-align: center; color: var(--muted); font-size: 14px; line-height: 1.6; margin: auto; padding: 20px; }
+.chat-msg { display: flex; max-width: 100%; }
+.chat-msg.user { justify-content: flex-end; }
+.chat-msg.assistant { justify-content: flex-start; }
+.chat-bubble {
+  max-width: 85%; padding: 11px 14px; border-radius: var(--radius-lg);
+  border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-sm);
+  font-size: 15px; line-height: 1.5; overflow-wrap: anywhere;
+}
+.chat-msg.user .chat-bubble { background: var(--accent-tint); border-color: #abccc1; }
+.chat-plain { white-space: pre-wrap; }
+.chat-bubble > :first-child { margin-top: 0; }
+.chat-bubble > :last-child { margin-bottom: 0; }
+.chat-bubble p { margin: 0 0 8px; }
+.chat-bubble h1, .chat-bubble h2, .chat-bubble h3 { font-size: 16px; margin: 12px 0 6px; }
+.chat-bubble ul, .chat-bubble ol { margin: 4px 0 8px; padding-left: 20px; }
+.chat-bubble a { color: var(--accent); }
+.chat-bubble code {
+  font-family: var(--mono); font-size: 13px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px;
+}
+.chat-bubble pre {
+  background: var(--term-bg); color: var(--term-fg); border-radius: var(--radius);
+  padding: 10px 12px; overflow-x: auto; margin: 6px 0;
+}
+.chat-bubble pre code { background: none; border: none; padding: 0; color: inherit; font-size: 12.5px; line-height: 1.5; }
+.chat-bubble table { border-collapse: collapse; font-size: 13px; margin: 6px 0; display: block; overflow-x: auto; }
+.chat-bubble th, .chat-bubble td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.chat-bubble blockquote { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--border-strong); color: var(--muted); }
+
+.chat-bar { display: flex; align-items: flex-end; gap: 8px; flex: 0 0 auto; }
+.chat-input {
+  flex: 1 1 auto; resize: none; height: 48px; max-height: 40vh; overflow-y: auto;
+  font-family: var(--mono); font-size: 14px; line-height: 1.35;
+}
+.chat-send { flex: 0 0 auto; height: 48px; }
+
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 code { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--border);

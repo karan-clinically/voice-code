@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { commandText, commandAudio, mediaUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { MicButton, Terminal, basename } from './components.jsx';
+import ChatView from './ChatView.jsx';
 
 // Full-screen Claude session — terminal is the main view. The conversation mode
 // (VAD) code is retained in lib/audio.js but not surfaced here; the cleanup
@@ -10,6 +11,7 @@ export default function SessionView({ session, onBack, notify }) {
   const [text, setText] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState(session.state || 'idle');
+  const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
   const cleanup = true;
   const title = 'Claude · ' + (session.label || basename(session.cwd));
 
@@ -46,28 +48,39 @@ export default function SessionView({ session, onBack, notify }) {
       <div className="sv-top">
         <button className="ghost sv-back" onClick={onBack}>←</button>
         <div className="sv-title">{title}</div>
+        <div className="seg">
+          <button className={'seg-btn' + (mode !== 'chat' ? ' on' : '')} onClick={() => setMode('terminal')}>Terminal</button>
+          <button className={'seg-btn' + (mode === 'chat' ? ' on' : '')} onClick={() => setMode('chat')}>Chat</button>
+        </div>
       </div>
-      <Terminal sessionId={session.id} className="sv-term" />
-      <div className="sv-bar">
-        <MicButton className="micbtn" onBlob={sendAudio} notify={notify} />
-        <textarea
-          className={'sv-input' + (expanded ? ' expanded' : '')}
-          rows={1}
-          placeholder="Type a command…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onFocus={() => setExpanded(true)}
-          onBlur={() => !text.trim() && setExpanded(false)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              sendText();
-            }
-          }}
-        />
-        <button className="primary sv-send" onClick={sendText}>Send</button>
-      </div>
-      <div className={stateCls}>{state}</div>
+
+      {mode === 'chat' ? (
+        <ChatView session={session} notify={notify} />
+      ) : (
+        <>
+          <Terminal sessionId={session.id} className="sv-term" />
+          <div className="sv-bar">
+            <MicButton className="micbtn" onBlob={sendAudio} notify={notify} />
+            <textarea
+              className={'sv-input' + (expanded ? ' expanded' : '')}
+              rows={1}
+              placeholder="Type a command…"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onFocus={() => setExpanded(true)}
+              onBlur={() => !text.trim() && setExpanded(false)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendText();
+                }
+              }}
+            />
+            <button className="primary sv-send" onClick={sendText}>Send</button>
+          </div>
+          <div className={stateCls}>{state}</div>
+        </>
+      )}
     </div>
   );
 }

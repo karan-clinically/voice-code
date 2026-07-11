@@ -60,6 +60,10 @@ export const searchArchive = (q = '', project = '') =>
 export const archiveProjects = () => jget('/api/archive/projects');
 export const resumeArchive = (uuid) => jpost(`/api/archive/${encodeURIComponent(uuid)}/resume`);
 
+// --- chat view (conversation log) ---
+export const sessionMessages = (id, after = 0) => jget(`/api/sessions/${id}/messages?after=${after}`);
+export const sendChat = (id, text) => jpost(`/api/sessions/${id}/chat`, { text });
+
 export async function sayBlobUrl(text) {
   const r = await fetch(base + '/api/tts/say', {
     method: 'POST',
