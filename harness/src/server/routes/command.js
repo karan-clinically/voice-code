@@ -12,6 +12,7 @@ import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js
 import { transcribe } from '../../services/whisper.js';
 import { synthesize } from '../../services/elevenlabs.js';
 import { playLocal } from '../../services/audio.js';
+import { broadcastResponse } from '../ws.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('command');
@@ -63,11 +64,14 @@ router.post('/', upload.single('audio'), async (req, res) => {
       playLocal(audioPath).catch(() => {});
     }
 
+    const audioUrl = audioPath ? `/api/tts/${interactionId}` : null;
+    broadcastResponse({ sessionId: session.id, interactionId, summary, audioUrl });
+
     res.json({
       transcript,
       responseText: result.text,
       summary,
-      audioUrl: audioPath ? `/api/tts/${interactionId}` : null,
+      audioUrl,
       interactionId,
       via: result.via,
       stopReason: result.stopReason,

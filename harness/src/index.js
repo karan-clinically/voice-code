@@ -14,6 +14,7 @@ try {
 import './db.js'; // side effect: open DB + run migrations
 import { getConfig } from './config.js';
 import { buildApp } from './server/http.js';
+import { attachWs } from './server/ws.js';
 import { startReconciler, stopReconciler } from './services/sessionManager.js';
 import * as terminal from './services/terminal.js';
 import { makeLogger } from './util/logger.js';
@@ -25,6 +26,7 @@ const app = buildApp();
 const server = app.listen(PORT, '0.0.0.0', () => {
   log.info(`harness listening on http://0.0.0.0:${PORT}`);
 });
+attachWs(server);
 server.on('error', (err) => {
   log.error(`server error: ${err.message}`);
   process.exit(1);
