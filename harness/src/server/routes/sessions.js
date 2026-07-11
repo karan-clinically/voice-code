@@ -14,7 +14,7 @@ import db from '../../db.js';
 import { getConfig } from '../../config.js';
 import {
   listSessions, getSession, createSession, killSession, renameSession,
-  sendInput, readScreen, setKind,
+  sendInput, readScreen, readScreenColored, setKind,
 } from '../../services/sessionManager.js';
 import { makeLogger } from '../../util/logger.js';
 
@@ -90,8 +90,11 @@ router.get('/:id/screen', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'session not found' });
   try {
     const full = req.query.full === '1' || req.query.full === 'true';
+    const color = req.query.color === '1' || req.query.color === 'true';
     const screen = await readScreen(req.params.id, { full });
-    res.json({ screen, promptCwd: parsePromptCwd(screen) });
+    const resp = { screen, promptCwd: parsePromptCwd(screen) };
+    if (color) resp.html = await readScreenColored(req.params.id, { full });
+    res.json(resp);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

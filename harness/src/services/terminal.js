@@ -172,6 +172,101 @@ export async function captureScreenFlushed(id, opts) {
   return captureScreen(id, opts);
 }
 
+// --- colored HTML rendering (preserves the terminal's actual cell colors) ---
+
+const BASE16 = [
+  '#000000', '#cd0000', '#00cd00', '#cdcd00', '#0000ee', '#cd00cd', '#00cdcd', '#e5e5e5',
+  '#7f7f7f', '#ff0000', '#00ff00', '#ffff00', '#5c5cff', '#ff00ff', '#00ffff', '#ffffff',
+];
+const CUBE = [0, 95, 135, 175, 215, 255];
+
+function palette(n) {
+  if (n < 16) return BASE16[n];
+  if (n < 232) {
+    const i = n - 16;
+    return rgb(CUBE[Math.floor(i / 36) % 6], CUBE[Math.floor(i / 6) % 6], CUBE[i % 6]);
+  }
+  const v = 8 + (n - 232) * 10;
+  return rgb(v, v, v);
+}
+function rgb(r, g, b) {
+  return `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+}
+function rgbHex(n) {
+  return `#${(n & 0xffffff).toString(16).padStart(6, '0')}`;
+}
+function esc(s) {
+  return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+}
+function cellKey(cell) {
+  let fg = null;
+  let bg = null;
+  if (!cell.isFgDefault()) fg = cell.isFgRGB() ? rgbHex(cell.getFgColor()) : palette(cell.getFgColor());
+  if (!cell.isBgDefault()) bg = cell.isBgRGB() ? rgbHex(cell.getBgColor()) : palette(cell.getBgColor());
+  const bold = cell.isBold ? !!cell.isBold() : false;
+  if (cell.isInverse && cell.isInverse()) {
+    const t = fg;
+    fg = bg || '#0d0d10';
+    bg = t || '#cfe3cf';
+  }
+  return `${fg || ''}|${bg || ''}|${bold ? 1 : 0}`;
+}
+function spanFor(key, text) {
+  const [fg, bg, bold] = key.split('|');
+  if (!fg && !bg && bold !== '1') return esc(text);
+  let style = '';
+  if (fg) style += `color:${fg};`;
+  if (bg) style += `background:${bg};`;
+  if (bold === '1') style += 'font-weight:700;';
+  return `<span style="${style}">${esc(text)}</span>`;
+}
+
+// Render the buffer as colored HTML (one <span> run per style change per line),
+// capped to the last `maxLines` for payload/perf. Lines joined by \n (client
+// renders in a white-space:pre element).
+export function captureColoredHtml(id, { full = false, maxLines = 600 } = {}) {
+  const s = sessions.get(id);
+  if (!s) throw new Error(`session ${id} not found`);
+  const term = s.term;
+  const buf = term.buffer.active;
+  let start = full ? 0 : buf.baseY;
+  const end = full ? buf.length : buf.baseY + term.rows;
+  if (end - start > maxLines) start = end - maxLines;
+
+  const out = [];
+  for (let y = start; y < end; y++) {
+    const line = buf.getLine(y);
+    if (!line) {
+      out.push('');
+      continue;
+    }
+    let html = '';
+    let key = null;
+    let run = '';
+    for (let x = 0; x < term.cols; x++) {
+      const cell = line.getCell(x);
+      if (!cell) continue;
+      if (cell.getWidth() === 0) continue; // wide-char trailing slot
+      const chars = cell.getChars() || ' ';
+      const k = cellKey(cell);
+      if (k !== key) {
+        if (run) html += spanFor(key, run);
+        key = k;
+        run = '';
+      }
+      run += chars;
+    }
+    if (run) html += spanFor(key, run);
+    out.push(html.replace(/\s+$/, ''));
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
+}
+
+export async function captureColoredHtmlFlushed(id, opts) {
+  await flush(id);
+  return captureColoredHtml(id, opts);
+}
+
 export function listSessions() {
   return [...sessions.values()].map(publicView);
 }

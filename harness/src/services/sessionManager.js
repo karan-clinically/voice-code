@@ -150,6 +150,12 @@ export async function readScreen(id, opts) {
   return terminal.captureScreenFlushed(ptyId, opts);
 }
 
+export async function readScreenColored(id, opts) {
+  const ptyId = ptyIdByDb.get(Number(id));
+  if (!ptyId) throw new Error('session has no live PTY');
+  return terminal.captureColoredHtmlFlushed(ptyId, opts);
+}
+
 export function killSession(id) {
   const ptyId = ptyIdByDb.get(Number(id));
   if (!ptyId) return false;
