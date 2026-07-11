@@ -31,23 +31,38 @@ export function MicButton({ className, onBlob, notify }) {
 }
 
 // Colored terminal view: polls the session's rendered HTML and injects it,
-// keeping scroll pinned to the bottom unless the user scrolled up.
+// keeping scroll pinned to the bottom unless the user scrolled up. The 120-col
+// TUI is auto-scaled (zoom) to fit the phone width so it reads without horizontal
+// scroll; if it would get illegibly small it stops scaling and scrolls instead.
 export function Terminal({ sessionId, className }) {
-  const ref = useRef(null);
+  const outerRef = useRef(null);
+  const innerRef = useRef(null);
   useEffect(() => {
     let stop = false;
+    const fit = () => {
+      const outer = outerRef.current;
+      const inner = innerRef.current;
+      if (!outer || !inner) return;
+      inner.style.zoom = '1';
+      const natural = inner.scrollWidth;
+      const cs = getComputedStyle(outer);
+      // clientWidth includes padding; the inner sits in the content box, so fit to
+      // the content width (minus horizontal padding) to leave zero horizontal scroll.
+      const avail = outer.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      inner.style.zoom = natural > avail && avail > 0 ? String(Math.max(0.4, avail / natural)) : '1';
+    };
     const poll = async () => {
       if (stop) return;
       try {
         const { html } = await sessionScreen(sessionId);
-        const el = ref.current;
-        if (el && el.dataset.h !== (html || '')) {
-          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-          const sx = el.scrollLeft;
-          el.innerHTML = html || '';
-          el.dataset.h = html || '';
-          el.scrollLeft = sx;
-          if (atBottom) el.scrollTop = el.scrollHeight;
+        const outer = outerRef.current;
+        const inner = innerRef.current;
+        if (outer && inner && inner.dataset.h !== (html || '')) {
+          const atBottom = outer.scrollHeight - outer.scrollTop - outer.clientHeight < 60;
+          inner.innerHTML = html || '';
+          inner.dataset.h = html || '';
+          fit();
+          if (atBottom) outer.scrollTop = outer.scrollHeight;
         }
       } catch {
         /* transient */
@@ -55,12 +70,19 @@ export function Terminal({ sessionId, className }) {
     };
     poll();
     const t = setInterval(poll, 2000);
+    const onResize = () => fit();
+    window.addEventListener('resize', onResize);
     return () => {
       stop = true;
       clearInterval(t);
+      window.removeEventListener('resize', onResize);
     };
   }, [sessionId]);
-  return <div ref={ref} className={'screen ' + (className || '')} />;
+  return (
+    <div ref={outerRef} className={'screen ' + (className || '')}>
+      <div ref={innerRef} className="screen-inner" />
+    </div>
+  );
 }
 
 // Full-screen folder browser over the PC's filesystem.
