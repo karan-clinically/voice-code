@@ -15,7 +15,8 @@ const allStmt = db.prepare('SELECT key, value FROM config');
 // Config keys that may also be supplied via environment variable (env wins only
 // when the DB value is absent). Keeps secrets out of the repo during testing.
 const ENV_FALLBACK = {
-  openai_api_key: 'OPENAI_API_KEY',
+  deepgram_api_key: 'DEEPGRAM_API_KEY',
+  openai_api_key: 'OPENAI_API_KEY', // optional — dictation cleanup only (refine.js)
   elevenlabs_api_key: 'ELEVENLABS_API_KEY',
   elevenlabs_voice_id: 'ELEVENLABS_VOICE_ID',
   pairing_token: 'PAIRING_TOKEN',
@@ -46,8 +47,10 @@ export function getAllConfig() {
 }
 
 // The keys the harness needs before it can run the full voice pipeline.
+// Deepgram powers STT; `openai_api_key` is optional (dictation cleanup only) so
+// it is not gated here.
 export const REQUIRED_KEYS = [
-  'openai_api_key',
+  'deepgram_api_key',
   'elevenlabs_api_key',
   'elevenlabs_voice_id',
   'pairing_token',

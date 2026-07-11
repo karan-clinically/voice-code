@@ -1,10 +1,11 @@
 // POST /api/transcribe — multipart audio (field "audio") -> { text }.
-// STT only (PhoneWhisper "dictate into a field" mode). The OpenAI key stays
-// server-side.
+// Batch STT ("dictate into a field" mode) via Deepgram. The transcript is placed
+// into the client's command box for review — it is never injected into a pty
+// here. The Deepgram key stays server-side.
 
 import { Router } from 'express';
 import multer from 'multer';
-import { transcribe } from '../../services/whisper.js';
+import { transcribeBatch } from '../../services/stt/index.js';
 import { refineTranscript } from '../../services/refine.js';
 import { makeLogger } from '../../util/logger.js';
 
@@ -16,9 +17,7 @@ router.post('/', upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'no audio file in field "audio"' });
     const raw = (
-      await transcribe(req.file.buffer, req.file.originalname || 'audio.wav', {
-        language: req.body.language,
-      })
+      await transcribeBatch(req.file.buffer, { language: req.body.language })
     ).trim();
     // Optional Wispr-style dictation cleanup (desktop push-to-talk sets this) so
     // the text dropped at the prompt reads as a clean instruction, not raw ASR.
