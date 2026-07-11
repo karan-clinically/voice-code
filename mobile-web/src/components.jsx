@@ -120,26 +120,23 @@ export function MicButton({ className, onBlob, notify }) {
 }
 
 // Colored terminal view: polls the session's rendered HTML and injects it,
-// keeping scroll pinned to the bottom unless the user scrolled up. The 120-col
-// TUI is auto-scaled (zoom) to fit the phone width so it reads without horizontal
-// scroll; if it would get illegibly small it stops scaling and scrolls instead.
+// keeping scroll pinned to the bottom unless the user scrolled up. Renders at a
+// readable, user-adjustable font (A−/A+, persisted); wide lines scroll INSIDE the
+// terminal box, so the page itself never scrolls horizontally.
 export function Terminal({ sessionId, className }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
+  const [fontPx, setFontPx] = useState(() => {
+    const v = parseInt(localStorage.getItem('cvh_term_font') || '', 10);
+    return v >= 8 && v <= 22 ? v : 13;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('cvh_term_font', String(fontPx));
+  }, [fontPx]);
+
   useEffect(() => {
     let stop = false;
-    const fit = () => {
-      const outer = outerRef.current;
-      const inner = innerRef.current;
-      if (!outer || !inner) return;
-      inner.style.zoom = '1';
-      const natural = inner.scrollWidth;
-      const cs = getComputedStyle(outer);
-      // clientWidth includes padding; the inner sits in the content box, so fit to
-      // the content width (minus horizontal padding) to leave zero horizontal scroll.
-      const avail = outer.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-      inner.style.zoom = natural > avail && avail > 0 ? String(Math.max(0.4, avail / natural)) : '1';
-    };
     const poll = async () => {
       if (stop) return;
       try {
@@ -148,9 +145,10 @@ export function Terminal({ sessionId, className }) {
         const inner = innerRef.current;
         if (outer && inner && inner.dataset.h !== (html || '')) {
           const atBottom = outer.scrollHeight - outer.scrollTop - outer.clientHeight < 60;
+          const sx = outer.scrollLeft; // preserve horizontal scroll across refreshes
           inner.innerHTML = html || '';
           inner.dataset.h = html || '';
-          fit();
+          outer.scrollLeft = sx;
           if (atBottom) outer.scrollTop = outer.scrollHeight;
         }
       } catch {
@@ -159,17 +157,23 @@ export function Terminal({ sessionId, className }) {
     };
     poll();
     const t = setInterval(poll, 2000);
-    const onResize = () => fit();
-    window.addEventListener('resize', onResize);
     return () => {
       stop = true;
       clearInterval(t);
-      window.removeEventListener('resize', onResize);
     };
   }, [sessionId]);
+
+  const bump = (d) => setFontPx((f) => Math.max(8, Math.min(22, f + d)));
+
   return (
-    <div ref={outerRef} className={'screen ' + (className || '')}>
-      <div ref={innerRef} className="screen-inner" />
+    <div className={'term-wrap ' + (className || '')}>
+      <div className="term-fontctl">
+        <button onClick={() => bump(-1)} aria-label="Smaller font">A−</button>
+        <button onClick={() => bump(1)} aria-label="Larger font">A+</button>
+      </div>
+      <div ref={outerRef} className="screen">
+        <div ref={innerRef} className="screen-inner" style={{ fontSize: fontPx + 'px' }} />
+      </div>
     </div>
   );
 }
