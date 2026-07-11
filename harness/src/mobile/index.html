@@ -43,6 +43,23 @@
     background:#0d0d10; color:#c8c8d0; border:1px solid var(--border); border-radius:10px; padding:10px;
     height:44vh; overflow:auto; white-space:pre; word-break:normal; -webkit-overflow-scrolling:touch; }
   .screen span { white-space:pre; }
+
+  /* full-screen Claude session view */
+  #claude:not(.hidden){ position:fixed; inset:0; z-index:10; background:var(--bg); display:flex; flex-direction:column; gap:8px;
+    padding:calc(env(safe-area-inset-top) + 6px) 10px calc(env(safe-area-inset-bottom) + 8px); }
+  .sv-top { display:flex; align-items:center; gap:10px; flex:0 0 auto; }
+  .sv-back { width:42px; height:42px; flex:0 0 auto; font-size:18px; padding:0; }
+  .sv-title { font-size:14px; font-weight:600; color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #cscreen.sv-term { flex:1 1 auto; min-height:0; height:auto; }
+  .sv-bar { display:flex; align-items:flex-end; gap:8px; flex:0 0 auto; }
+  .micbtn { flex:0 0 auto; width:46px; height:46px; padding:0; border-radius:50%; background:var(--accent); color:var(--accent-fg); border:none; font-size:20px; }
+  .micbtn.rec { background:var(--err); color:#fff; animation:pulse 1.1s infinite; }
+  .sv-input { flex:1 1 auto; resize:none; height:46px; max-height:42vh; line-height:1.35; padding:12px; overflow-y:auto; transition:height .15s ease; }
+  .sv-input.expanded { height:150px; }
+  .sv-send { flex:0 0 auto; height:46px; }
+  .sv-state { flex:0 0 auto; text-align:center; font-size:12px; color:var(--muted); }
+  .sv-state.busy { color:var(--warn); }
+  .sv-state.ready { color:var(--ok); }
   .muted { color:var(--muted); font-size:13px; }
   .quick { display:flex; gap:6px; flex-wrap:wrap; }
   .quick button { padding:7px 12px; font-size:13px; }
@@ -136,20 +153,31 @@
     </div>
   </div>
 
-  <!-- CLAUDE -->
+  <!-- CLAUDE — full-screen session view (terminal is the main screen) -->
   <div id="claude" class="hidden">
-    <div id="cscreen" class="screen" style="height:40vh"></div>
-    <button id="cmic" class="mic" style="height:90px; margin-top:10px">🎙️ Tap to talk</button>
-    <div class="row" style="margin-top:8px">
-      <button id="convo" style="flex:1">🔁 Start conversation</button>
-      <label class="row" style="flex:0 0 auto; gap:6px; font-size:13px"><input type="checkbox" id="cleanup" checked style="width:auto" /> ✨ Clean up</label>
+    <div class="sv-top">
+      <button id="cback" class="ghost sv-back">←</button>
+      <div id="ctitle" class="sv-title">Claude</div>
     </div>
-    <div id="convostatus" class="muted" style="min-height:18px; margin:6px 2px"></div>
-    <div class="row">
-      <input id="ctext" placeholder="…or type a command" enterkeyhint="send" />
-      <button id="csend" class="primary">Send</button>
+    <div id="cscreen" class="screen sv-term"></div>
+
+    <!-- conversation mode: hidden from view, code retained -->
+    <div id="convwrap" class="hidden">
+      <div class="row">
+        <button id="convo" style="flex:1">🔁 Start conversation</button>
+        <label class="row" style="flex:0 0 auto; gap:6px; font-size:13px"><input type="checkbox" id="cleanup" checked style="width:auto" /> ✨ Clean up</label>
+      </div>
+      <div id="convostatus" class="muted"></div>
     </div>
-    <div class="card" id="result" hidden>
+
+    <div class="sv-bar">
+      <button id="cmic" class="micbtn" title="Tap to talk">🎙️</button>
+      <textarea id="ctext" class="sv-input" rows="1" placeholder="Type a command…" enterkeyhint="send"></textarea>
+      <button id="csend" class="primary sv-send">Send</button>
+    </div>
+    <div id="cstate" class="sv-state">idle</div>
+
+    <div class="card" id="result" hidden style="display:none">
       <div class="k">You said</div><div id="transcript"></div>
       <div id="heard" class="muted" style="font-size:12px"></div>
       <div class="k" style="margin-top:10px">Claude</div><div id="summary"></div>
@@ -197,7 +225,7 @@
   function playUrl(u){ try{ player.src=u; const p=player.play(); if(p&&p.catch) p.catch(()=>{ $('replay').classList.remove('hidden'); }); }catch{ $('replay').classList.remove('hidden'); } }
 
   function err(m){ const e=$('err'); e.textContent=m; e.hidden=false; setTimeout(()=>e.hidden=true,6000); }
-  function setState(s){ const el=$('state'); el.textContent=s; el.className='pill'+(s==='working…'?' busy':s==='ready'?' ready':''); }
+  function setState(s){ const el=$('state'); el.textContent=s; el.className='pill'+(s==='working…'?' busy':s==='ready'?' ready':''); const cs=$('cstate'); if(cs){ cs.textContent=s; cs.className='sv-state'+(s==='working…'?' busy':s==='ready'?' ready':''); } }
   // Parse a response tolerant of empty/non-JSON bodies (e.g. a 502 from the
   // tunnel when the harness is down), with a human message.
   async function parse(r){
@@ -244,11 +272,11 @@
   function openSession(s){
     sessionId=s.id; curCwd=s.cwd||'';
     if((s.kind||'claude')==='shell'){ $('title').textContent='Terminal'; show('terminal'); }
-    else { $('title').textContent='Claude · '+(s.label||(s.cwd||'').split(/[\\/]/).pop()); setState(s.state); show('claude'); }
+    else { const t='Claude · '+(s.label||(s.cwd||'').split(/[\\/]/).pop()); $('title').textContent=t; $('ctitle').textContent=t; setState(s.state); show('claude'); }
   }
   $('startClaude').onclick=async()=>{
     const cwd=$('claudePath').value.trim();
-    try{ const s=await jpost('/api/sessions',{kind:'claude',cwd:cwd||undefined,label:cwd?cwd.split(/[\\/]/).pop():null}); sessionId=s.id; curCwd=s.cwd||''; $('title').textContent='Claude · '+(s.label||s.cwd); setState('idle'); show('claude'); }
+    try{ const s=await jpost('/api/sessions',{kind:'claude',cwd:cwd||undefined,label:cwd?cwd.split(/[\\/]/).pop():null}); sessionId=s.id; curCwd=s.cwd||''; const t='Claude · '+(s.label||s.cwd); $('title').textContent=t; $('ctitle').textContent=t; setState('idle'); show('claude'); }
     catch(e){ err(e.message); }
   };
   $('startShell').onclick=async()=>{
@@ -297,7 +325,7 @@
   $('launchClaude').onclick=async()=>{
     if(screenTimer){ clearInterval(screenTimer); screenTimer=null; } // stop terminal title updates
     setState('working…');
-    try{ await jpost('/api/sessions/'+sessionId+'/launch-claude',{}); setTimeout(()=>{ setState('idle'); $('title').textContent='Claude · '+(curCwd||''); show('claude'); }, 3000); }
+    try{ await jpost('/api/sessions/'+sessionId+'/launch-claude',{}); setTimeout(()=>{ setState('idle'); const t='Claude · '+(curCwd||''); $('title').textContent=t; $('ctitle').textContent=t; show('claude'); }, 3000); }
     catch(e){ setState('idle'); err(e.message); }
   };
 
@@ -319,7 +347,10 @@
       if(d.audioUrl) playAudioUrl(d.audioUrl);
     }catch(e){ setState('idle'); err(e.message); }
   }
-  $('csend').onclick=()=>{ const t=$('ctext').value.trim(); if(!t) return; $('ctext').value=''; sendClaude(()=>({body:JSON.stringify({sessionId,text:t}),headers:{'Content-Type':'application/json'}})); };
+  $('csend').onclick=()=>{ const t=$('ctext').value.trim(); if(!t) return; $('ctext').value=''; $('ctext').classList.remove('expanded'); $('ctext').blur(); sendClaude(()=>({body:JSON.stringify({sessionId,text:t}),headers:{'Content-Type':'application/json'}})); };
+  $('ctext').addEventListener('focus',()=>$('ctext').classList.add('expanded'));
+  $('ctext').addEventListener('blur',()=>{ if(!$('ctext').value.trim()) $('ctext').classList.remove('expanded'); });
+  $('cback').onclick=()=>$('back').click();
 
   // ---------- continuous conversation (voice-activity detection) ----------
   const convo={ on:false, stream:null, ctx:null, analyser:null, rec:null, chunks:[], speech:false, silenceStart:0, speechStart:0, startAt:0, tId:null };
@@ -380,7 +411,7 @@
   }
   function speakAndWait(u){ return new Promise(res=>{ const full=base+u+(authQS?(u.includes('?')?'&':'?')+authQS:''); lastAudio=full; player.src=full; player.onended=()=>{ player.onended=null; res(); }; const p=player.play(); if(p&&p.catch) p.catch(()=>res()); }); }
   $('convo').onclick=()=>{ convo.on?convoStop():convoStart(); };
-  $('ctext').addEventListener('keydown',e=>{ if(e.key==='Enter') $('csend').click(); });
+  $('ctext').addEventListener('keydown',e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); $('csend').click(); } });
   $('replay').onclick=()=>{ if(lastAudio) playUrl(lastAudio); };
 
   // ---------- shared audio recording ----------
