@@ -16,3 +16,5 @@ audio/
 # electron build artifacts
 desktop/release/
 test.wav
+harness-run.cmd
+start-harness.vbs
