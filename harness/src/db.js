@@ -111,6 +111,21 @@ function migrate(db) {
       prompts, responses, title, uuid UNINDEXED
     );
   `);
+
+  // Conversation log for the Chat view. Harness-spawned sessions don't persist a
+  // transcript to disk while live, so the harness records the conversation here:
+  // assistant turns from the Stop hook, user turns from the chat box / /command,
+  // and a one-time backfill of prior history when a session is resumed.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id  INTEGER NOT NULL,
+      role        TEXT NOT NULL,   -- 'user' | 'assistant'
+      text        TEXT NOT NULL,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+  `);
 }
 
 export default db;

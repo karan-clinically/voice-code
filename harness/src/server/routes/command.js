@@ -9,6 +9,7 @@ import db from '../../db.js';
 import { getConfig } from '../../config.js';
 import { getSession } from '../../services/sessionManager.js';
 import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js';
+import { recordUserMessage } from '../../services/conversation.js';
 import { transcribe } from '../../services/whisper.js';
 import { refineTranscript } from '../../services/refine.js';
 import { synthesize } from '../../services/elevenlabs.js';
@@ -51,6 +52,7 @@ router.post('/', upload.single('audio'), async (req, res) => {
     if (fromAudio && wantCleanup) sent = await refineTranscript(transcript);
 
     insertInteraction.run(session.id, 'user', sent, null, null);
+    recordUserMessage(session.id, sent); // Chat-view conversation log
 
     const result = await executeCommand(session, sent);
     const summary = summarizeForSpeech(result.text);

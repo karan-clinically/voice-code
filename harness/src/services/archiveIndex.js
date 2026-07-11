@@ -10,14 +10,14 @@
 
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import db from '../db.js';
+import { PROJECTS_DIR, cleanPrompt, extractText } from './transcript.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('archive');
 
-export const PROJECTS_DIR = process.env.CVH_PROJECTS_DIR || join(homedir(), '.claude', 'projects');
+export { PROJECTS_DIR };
 
 // Cap accumulated FTS text per column so a pathologically long session can't
 // bloat the DB. Real prose rarely approaches this; search still finds long
@@ -54,31 +54,6 @@ const writeOne = db.transaction((meta, prompts, responses) => {
   delFts.run(meta.uuid);
   insFts.run(prompts, responses, meta.title || '', meta.uuid);
 });
-
-// Strip harness-injected wrappers (slash-command caveats, command metadata,
-// system reminders) so a session that began with `/clear` gets a clean title
-// and snippet from its first *real* instruction rather than the caveat block.
-function cleanPrompt(t) {
-  return String(t)
-    .replace(/<local-command-[a-z]*>[\s\S]*?<\/local-command-[a-z]*>/gi, '')
-    .replace(/<command-(name|message|args|contents)>[\s\S]*?<\/command-(name|message|args|contents)>/gi, '')
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
-    .replace(/<\/?[a-z-]+>/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Extract human/assistant prose from a message.content (string OR block array).
-function extractText(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text)
-      .join('\n');
-  }
-  return '';
-}
 
 // Stream-parse one transcript into metadata + capped FTS text.
 function parseTranscript(filePath, uuid, projectDir) {

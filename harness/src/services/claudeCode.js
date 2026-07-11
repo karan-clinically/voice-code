@@ -12,6 +12,7 @@
 import { EventEmitter } from 'node:events';
 import * as terminal from './terminal.js';
 import * as sessions from './sessionManager.js';
+import { recordAssistantMessage } from './conversation.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('claude');
@@ -130,6 +131,9 @@ export function signalStop({ sessionId, cwd, lastAssistantMessage, stopReason, t
   if (typeof lastAssistantMessage === 'string' && lastAssistantMessage.trim()) {
     const turnDbId = findSessionForBroadcast(sessionId, cwd);
     if (turnDbId != null) {
+      // Record the full assistant text for the Chat view (single source of truth
+      // for assistant turns — fires for every input path incl. terminal-typed).
+      recordAssistantMessage(turnDbId, lastAssistantMessage);
       const spoken = summarizeForSpeech(lastAssistantMessage);
       if (spoken) events.emit('turn', { sessionId: turnDbId, text: spoken });
     }

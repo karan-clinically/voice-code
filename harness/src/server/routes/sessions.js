@@ -16,6 +16,7 @@ import {
   listSessions, getSession, createSession, killSession, renameSession,
   sendInput, readScreen, readScreenColored, setKind,
 } from '../../services/sessionManager.js';
+import { getMessages, recordUserMessage } from '../../services/conversation.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('sessions-route');
@@ -68,6 +69,34 @@ router.get('/:id/history', (req, res) => {
     created_at: r.created_at,
   }));
   res.json({ interactions });
+});
+
+// Chat-view conversation log. ?after=<id> returns only newer messages so the
+// client can poll incrementally.
+router.get('/:id/messages', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  const after = Number(req.query.after) || 0;
+  const messages = getMessages(req.params.id, after);
+  const lastId = messages.length ? messages[messages.length - 1].id : after;
+  res.json({ messages, lastId });
+});
+
+// Chat-view send: record the user turn, then submit it to the live session. The
+// assistant reply arrives via the Stop hook and shows up on the next poll.
+router.post('/:id/chat', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  const text = (req.body?.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'text is required' });
+  try {
+    recordUserMessage(session.id, text);
+    await sendInput(req.params.id, text, { submit: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Raw terminal input (shell navigation from the phone).

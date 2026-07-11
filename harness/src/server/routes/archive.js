@@ -16,6 +16,7 @@ import {
   searchArchive, getArchivePrompts, getArchiveMeta, listProjects, reindex,
 } from '../../services/archiveIndex.js';
 import { createSession } from '../../services/sessionManager.js';
+import { backfillFromTranscript } from '../../services/conversation.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('archive-route');
@@ -73,6 +74,9 @@ router.post('/:uuid/resume', async (req, res) => {
       kind: 'claude',
       resumeId: meta.uuid,
     });
+    // Seed the Chat view with the prior conversation from the on-disk transcript
+    // (best-effort; the live session itself won't rewrite it).
+    backfillFromTranscript(session.id, meta.uuid).catch(() => {});
     log.info(`resumed archive ${meta.uuid} as session db#${session.id}`);
     res.status(201).json(session);
   } catch (err) {
