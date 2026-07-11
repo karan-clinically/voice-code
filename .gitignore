@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+out/
+*.log
+.env
+.env.local
+.DS_Store
+Thumbs.db
+
+# harness runtime data (lives in ~/.claude-voice-harness, but ignore any stray local copies)
+harness.db
+harness.db-*
+audio/
+
+# electron build artifacts
+desktop/release/
