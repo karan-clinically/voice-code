@@ -10,7 +10,7 @@ import { getConfig } from '../../config.js';
 import { getSession } from '../../services/sessionManager.js';
 import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js';
 import { recordUserMessage } from '../../services/conversation.js';
-import { transcribe } from '../../services/whisper.js';
+import { transcribeBatch } from '../../services/stt/index.js';
 import { refineTranscript } from '../../services/refine.js';
 import { synthesize } from '../../services/elevenlabs.js';
 import { playLocal } from '../../services/audio.js';
@@ -37,7 +37,7 @@ router.post('/', upload.single('audio'), async (req, res) => {
     const fromAudio = !req.body.text && !!req.file;
     let transcript = (req.body.text || '').trim();
     if (!transcript && req.file) {
-      transcript = (await transcribe(req.file.buffer, req.file.originalname || 'audio.wav')).trim();
+      transcript = (await transcribeBatch(req.file.buffer, { language: req.body.language })).trim();
     }
     if (!transcript) return res.status(400).json({ error: 'no text or audio provided' });
 
