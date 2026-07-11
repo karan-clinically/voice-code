@@ -9,10 +9,12 @@ import { mkdirSync } from 'node:fs';
 
 export const DATA_DIR = process.env.CVH_DATA_DIR || join(homedir(), '.claude-voice-harness');
 export const AUDIO_DIR = join(DATA_DIR, 'audio');
+export const UPLOADS_DIR = join(DATA_DIR, 'uploads');
 export const DB_PATH = join(DATA_DIR, 'harness.db');
 
 // recursive:true creates DATA_DIR too, and is a no-op if they already exist.
 mkdirSync(AUDIO_DIR, { recursive: true });
+mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL'); // concurrent reads while the harness writes
@@ -125,6 +127,16 @@ function migrate(db) {
       created_at  TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+  `);
+
+  // Global reusable prompt snippets for the chat composer's "/" picker.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS saved_prompts (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      text        TEXT NOT NULL,
+      label       TEXT,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
   `);
 }
 

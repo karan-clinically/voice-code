@@ -7,14 +7,15 @@
 // The spawn model (node-pty) means sessions are created here, unlike the plan's
 // tmux model where sessions were discovered from an external multiplexer.
 
-import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { resolve, join, extname } from 'node:path';
 import { Router } from 'express';
-import db from '../../db.js';
+import multer from 'multer';
+import db, { UPLOADS_DIR } from '../../db.js';
 import { getConfig } from '../../config.js';
 import {
   listSessions, getSession, createSession, killSession, renameSession,
-  sendInput, readScreen, readScreenColored, setKind,
+  sendInput, sendRawKey, readScreen, readScreenColored, setKind,
 } from '../../services/sessionManager.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand } from '../../services/claudeCode.js';
@@ -22,6 +23,25 @@ import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('sessions-route');
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+// Allowlisted raw key sequences the chat composer may send (no arbitrary control
+// chars from clients). Shift+Tab cycles the permission mode; Esc interrupts.
+const KEY_SEQS = { 'cycle-mode': '\x1b[Z', stop: '\x1b' };
+
+// Footer strings Claude Code shows for each permission mode -> our label.
+function detectMode(screen) {
+  const s = String(screen || '');
+  if (/accept edits/i.test(s)) return 'auto';
+  if (/auto mode/i.test(s)) return 'bypass';
+  if (/plan mode/i.test(s)) return 'plan';
+  return 'ask'; // "manual mode" / default
+}
+
+// Attachments are stored under a safe generated name; only a known set of
+// extensions is allowed. Filenames from the client are never trusted.
+const ATTACH_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.txt', '.md', '.csv', '.json']);
+let attachCounter = 0;
 
 const selHistory = db.prepare(
   'SELECT id, direction, text, summary, audio_path, created_at FROM interactions WHERE session_id = ? ORDER BY id ASC'
@@ -99,6 +119,51 @@ router.post('/:id/chat', async (req, res) => {
     .then((result) => recordAssistantMessage(session.id, result.text))
     .catch((err) => log.warn(`chat turn failed for db#${session.id}: ${err.message}`));
   res.json({ ok: true });
+});
+
+// Send an allowlisted control key to the session (mode-cycle / stop).
+router.post('/:id/key', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  const seq = KEY_SEQS[req.body?.key];
+  if (!seq) return res.status(400).json({ error: 'unknown key' });
+  try {
+    sendRawKey(req.params.id, seq);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Current permission mode, read off the TUI footer.
+router.get('/:id/mode', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  try {
+    const screen = await readScreen(req.params.id, { full: false });
+    res.json({ mode: detectMode(screen) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Attachment upload: store the file under a safe name and return its local path
+// so the client can drop it into the message (Claude Code reads local paths).
+router.post('/:id/attach', upload.single('file'), (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!req.file) return res.status(400).json({ error: 'no file' });
+  const ext = extname(req.file.originalname || '').toLowerCase();
+  if (!ATTACH_EXT.has(ext)) return res.status(415).json({ error: `unsupported type: ${ext || '?'}` });
+  try {
+    const name = `att-${Date.now()}-${attachCounter++}${ext}`;
+    const dest = join(UPLOADS_DIR, name);
+    writeFileSync(dest, req.file.buffer);
+    res.status(201).json({ path: dest });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Raw terminal input (shell navigation from the phone).

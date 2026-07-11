@@ -161,6 +161,15 @@ export async function sendInput(id, text, opts) {
   return terminal.sendText(ptyId, text, opts);
 }
 
+// Send a raw key sequence (control chars) to a session's PTY — for the chat
+// composer's mode-cycle (Shift+Tab) and stop (Esc). Callers pass only
+// allowlisted sequences.
+export function sendRawKey(id, seq) {
+  const ptyId = ptyIdByDb.get(Number(id));
+  if (!ptyId) throw new Error('session has no live PTY');
+  return terminal.sendRaw(ptyId, seq);
+}
+
 export async function readScreen(id, opts) {
   const ptyId = ptyIdByDb.get(Number(id));
   if (!ptyId) throw new Error('session has no live PTY');
