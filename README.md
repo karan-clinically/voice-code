@@ -161,10 +161,14 @@ audio is cached at `~/.claude-voice-harness/audio/` (replay via `GET /api/tts/:i
 
 ---
 
-## Using it from your phone (mobile web client)
+## Using it from your phone (mobile web app)
 
-The harness serves a mobile page at **`/m`** — no native app needed. Open it in your
-phone's browser over Tailscale.
+The harness serves a mobile web app at **`/m`** — no native app needed. It's a **React + Vite**
+app (`mobile-web/` workspace) styled to the MDpearls design system.
+
+> **Build step:** the harness serves `mobile-web/dist`, so after any UI change run
+> `npm run build --workspace mobile-web`. (The old hand-written version is kept at
+> `harness/src/mobile/index.legacy.html`, unserved.)
 
 1. Install Tailscale on the phone (same tailnet as the PC).
 2. Enable HTTPS so the microphone works (browsers block mic on plain HTTP):
@@ -175,17 +179,27 @@ phone's browser over Tailscale.
    automatic TLS). Because it proxies as localhost, no token is needed on that URL.
 3. On the phone, open `https://<your-machine>.<tailnet>.ts.net/m`.
 
-The mobile page lets you, entirely from the phone:
-- **Start Claude in a folder** — type/speak a path, Claude launches there.
-- **Start a shell to navigate** — opens PowerShell in your projects base (`C:\AI` by default,
-  set via the `mobile_base_dir` config key). `cd`/`ls` by typing or voice, tap **🔊 Where am I**
-  to hear the current directory, then **🚀 Launch Claude** to hand off — after which you send
-  commands (and slash-commands) by voice or text and hear the spoken summary.
+Entirely from the phone you can:
+- **Start Claude in a folder** — type/speak a path, or **📁 Browse** the PC's folders to pick one.
+- **Start a shell to navigate** — PowerShell in your projects base (`C:\AI` by default, via the
+  `mobile_base_dir` config key). `cd`/`ls` by typing or voice, **🔊 Where am I** to hear the current
+  directory, then **🚀 Launch Claude** to hand off.
+- **Full-screen session view** — a live, colour-rendered terminal (the real Claude Code TUI),
+  with a mic + expanding text field; voice input is cleaned up (Wispr-style, gpt-4o-mini) before
+  Claude sees it, and Claude's spoken reply auto-plays.
 - **Resume** any live session.
 
-> A `502` on the phone means the harness isn't running on the PC (the tunnel has nothing to
-> forward to) — start the desktop app or the harness. If the tunnel mapping drifts, re-run
-> `tailscale serve --bg 4620`.
+> A `502` on the phone means either the harness isn't running on the PC, or something repointed the
+> Tailscale `serve` root off port 4620. The harness **self-heals** the `serve` mapping every 60s
+> (disable with `tailscale_serve=off`); to fix manually: `tailscale serve --bg 4620`.
+
+## Keeping the harness running
+
+For the phone to work whenever the PC is on, the harness must run independently. This session set up
+a **restart-loop launcher** (`start-harness.vbs` + `harness-run.cmd` at the repo root, gitignored)
+registered in the Windows **Startup folder** (`ClaudeVoiceHarness.vbs`) — it auto-starts at logon and
+relaunches node within ~3s if it ever exits. Remove it by deleting `ClaudeVoiceHarness.vbs` from the
+Startup folder. Alternatively, launch the desktop app (it manages the harness in the tray).
 
 ## Data & config locations
 
@@ -201,7 +215,11 @@ The mobile page lets you, entirely from the phone:
   out of the PC speakers, tell us — there's a more robust WAV/`SoundPlayer` path to switch to.
 - **Electron** has an open `npm audit` advisory set (mostly macOS/edge-case); bump to the latest
   Electron patch before any wider distribution.
-- **Mobile** (PhoneWhisper fork) is Phase 2 and not in this repo yet.
+- **Phone access** is the React web app at `/m` over Tailscale (above) — no native app needed. The
+  Stop hook makes completion detection instant; without it the harness falls back to output
+  stabilization.
+- **Config keys of note:** `dictation_cleanup` (on/off), `cleanup_model`, `mobile_base_dir`,
+  `tailscale_serve` (self-heal on/off), `tts_playback_target` (`desktop`\|`phone`\|`both`).
 
 ---
 
@@ -210,13 +228,18 @@ The mobile page lets you, entirely from the phone:
 | Route | Method | Notes |
 |---|---|---|
 | `/api/health` | GET | `{ok, version}` |
-| `/api/sessions` | GET/POST | list / spawn (`{cwd,label}`) |
+| `/api/sessions` | GET/POST | list / spawn (`{cwd,label,kind}`; kind `claude`\|`shell`) |
 | `/api/sessions/:id` | GET | one session |
 | `/api/sessions/:id/history` | GET | interactions |
+| `/api/sessions/:id/screen` | GET | rendered terminal (`?full=1&color=1` for colored HTML) |
+| `/api/sessions/:id/input` | POST | raw shell input `{text}` |
+| `/api/sessions/:id/launch-claude` | POST | run `claude` in a shell session |
 | `/api/sessions/:id/kill` `/rename` | POST | manage |
-| `/api/command` | POST | JSON `{text,sessionId}` or multipart `audio`+`sessionId` |
+| `/api/fs/list` | GET | list subdirs/drives for the folder picker (localhost only) |
+| `/api/command` | POST | JSON `{text,sessionId}` or multipart `audio`+`sessionId`+`cleanup` |
 | `/api/transcribe` | POST | multipart `audio` → `{text}` (STT only) |
 | `/api/tts/:interactionId` | GET | replay cached mp3 |
+| `/api/tts/say` | POST | speak arbitrary `{text}` → mp3 |
 | `/api/hooks/stop` | POST | Claude Stop hook (localhost only) |
 | `/api/config/state` · `/api/config` | GET · POST | wizard config (localhost only) |
 | `/api/voices` · `/api/voices/preview` | GET · POST | ElevenLabs voices (localhost only) |
