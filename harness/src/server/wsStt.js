@@ -4,7 +4,13 @@
 //   server -> client  {type:'stt_partial', text}   running transcript (interim +
 //                                                    committed) — render live in
 //                                                    the command box
-//                     {type:'stt_final', text}      settled text on mic release
+//                     {type:'stt_final', text, tidying}
+//                                                   verbatim text on mic release;
+//                                                    tidying=true means a cleaned
+//                                                    version is on its way
+//                     {type:'stt_cleaned', text}    Wispr-style tidied text — swap
+//                                                    it in unless the user has
+//                                                    already edited the box
 //                     {type:'error', error, spoken} Deepgram failed mid-stream;
 //                                                    the client falls back to a
 //                                                    batch upload of the clip
@@ -18,7 +24,9 @@
 // Send.
 
 import { WebSocketServer } from 'ws';
+import { getConfig } from '../config.js';
 import { createStream } from '../services/stt/index.js';
+import { refineTranscript } from '../services/refine.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('wsStt');
@@ -40,10 +48,29 @@ export function createSttWss() {
     let finished = false;
     const pending = []; // audio frames that arrived before the Deepgram socket was ready
 
-    const sendFinal = (text) => {
+    // Two-stage finish. Deepgram gives us a verbatim transcript (smart_format adds
+    // punctuation/casing, nothing more) — it does NOT organise your thoughts. So we
+    // send the raw text the instant the mic is released, keeping the live-dictation
+    // feel, then run the Wispr-style cleanup pass (services/refine.js: strips
+    // fillers and false starts, tightens the phrasing) and send the tidied version
+    // a beat later. The client swaps it in unless the user has already touched the
+    // box. Cleanup is fail-open, so a missing OpenAI key just means no second event.
+    const sendFinal = async (text) => {
       if (finished) return;
       finished = true;
-      send(ws, { type: 'stt_final', text: (text || '').trim() });
+      const raw = (text || '').trim();
+      const wantCleanup = raw && getConfig('dictation_cleanup', 'on') !== 'off';
+      send(ws, { type: 'stt_final', text: raw, tidying: !!wantCleanup });
+      if (!wantCleanup) return;
+      try {
+        const cleaned = (await refineTranscript(raw)).trim();
+        // Only speak up if it actually changed — no pointless re-render.
+        if (cleaned && cleaned !== raw) send(ws, { type: 'stt_cleaned', text: cleaned });
+        else send(ws, { type: 'stt_cleaned', text: raw });
+      } catch (err) {
+        log.warn(`cleanup failed: ${err.message}`);
+        send(ws, { type: 'stt_cleaned', text: raw }); // clear the client's "tidying…" state
+      }
     };
 
     try {

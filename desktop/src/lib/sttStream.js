@@ -13,7 +13,7 @@ function pickMime() {
   return '';
 }
 
-export async function startSttStream({ wsUrl, onPartial, onFinal, onError }) {
+export async function startSttStream({ wsUrl, onPartial, onFinal, onCleaned, onError }) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const mimeType = pickMime();
   const chunks = [];
@@ -41,8 +41,12 @@ export async function startSttStream({ wsUrl, onPartial, onFinal, onError }) {
     else if (m.type === 'stt_final') {
       if (!finished) {
         finished = true;
-        onFinal?.(m.text || '');
+        // Verbatim text, straight away. `tidying` means a cleaned-up rewrite is
+        // coming in a moment via stt_cleaned.
+        onFinal?.(m.text || '', { tidying: !!m.tidying });
       }
+    } else if (m.type === 'stt_cleaned') {
+      onCleaned?.(m.text || '');
     } else if (m.type === 'error') {
       const recovered = chunks.length ? new Blob(chunks, { type: mimeType || 'audio/webm' }) : null;
       onError?.({ error: m.error, spoken: m.spoken, recovered });

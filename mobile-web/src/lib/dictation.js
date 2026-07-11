@@ -10,19 +10,34 @@ import { startSttStream } from './sttStream.js';
 
 export function useDictation({ text, setText, notify }) {
   const [recording, setRecording] = useState(false);
+  const [tidying, setTidying] = useState(false);
   const recRef = useRef(null);
   const streamRef = useRef(null);
   const baseRef = useRef('');
   const textRef = useRef('');
+  const wroteRef = useRef(null); // the exact string we last put in the box
   textRef.current = text;
 
   // Merge dictation onto whatever was in the box when the mic opened.
   const apply = useCallback(
     (t) => {
       const b = baseRef.current;
-      setText(b ? b.replace(/\s*$/, '') + ' ' + (t || '') : t || '');
+      const next = b ? b.replace(/\s*$/, '') + ' ' + (t || '') : t || '';
+      wroteRef.current = next;
+      setText(next);
     },
     [setText]
+  );
+
+  // The tidied rewrite lands ~0.5s after the raw text. Only swap it in if the box
+  // still holds exactly what we put there — if the user started editing (or sent),
+  // their text wins.
+  const applyCleaned = useCallback(
+    (t) => {
+      setTidying(false);
+      if (textRef.current === wroteRef.current) apply(t);
+    },
+    [apply]
   );
 
   // Drop the mic if the view unmounts mid-utterance.
@@ -58,10 +73,15 @@ export function useDictation({ text, setText, notify }) {
         streamRef.current = await startSttStream({
           wsUrl: sttWsUrl(),
           onPartial: apply,
-          onFinal: apply,
+          onFinal: (t, { tidying: willTidy } = {}) => {
+            apply(t); // verbatim, instantly
+            setTidying(!!willTidy);
+          },
+          onCleaned: applyCleaned,
           onError: async ({ spoken, recovered }) => {
             streamRef.current = null;
             setRecording(false);
+            setTidying(false);
             notify?.(spoken || 'Voice input failed');
             if (recovered) {
               try {
@@ -95,7 +115,7 @@ export function useDictation({ text, setText, notify }) {
       recRef.current = h;
       setRecording(true);
     }
-  }, [apply, notify]);
+  }, [apply, applyCleaned, notify]);
 
-  return { recording, toggle };
+  return { recording, tidying, toggle };
 }

@@ -47,9 +47,13 @@ export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=
 export const sessionInput = (id, text) => jpost(`/api/sessions/${id}/input`, { text });
 export const launchClaudeIn = (id) => jpost(`/api/sessions/${id}/launch-claude`);
 export const fsList = (path) => jget('/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : ''));
-export const transcribe = async (blob, ext) => {
+// cleanup=true runs the Wispr-style dictation pass server-side (fillers, false
+// starts, phrasing) so the phone gets the same tidied text the desktop does — it
+// never asked for it before, which is why phone dictation read as raw ASR.
+export const transcribe = async (blob, ext, { cleanup = true } = {}) => {
   const fd = new FormData();
   fd.append('audio', blob, 'clip.' + ext);
+  fd.append('cleanup', String(cleanup));
   return (await jform('/api/transcribe', fd)).text || '';
 };
 export const commandText = (sessionId, text) => jpost('/api/command', { sessionId, text });

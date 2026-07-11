@@ -9,15 +9,16 @@ export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() ||
 // and is NEVER sent — the caller's Send/Run button is the only way to the pty.
 // In stream mode the words appear live while speaking.
 export function DictationMic({ className, text, setText, notify }) {
-  const { recording, toggle } = useDictation({ text, setText, notify });
+  const { recording, tidying, toggle } = useDictation({ text, setText, notify });
   return (
     <button
       type="button"
-      className={(className || 'micbtn') + (recording ? ' rec' : '')}
+      className={(className || 'micbtn') + (recording ? ' rec' : '') + (tidying ? ' tidying' : '')}
       onClick={toggle}
-      title={recording ? 'Tap to stop' : 'Tap to talk'}
+      disabled={tidying}
+      title={recording ? 'Tap to stop' : tidying ? 'Tidying up what you said…' : 'Tap to talk'}
     >
-      🎙️
+      {tidying ? '✨' : '🎙️'}
     </button>
   );
 }

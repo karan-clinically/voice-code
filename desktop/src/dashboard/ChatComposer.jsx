@@ -16,12 +16,16 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   const [mode, setMode] = useState('ask');
   const [showPrompts, setShowPrompts] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [tidying, setTidying] = useState(false);
   const [sttMode, setSttMode] = useState('batch');
   const recRef = useRef(null);
   const streamRef = useRef(null);
   const baseRef = useRef('');
+  const wroteRef = useRef(null); // the exact string we last put in the box
+  const textRef = useRef('');
   const taRef = useRef(null);
   const busy = session.state === 'busy';
+  textRef.current = text;
 
   useEffect(() => {
     configState().then((s) => s?.sttMode && setSttMode(s.sttMode)).catch(() => {});
@@ -30,7 +34,16 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   // Merge streamed dictation onto whatever was in the box when the mic opened.
   const applyStream = (t) => {
     const base = baseRef.current;
-    setText(base ? base.replace(/\s*$/, '') + ' ' + (t || '') : t || '');
+    const next = base ? base.replace(/\s*$/, '') + ' ' + (t || '') : t || '';
+    wroteRef.current = next;
+    setText(next);
+  };
+
+  // The tidied rewrite arrives ~0.5s after the verbatim text. Only swap it in if
+  // the box still holds exactly what we wrote — if you started editing, you win.
+  const applyCleaned = (t) => {
+    setTidying(false);
+    if (textRef.current === wroteRef.current) applyStream(t);
   };
 
   const refreshMode = useCallback(() => {
@@ -97,13 +110,16 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
         streamRef.current = await startSttStream({
           wsUrl: sttWsUrl(),
           onPartial: applyStream,
-          onFinal: (t) => {
-            applyStream(t);
+          onFinal: (t, { tidying: willTidy } = {}) => {
+            applyStream(t); // verbatim, instantly
+            setTidying(!!willTidy);
             taRef.current?.focus();
           },
+          onCleaned: applyCleaned,
           onError: async ({ spoken, recovered }) => {
             streamRef.current = null;
             setRecording(false);
+            setTidying(false);
             notify?.(spoken || 'Voice input failed');
             if (recovered) {
               try {
@@ -186,7 +202,14 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
           <span className="mode-zap">⚡</span> {MODE_LABEL[mode]}
         </button>
         <div className="composer-spacer" />
-        <button className={'cbtn' + (recording ? ' rec' : '')} onClick={toggleMic} title="Dictate">🎙</button>
+        <button
+          className={'cbtn' + (recording ? ' rec' : '') + (tidying ? ' tidying' : '')}
+          onClick={toggleMic}
+          disabled={tidying}
+          title={recording ? 'Stop dictating' : tidying ? 'Tidying up what you said…' : 'Dictate'}
+        >
+          {tidying ? '✨' : '🎙'}
+        </button>
         <button className="cbtn" onClick={replay} title="Replay last reply aloud">🔊</button>
         <button className="cbtn" onClick={() => setShowPrompts(true)} title="Saved prompts">/</button>
         <button className="cbtn" onClick={attach} title="Attach a file">📎</button>

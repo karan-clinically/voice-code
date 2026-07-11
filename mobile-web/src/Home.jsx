@@ -77,7 +77,9 @@ export default function Home({ onOpen, onHistory, notify }) {
             className="micbtn"
             onBlob={async (blob, ext) => {
               try {
-                setPath(await transcribe(blob, ext));
+                // No cleanup here — this is a folder path, not an instruction; the
+                // dictation rewrite would happily mangle it.
+                setPath(await transcribe(blob, ext, { cleanup: false }));
               } catch (e) {
                 notify(e.message);
               }
