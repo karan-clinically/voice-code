@@ -12,12 +12,14 @@ import { startRecording } from '../lib/record.js';
 import Tabs from './Tabs.jsx';
 import TerminalPane from './TerminalPane.jsx';
 import LiveLog from './LiveLog.jsx';
+import HistoryOverlay from './HistoryOverlay.jsx';
 
 export default function Dashboard({ onOpenWizard }) {
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [logs, setLogs] = useState([]);
   const [showLog, setShowLog] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [speak, setSpeak] = useState(false);
   const [recording, setRecording] = useState(false);
   const [msg, setMsg] = useState('');
@@ -118,6 +120,16 @@ export default function Dashboard({ onOpenWizard }) {
     }
   }
 
+  // A resumed archive session comes back live — add it optimistically (so the
+  // keep-active effect doesn't bounce off it before the WS list catches up),
+  // focus its tab, and close the drawer.
+  function onResumeArchive(session) {
+    setSessions((prev) => (prev.some((s) => s.id === session.id) ? prev : [session, ...prev]));
+    setActiveId(session.id);
+    setShowHistory(false);
+    notify('Resumed “' + (session.label || session.id) + '”');
+  }
+
   // Push-to-talk: record → transcribe (cleaned) → drop text at the prompt for
   // review (no Enter). Toggle with the button or Ctrl+`.
   const toggleTalk = useCallback(async () => {
@@ -187,6 +199,9 @@ export default function Dashboard({ onOpenWizard }) {
           >
             🔊 Speak {speak ? 'on' : 'off'}
           </button>
+          <button className="tool" onClick={() => setShowHistory(true)} title="Search & resume past sessions">
+            🕘 History
+          </button>
           <button className="tool" onClick={() => setShowLog((v) => !v)} title="Harness log">
             {showLog ? 'Hide log' : 'Log'}
           </button>
@@ -215,6 +230,10 @@ export default function Dashboard({ onOpenWizard }) {
           </div>
         )}
       </main>
+
+      {showHistory && (
+        <HistoryOverlay onClose={() => setShowHistory(false)} onResume={onResumeArchive} notify={notify} />
+      )}
 
       {msg && <div className="term-toast">{msg}</div>}
       <audio ref={audioRef} hidden />

@@ -280,7 +280,7 @@ export function searchArchive({ q = '', project = '', limit = 60 } = {}) {
     if (project) { where += ' AND s.project_dir = ?'; params.push(project); }
     params.push(lim);
     const rows = db.prepare(`
-      SELECT s.*, snippet(archive_fts, -1, '[', ']', ' … ', 12) AS snip
+      SELECT s.*, snippet(archive_fts, -1, char(1), char(2), ' … ', 12) AS snip
       FROM archive_fts f JOIN archive_sessions s ON s.uuid = f.uuid
       WHERE ${where}
       ORDER BY bm25(archive_fts) LIMIT ?

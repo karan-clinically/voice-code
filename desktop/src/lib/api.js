@@ -111,3 +111,10 @@ export const createSession = (cwd, label) => apiPost('/api/sessions', { cwd, lab
 export const killSession = (id) => apiPost(`/api/sessions/${id}/kill`, {});
 export const renameSession = (id, label) => apiPost(`/api/sessions/${id}/rename`, { label });
 export const sendCommand = (sessionId, text) => apiPost('/api/command', { sessionId, text });
+
+// --- session archive (past transcripts) ---
+export const searchArchive = (q = '', project = '') =>
+  apiGet('/api/archive?' + new URLSearchParams({ q, ...(project ? { project } : {}) }).toString());
+export const archiveProjects = () => apiGet('/api/archive/projects');
+export const archiveDetail = (uuid) => apiGet('/api/archive/' + encodeURIComponent(uuid));
+export const resumeArchive = (uuid) => apiPost(`/api/archive/${encodeURIComponent(uuid)}/resume`, {});
