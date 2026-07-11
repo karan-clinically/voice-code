@@ -53,6 +53,17 @@
   code { background:#0d0d10; border-radius:5px; padding:1px 5px; font-size:13px; }
   a { color:var(--accent); }
   .hidden { display:none; }
+  .picker { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; flex-direction:column;
+    padding:calc(env(safe-area-inset-top) + 8px) 12px calc(env(safe-area-inset-bottom) + 12px); }
+  .picker-head { display:flex; align-items:center; gap:8px; padding:6px 0 10px; }
+  .pkpath { flex:1; font-family:"Cascadia Code",Consolas,monospace; font-size:12px; color:var(--muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+  .pklist { flex:1; overflow:auto; border:1px solid var(--border); border-radius:12px; background:var(--panel); }
+  .pkitem { display:block; width:100%; text-align:left; background:transparent; border:none;
+    border-bottom:1px solid var(--border); border-radius:0; padding:15px 14px; font-weight:500; }
+  .pkitem:active { background:var(--bg); }
+  .picker-foot { padding-top:12px; }
+  .picker-foot button { width:100%; height:50px; }
 </style>
 </head>
 <body>
@@ -66,6 +77,19 @@
   <div id="err" class="banner err" hidden></div>
   <audio id="player" playsinline></audio>
 
+  <!-- FOLDER PICKER -->
+  <div id="picker" class="picker hidden">
+    <div class="picker-head">
+      <button id="pkUp" class="ghost">⬆ Up</button>
+      <div id="pkPath" class="pkpath"></div>
+      <button id="pkClose" class="ghost">✕</button>
+    </div>
+    <div id="pkList" class="pklist"></div>
+    <div class="picker-foot">
+      <button id="pkUse" class="primary">Use this folder</button>
+    </div>
+  </div>
+
   <!-- HOME -->
   <div id="home">
     <div class="card stack">
@@ -74,7 +98,10 @@
         <input id="claudePath" placeholder="C:\AI\voice harness" />
         <button id="claudePathMic" class="micsmall" title="Speak the path">🎙️</button>
       </div>
-      <button id="startClaude" class="primary">Start Claude here</button>
+      <div class="row">
+        <button id="browse" style="flex:1">📁 Browse…</button>
+        <button id="startClaude" class="primary" style="flex:1">Start Claude here</button>
+      </div>
     </div>
 
     <div class="card stack">
@@ -216,6 +243,25 @@
     catch(e){ err(e.message); }
   };
   $('back').onclick=()=>{ $('title').textContent='Voice Harness'; setState('idle'); $('result').hidden=true; show('home'); loadResume(); };
+
+  // ---------- folder picker ----------
+  let pkParent=null, pkCur=null;
+  async function pkLoad(path){
+    try{
+      const d=await jget('/api/fs/list'+(path?('?path='+encodeURIComponent(path)):''));
+      pkCur=d.path; pkParent=d.parent;
+      $('pkPath').textContent=d.path||'This PC';
+      $('pkUse').style.display=d.path?'':'none';
+      const list=$('pkList'); list.innerHTML='';
+      if(!d.dirs.length){ const e=document.createElement('div'); e.className='muted'; e.style.padding='14px'; e.textContent='(no subfolders here — tap “Use this folder”)'; list.appendChild(e); }
+      for(const dir of d.dirs){ const b=document.createElement('button'); b.className='pkitem'; b.textContent='📁  '+dir.name; b.onclick=()=>pkLoad(dir.path); list.appendChild(b); }
+      list.scrollTop=0;
+    }catch(e){ if(path){ pkLoad(''); } else { err(e.message); } } // bad path -> drives
+  }
+  $('browse').onclick=()=>{ $('picker').classList.remove('hidden'); pkLoad($('claudePath').value.trim().replace(/["']/g,'')||'C:/AI'); };
+  $('pkUp').onclick=()=>{ if(pkParent) pkLoad(pkParent); };
+  $('pkClose').onclick=()=>$('picker').classList.add('hidden');
+  $('pkUse').onclick=()=>{ if(pkCur){ $('claudePath').value=pkCur; localStorage.setItem('cvh_lastpath',pkCur); } $('picker').classList.add('hidden'); };
 
   // ---------- TERMINAL ----------
   async function refreshScreen(){

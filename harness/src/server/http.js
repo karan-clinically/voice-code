@@ -16,6 +16,7 @@ import configRouter from './routes/config.js';
 import voicesRouter from './routes/voices.js';
 import tunnelRouter from './routes/tunnel.js';
 import pairingRouter from './routes/pairing.js';
+import fsRouter from './routes/fs.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,7 @@ export function buildApp() {
   app.use('/api/voices', voicesRouter);
   app.use('/api/tunnel', tunnelRouter);
   app.use('/api/pairing', pairingRouter);
+  app.use('/api/fs', fsRouter);
 
   // JSON 404 + error handler so nothing leaks HTML/stack traces.
   app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));
