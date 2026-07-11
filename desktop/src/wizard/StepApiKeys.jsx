@@ -9,6 +9,7 @@ export default function StepApiKeys({ onNext }) {
   const [voices, setVoices] = useState([]);
   const [voiceId, setVoiceId] = useState('');
   const [hasDeepgram, setHasDeepgram] = useState(false);
+  const [sttMode, setSttMode] = useState('batch');
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sttBusy, setSttBusy] = useState(false);
@@ -20,6 +21,7 @@ export default function StepApiKeys({ onNext }) {
     configState()
       .then((s) => {
         setHasDeepgram(!!s.hasDeepgram);
+        if (s.sttMode) setSttMode(s.sttMode);
         if (s.voiceId) setVoiceId(s.voiceId);
         if (s.hasElevenLabs) loadVoices(true);
       })
@@ -76,6 +78,11 @@ export default function StepApiKeys({ onNext }) {
     }
   }
 
+  function chooseMode(m) {
+    setSttMode(m);
+    saveConfig({ stt_mode: m }).catch((e) => setErr(e.message));
+  }
+
   async function test() {
     setErr('');
     try {
@@ -122,6 +129,22 @@ export default function StepApiKeys({ onNext }) {
         </button>
         {sttResult && <span className="muted" style={{ alignSelf: 'center' }}>{sttResult}</span>}
       </div>
+
+      <label>
+        Dictation mode <span className="muted">(how voice reaches the command box)</span>
+      </label>
+      <div className="seg" style={{ alignSelf: 'flex-start' }}>
+        <button type="button" className={'seg-btn' + (sttMode !== 'stream' ? ' on' : '')} onClick={() => chooseMode('batch')}>
+          Batch
+        </button>
+        <button type="button" className={'seg-btn' + (sttMode === 'stream' ? ' on' : '')} onClick={() => chooseMode('stream')}>
+          Live stream
+        </button>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Batch transcribes the whole clip after you stop; Live stream shows words as you speak. Either way the text lands
+        in the box for review — nothing sends until you press Send.
+      </p>
 
       <label>
         OpenAI API key <span className="muted">(optional — dictation cleanup)</span>

@@ -71,6 +71,11 @@ export function termWsUrl(sessionId) {
   return `${baseUrl.replace(/^http/, 'ws')}/ws/term?session=${sessionId}`;
 }
 
+// Live speech-to-text WebSocket (localhost bypasses auth).
+export function sttWsUrl(lang) {
+  return `${baseUrl.replace(/^http/, 'ws')}/ws/stt${lang ? `?lang=${encodeURIComponent(lang)}` : ''}`;
+}
+
 // STT for desktop push-to-talk. cleanup=true runs Wispr-style dictation cleanup
 // server-side; returns { text }.
 export async function transcribeAudio(blob, ext = 'webm', { cleanup = true } = {}) {

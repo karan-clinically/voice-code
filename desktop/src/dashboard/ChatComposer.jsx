@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionMode, sessionKey, ttsSay, transcribeAudio } from '../lib/api.js';
+import { sessionMode, sessionKey, ttsSay, transcribeAudio, configState, sttWsUrl } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
+import { startSttStream } from '../lib/sttStream.js';
 import PromptsModal from './PromptsModal.jsx';
 
 // Permission modes in Shift+Tab cycle order (verified): manual → accept edits →
@@ -15,9 +16,22 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   const [mode, setMode] = useState('ask');
   const [showPrompts, setShowPrompts] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [sttMode, setSttMode] = useState('batch');
   const recRef = useRef(null);
+  const streamRef = useRef(null);
+  const baseRef = useRef('');
   const taRef = useRef(null);
   const busy = session.state === 'busy';
+
+  useEffect(() => {
+    configState().then((s) => s?.sttMode && setSttMode(s.sttMode)).catch(() => {});
+  }, []);
+
+  // Merge streamed dictation onto whatever was in the box when the mic opened.
+  const applyStream = (t) => {
+    const base = baseRef.current;
+    setText(base ? base.replace(/\s*$/, '') + ' ' + (t || '') : t || '');
+  };
 
   const refreshMode = useCallback(() => {
     sessionMode(session.id).then((r) => r?.mode && setMode(r.mode)).catch(() => {});
@@ -54,6 +68,15 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   }
 
   async function toggleMic() {
+    // Streaming in progress → stop; the settled text arrives via onFinal.
+    if (streamRef.current) {
+      const s = streamRef.current;
+      streamRef.current = null;
+      setRecording(false);
+      s.stop();
+      return;
+    }
+    // Batch recording in progress → stop and transcribe the whole clip.
     if (recRef.current) {
       const h = recRef.current;
       recRef.current = null;
@@ -67,6 +90,40 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
       }
       return;
     }
+
+    if (sttMode === 'stream') {
+      baseRef.current = text;
+      try {
+        streamRef.current = await startSttStream({
+          wsUrl: sttWsUrl(),
+          onPartial: applyStream,
+          onFinal: (t) => {
+            applyStream(t);
+            taRef.current?.focus();
+          },
+          onError: async ({ spoken, recovered }) => {
+            streamRef.current = null;
+            setRecording(false);
+            notify?.(spoken || 'Voice input failed');
+            if (recovered) {
+              try {
+                const { text: t } = await transcribeAudio(recovered, 'webm', { cleanup: true });
+                if (t) applyStream(t);
+              } catch {
+                /* give up quietly — the spoken error already fired */
+              }
+            }
+          },
+        });
+        setRecording(true);
+      } catch {
+        streamRef.current = null;
+        notify?.('Microphone unavailable');
+      }
+      return;
+    }
+
+    // Batch mode: record now, transcribe on the next tap.
     try {
       recRef.current = await startRecording();
       setRecording(true);
