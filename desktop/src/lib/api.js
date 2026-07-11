@@ -118,3 +118,7 @@ export const searchArchive = (q = '', project = '') =>
 export const archiveProjects = () => apiGet('/api/archive/projects');
 export const archiveDetail = (uuid) => apiGet('/api/archive/' + encodeURIComponent(uuid));
 export const resumeArchive = (uuid) => apiPost(`/api/archive/${encodeURIComponent(uuid)}/resume`, {});
+
+// --- chat view (conversation log) ---
+export const sessionMessages = (id, after = 0) => apiGet(`/api/sessions/${id}/messages?after=${after}`);
+export const sendChat = (id, text) => apiPost(`/api/sessions/${id}/chat`, { text });

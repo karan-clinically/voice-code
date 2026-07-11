@@ -11,6 +11,7 @@ import {
 import { startRecording } from '../lib/record.js';
 import Tabs from './Tabs.jsx';
 import TerminalPane from './TerminalPane.jsx';
+import ChatView from './ChatView.jsx';
 import LiveLog from './LiveLog.jsx';
 import HistoryOverlay from './HistoryOverlay.jsx';
 
@@ -20,6 +21,7 @@ export default function Dashboard({ onOpenWizard }) {
   const [logs, setLogs] = useState([]);
   const [showLog, setShowLog] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [viewModes, setViewModes] = useState({}); // sessionId -> 'terminal' | 'chat'
   const [speak, setSpeak] = useState(false);
   const [recording, setRecording] = useState(false);
   const [msg, setMsg] = useState('');
@@ -67,6 +69,9 @@ export default function Dashboard({ onOpenWizard }) {
 
   // Keep an active tab pointed at a live session.
   const live = sessions.filter((s) => s.alive);
+  const modeOf = (id) => viewModes[id] || 'terminal';
+  const activeMode = modeOf(activeId);
+  const setMode = (id, m) => setViewModes((prev) => ({ ...prev, [id]: m }));
   useEffect(() => {
     if (activeId && live.some((s) => s.id === activeId)) return;
     setActiveId(live.length ? live[0].id : null);
@@ -185,6 +190,22 @@ export default function Dashboard({ onOpenWizard }) {
           />
         </div>
         <div className="term-tools">
+          {activeId && (
+            <div className="seg" title="Switch the active session between the raw terminal and a chat view">
+              <button
+                className={'seg-btn' + (activeMode !== 'chat' ? ' on' : '')}
+                onClick={() => setMode(activeId, 'terminal')}
+              >
+                Terminal
+              </button>
+              <button
+                className={'seg-btn' + (activeMode === 'chat' ? ' on' : '')}
+                onClick={() => setMode(activeId, 'chat')}
+              >
+                Chat
+              </button>
+            </div>
+          )}
           <button
             className={'tool' + (recording ? ' rec' : '')}
             onClick={toggleTalk}
@@ -221,7 +242,17 @@ export default function Dashboard({ onOpenWizard }) {
           </div>
         ) : (
           live.map((s) => (
-            <TerminalPane key={s.id} session={s} active={s.id === activeId} onApi={registerApi} notify={notify} />
+            <React.Fragment key={s.id}>
+              {/* Terminal stays mounted so the PTY/scrollback survive the toggle;
+                  it just hides under the chat overlay in chat mode. */}
+              <TerminalPane
+                session={s}
+                active={s.id === activeId && modeOf(s.id) !== 'chat'}
+                onApi={registerApi}
+                notify={notify}
+              />
+              {modeOf(s.id) === 'chat' && <ChatView session={s} active={s.id === activeId} />}
+            </React.Fragment>
           ))
         )}
         {showLog && (
