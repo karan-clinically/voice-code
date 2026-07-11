@@ -10,6 +10,7 @@ const router = Router();
 router.use(localhostOnly);
 
 const ALLOWED = new Set([
+  'deepgram_api_key',
   'openai_api_key',
   'elevenlabs_api_key',
   'elevenlabs_voice_id',
@@ -17,6 +18,7 @@ const ALLOWED = new Set([
   'tunnel_url',
   'tts_playback_target',
   'device_name',
+  'stt_mode',
   'stt_model',
   'tts_model',
   'dictation_cleanup',
@@ -28,8 +30,10 @@ const ALLOWED = new Set([
 router.get('/state', (req, res) => {
   res.json({
     firstRun: isFirstRun(),
+    hasDeepgram: !!getConfig('deepgram_api_key'),
     hasOpenAI: !!getConfig('openai_api_key'),
     hasElevenLabs: !!getConfig('elevenlabs_api_key'),
+    sttMode: getConfig('stt_mode', 'batch'),
     voiceId: getConfig('elevenlabs_voice_id') || null,
     tunnelProvider: getConfig('tunnel_provider') || 'lan',
     tunnelUrl: getConfig('tunnel_url') || null,
