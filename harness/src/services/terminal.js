@@ -66,6 +66,7 @@ export function spawnSession({
   args = [],
   label = null,
   name = null,
+  env = {},
   cols = DEFAULT_COLS,
   rows = DEFAULT_ROWS,
 } = {}) {
@@ -80,7 +81,7 @@ export function spawnSession({
       cols,
       rows,
       cwd,
-      env: { ...process.env },
+      env: { ...process.env, ...env },
     });
   } catch (err) {
     log.error(`spawn failed for ${cmd}: ${err.message}`);

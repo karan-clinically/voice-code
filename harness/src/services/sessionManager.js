@@ -8,6 +8,7 @@
 // across restarts (which would mix interaction histories).
 
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import db from '../db.js';
 import * as terminal from './terminal.js';
 import { makeLogger } from '../util/logger.js';
@@ -23,6 +24,8 @@ const RUN_ID = `${process.pid.toString(36)}-${Date.now().toString(36)}`;
 
 const dbIdByPty = new Map(); // terminalId -> dbId
 const ptyIdByDb = new Map(); // dbId -> terminalId
+const tokenByDb = new Map(); // dbId -> CVH_SESSION_ID token
+const dbByToken = new Map(); // token -> dbId
 
 const insertSession = db.prepare(`
   INSERT INTO sessions (tmux_session, tmux_pane, label, cwd, git_repo, git_branch, state, last_seen_at)
@@ -57,9 +60,12 @@ function decorate(row) {
   return { ...row, ptyId, alive };
 }
 
-// Spawn Claude Code in a new session and register it in the DB.
+// Spawn Claude Code in a new session and register it in the DB. The correlation
+// token is injected as CVH_SESSION_ID so a Stop hook that chooses to forward it
+// can map back to this exact session (primary matching is by cwd).
 export async function createSession({ cwd, label = null } = {}) {
-  const view = terminal.spawnSession({ cwd, label });
+  const token = randomUUID();
+  const view = terminal.spawnSession({ cwd, label, env: { CVH_SESSION_ID: token } });
   const git = await terminal.getGitInfo(view.cwd);
   const now = new Date().toISOString();
   const info = insertSession.run({
@@ -75,6 +81,8 @@ export async function createSession({ cwd, label = null } = {}) {
   const dbId = Number(info.lastInsertRowid);
   dbIdByPty.set(view.id, dbId);
   ptyIdByDb.set(dbId, view.id);
+  tokenByDb.set(dbId, token);
+  dbByToken.set(token, dbId);
   log.info(`registered session db#${dbId} (pty ${view.id}) cwd=${view.cwd} repo=${git.repo || '-'}`);
   sessionEvents.emit('change');
   return getSession(dbId);
@@ -91,6 +99,14 @@ export function getSession(id) {
 // Internal terminal id for a DB session id (used by the command pipeline).
 export function getPtyId(id) {
   return ptyIdByDb.get(Number(id)) || null;
+}
+
+export function getToken(id) {
+  return tokenByDb.get(Number(id)) || null;
+}
+
+export function getDbIdByToken(token) {
+  return dbByToken.get(token) ?? null;
 }
 
 export function markState(id, state) {

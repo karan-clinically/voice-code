@@ -8,6 +8,9 @@ import { dirname, join } from 'node:path';
 import { authMiddleware } from './auth.js';
 import { makeLogger } from '../util/logger.js';
 import sessionsRouter from './routes/sessions.js';
+import transcribeRouter from './routes/transcribe.js';
+import commandRouter from './routes/command.js';
+import hooksRouter from './routes/hooks.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +29,9 @@ export function buildApp() {
   });
 
   app.use('/api/sessions', sessionsRouter);
+  app.use('/api/transcribe', transcribeRouter);
+  app.use('/api/command', commandRouter);
+  app.use('/api/hooks', hooksRouter);
 
   // JSON 404 + error handler so nothing leaks HTML/stack traces.
   app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));

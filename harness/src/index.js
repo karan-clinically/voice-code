@@ -1,6 +1,16 @@
 // Harness entry point: start the HTTP (and later WS) server, the session
 // reconciler, and wire graceful shutdown that kills all owned PTYs.
 
+// Load harness/.env (if present) for headless/curl testing before the desktop
+// wizard has written keys to SQLite. Native to Node 20.6+ — no dependency.
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+try {
+  process.loadEnvFile(join(dirname(fileURLToPath(import.meta.url)), '../.env'));
+} catch {
+  // no .env file — fine, config comes from SQLite (the wizard)
+}
+
 import './db.js'; // side effect: open DB + run migrations
 import { getConfig } from './config.js';
 import { buildApp } from './server/http.js';

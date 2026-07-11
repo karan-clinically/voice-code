@@ -12,6 +12,7 @@
     "@xterm/headless": "^5.5.0",
     "better-sqlite3": "^11.8.1",
     "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
     "node-pty": "^1.0.0",
     "pino": "^9.6.0"
   }

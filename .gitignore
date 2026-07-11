@@ -15,3 +15,4 @@ audio/
 
 # electron build artifacts
 desktop/release/
+test.wav
