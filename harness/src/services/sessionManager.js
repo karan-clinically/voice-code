@@ -1,0 +1,142 @@
+// Session registry: ties live PTY sessions (terminal.js) to rows in the SQLite
+// `sessions` table, tracks state (idle/busy/response_ready/dead), and emits
+// change events the WS server (step 9) broadcasts.
+//
+// Spawn model: the harness owns every session, so a session dies when its PTY
+// exits (onExit event) or when the harness restarts (all old rows -> dead on
+// startup). tmux_pane stores a run-unique PTY key so DB ids are never recycled
+// across restarts (which would mix interaction histories).
+
+import { EventEmitter } from 'node:events';
+import db from '../db.js';
+import * as terminal from './terminal.js';
+import { makeLogger } from '../util/logger.js';
+
+const log = makeLogger('sessions');
+
+// 'change' (any list change), 'state' {id, state}
+export const sessionEvents = new EventEmitter();
+
+// Unique per harness process, so a fresh 's1' after restart never collides with
+// a previous run's row.
+const RUN_ID = `${process.pid.toString(36)}-${Date.now().toString(36)}`;
+
+const dbIdByPty = new Map(); // terminalId -> dbId
+const ptyIdByDb = new Map(); // dbId -> terminalId
+
+const insertSession = db.prepare(`
+  INSERT INTO sessions (tmux_session, tmux_pane, label, cwd, git_repo, git_branch, state, last_seen_at)
+  VALUES (@tmux_session, @tmux_pane, @label, @cwd, @git_repo, @git_branch, @state, @last_seen_at)
+`);
+const updState = db.prepare('UPDATE sessions SET state = ?, last_seen_at = ? WHERE id = ?');
+const touchSeen = db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?');
+const updLabel = db.prepare('UPDATE sessions SET label = ? WHERE id = ?');
+const selAll = db.prepare('SELECT * FROM sessions ORDER BY id DESC');
+const selOne = db.prepare('SELECT * FROM sessions WHERE id = ?');
+
+// Sessions from a previous harness run are dead — their PTYs died with the old
+// process. Do this once at module load.
+db.prepare("UPDATE sessions SET state = 'dead' WHERE state != 'dead'").run();
+
+// Mark a session dead when its PTY exits.
+terminal.terminalEvents.on('exit', ({ id }) => {
+  const dbId = dbIdByPty.get(id);
+  if (dbId == null) return;
+  updState.run('dead', new Date().toISOString(), dbId);
+  ptyIdByDb.delete(dbId);
+  dbIdByPty.delete(id);
+  sessionEvents.emit('state', { id: dbId, state: 'dead' });
+  sessionEvents.emit('change');
+  log.info(`session db#${dbId} (pty ${id}) marked dead`);
+});
+
+function decorate(row) {
+  if (!row) return null;
+  const ptyId = ptyIdByDb.get(row.id) || null;
+  const alive = ptyId ? terminal.sessionExists(ptyId) : false;
+  return { ...row, ptyId, alive };
+}
+
+// Spawn Claude Code in a new session and register it in the DB.
+export async function createSession({ cwd, label = null } = {}) {
+  const view = terminal.spawnSession({ cwd, label });
+  const git = await terminal.getGitInfo(view.cwd);
+  const now = new Date().toISOString();
+  const info = insertSession.run({
+    tmux_session: view.name,
+    tmux_pane: `${RUN_ID}:${view.id}`,
+    label,
+    cwd: view.cwd,
+    git_repo: git.repo,
+    git_branch: git.branch,
+    state: 'idle',
+    last_seen_at: now,
+  });
+  const dbId = Number(info.lastInsertRowid);
+  dbIdByPty.set(view.id, dbId);
+  ptyIdByDb.set(dbId, view.id);
+  log.info(`registered session db#${dbId} (pty ${view.id}) cwd=${view.cwd} repo=${git.repo || '-'}`);
+  sessionEvents.emit('change');
+  return getSession(dbId);
+}
+
+export function listSessions() {
+  return selAll.all().map(decorate);
+}
+
+export function getSession(id) {
+  return decorate(selOne.get(Number(id)));
+}
+
+// Internal terminal id for a DB session id (used by the command pipeline).
+export function getPtyId(id) {
+  return ptyIdByDb.get(Number(id)) || null;
+}
+
+export function markState(id, state) {
+  updState.run(state, new Date().toISOString(), Number(id));
+  sessionEvents.emit('state', { id: Number(id), state });
+  sessionEvents.emit('change');
+}
+
+export function renameSession(id, label) {
+  updLabel.run(label, Number(id));
+  sessionEvents.emit('change');
+  return getSession(id);
+}
+
+export function killSession(id) {
+  const ptyId = ptyIdByDb.get(Number(id));
+  if (!ptyId) return false;
+  return terminal.killSession(ptyId); // exit event flips state to 'dead'
+}
+
+// Periodic safety net: catch any PTY that died without firing onExit, and keep
+// last_seen_at fresh for live sessions.
+let timer = null;
+export function startReconciler(intervalMs = 5000) {
+  if (timer) return;
+  timer = setInterval(() => {
+    const now = new Date().toISOString();
+    for (const [dbId, ptyId] of [...ptyIdByDb]) {
+      if (!terminal.sessionExists(ptyId)) {
+        updState.run('dead', now, dbId);
+        ptyIdByDb.delete(dbId);
+        dbIdByPty.delete(ptyId);
+        sessionEvents.emit('state', { id: dbId, state: 'dead' });
+        sessionEvents.emit('change');
+        log.info(`reconciler marked session db#${dbId} dead`);
+      } else {
+        touchSeen.run(now, dbId);
+      }
+    }
+  }, intervalMs);
+  timer.unref?.();
+}
+
+export function stopReconciler() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
