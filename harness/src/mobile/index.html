@@ -107,7 +107,8 @@
 
   <!-- CLAUDE -->
   <div id="claude" class="hidden">
-    <button id="cmic" class="mic">🎙️ Tap to talk</button>
+    <div id="cscreen" class="screen" style="height:40vh"></div>
+    <button id="cmic" class="mic" style="height:90px; margin-top:10px">🎙️ Tap to talk</button>
     <div class="row" style="margin-top:8px">
       <button id="convo" style="flex:1">🔁 Start conversation</button>
       <label class="row" style="flex:0 0 auto; gap:6px; font-size:13px"><input type="checkbox" id="cleanup" checked style="width:auto" /> ✨ Clean up</label>
@@ -136,7 +137,13 @@
   const $ = (id) => document.getElementById(id);
   if (!window.isSecureContext) $('secWarn').hidden = false;
 
-  let mode = 'home', sessionId = null, screenTimer = null, lastAudio = null;
+  let mode = 'home', sessionId = null, screenTimer = null, lastAudio = null, curCwd = '';
+  // Update a screen element, keeping scroll pinned to the bottom unless the user
+  // has scrolled up to read history.
+  function updateScreen(el, text){
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if(el.textContent!==text){ el.textContent=text; if(atBottom) el.scrollTop=el.scrollHeight; }
+  }
 
   // --- audio unlock: mobile browsers block audio that plays seconds after a tap.
   // Unlock one reused <audio> element on the first user gesture; then later
@@ -170,6 +177,12 @@
     $('back').classList.toggle('hidden', m==='home');
     if(screenTimer){ clearInterval(screenTimer); screenTimer=null; }
     if(m==='terminal'){ refreshScreen(); screenTimer=setInterval(refreshScreen, 2000); }
+    else if(m==='claude'){ refreshClaudeScreen(); screenTimer=setInterval(refreshClaudeScreen, 2000); }
+  }
+  async function refreshClaudeScreen(){
+    if(!sessionId) return;
+    try{ const {screen}=await jget('/api/sessions/'+sessionId+'/screen?full=1'); updateScreen($('cscreen'), screen); }
+    catch(e){}
   }
 
   // ---------- HOME ----------
@@ -189,13 +202,13 @@
     }catch(e){ err('Sessions: '+e.message); }
   }
   function openSession(s){
-    sessionId=s.id;
+    sessionId=s.id; curCwd=s.cwd||'';
     if((s.kind||'claude')==='shell'){ $('title').textContent='Terminal'; show('terminal'); }
     else { $('title').textContent='Claude · '+(s.label||(s.cwd||'').split(/[\\/]/).pop()); setState(s.state); show('claude'); }
   }
   $('startClaude').onclick=async()=>{
     const cwd=$('claudePath').value.trim();
-    try{ const s=await jpost('/api/sessions',{kind:'claude',cwd:cwd||undefined,label:cwd?cwd.split(/[\\/]/).pop():null}); sessionId=s.id; $('title').textContent='Claude · '+(s.label||s.cwd); setState('idle'); show('claude'); }
+    try{ const s=await jpost('/api/sessions',{kind:'claude',cwd:cwd||undefined,label:cwd?cwd.split(/[\\/]/).pop():null}); sessionId=s.id; curCwd=s.cwd||''; $('title').textContent='Claude · '+(s.label||s.cwd); setState('idle'); show('claude'); }
     catch(e){ err(e.message); }
   };
   $('startShell').onclick=async()=>{
@@ -207,7 +220,7 @@
   // ---------- TERMINAL ----------
   async function refreshScreen(){
     if(!sessionId) return;
-    try{ const {screen,promptCwd}=await jget('/api/sessions/'+sessionId+'/screen'); const el=$('tscreen'); el.textContent=screen; el.scrollTop=el.scrollHeight; if(promptCwd) $('title').textContent='Terminal · '+promptCwd; }
+    try{ const {screen,promptCwd}=await jget('/api/sessions/'+sessionId+'/screen?full=1'); updateScreen($('tscreen'), screen); if(promptCwd){ curCwd=promptCwd; $('title').textContent='Terminal · '+promptCwd; } }
     catch(e){ /* transient */ }
   }
   async function runShell(text){
@@ -223,8 +236,9 @@
     catch(e){ err(e.message); }
   };
   $('launchClaude').onclick=async()=>{
+    if(screenTimer){ clearInterval(screenTimer); screenTimer=null; } // stop terminal title updates
     setState('working…');
-    try{ await jpost('/api/sessions/'+sessionId+'/launch-claude',{}); $('title').textContent='Claude'; setTimeout(()=>{ setState('idle'); show('claude'); }, 3000); }
+    try{ await jpost('/api/sessions/'+sessionId+'/launch-claude',{}); setTimeout(()=>{ setState('idle'); $('title').textContent='Claude · '+(curCwd||''); show('claude'); }, 3000); }
     catch(e){ setState('idle'); err(e.message); }
   };
 

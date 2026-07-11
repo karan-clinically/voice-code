@@ -81,12 +81,14 @@ router.post('/:id/input', async (req, res) => {
   }
 });
 
-// Current rendered screen + best-guess current directory (from the PS prompt).
+// Rendered screen. ?full=1 returns the whole scrollback (session history);
+// otherwise just the current viewport. Also returns the best-guess cwd.
 router.get('/:id/screen', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   try {
-    const screen = await readScreen(req.params.id, { full: false });
+    const full = req.query.full === '1' || req.query.full === 'true';
+    const screen = await readScreen(req.params.id, { full });
     res.json({ screen, promptCwd: parsePromptCwd(screen) });
   } catch (err) {
     res.status(500).json({ error: err.message });
