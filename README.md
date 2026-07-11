@@ -3,7 +3,11 @@
 A voice-first control layer for [Claude Code](https://claude.com/claude-code). Speak (or type) a
 command, have it typed into a specific Claude Code session on your PC, and hear the response read
 back via ElevenLabs. It uses your existing Claude Code subscription — the harness only pays for
-Whisper speech-to-text and ElevenLabs text-to-speech.
+Deepgram speech-to-text and ElevenLabs text-to-speech.
+
+**Voice is review-before-send.** Dictation never reaches a Claude session on its own: the transcript
+lands in the command box on whichever device you spoke into, you edit it if you like, and only
+**Send** types it into the pty.
 
 This repo contains **Phase 1 + 2**: the `harness/` backend and the `desktop/` Electron app. The
 mobile app is a later phase.
@@ -29,7 +33,7 @@ on Windows using **node-pty (ConPTY)** instead:
 ```
 Desktop app (Electron+React)  ──localhost REST+WS──►  Harness (Node, :4620)
                                                         ├─ node-pty → claude sessions
-                                                        ├─ Whisper (STT)  · ElevenLabs (TTS)
+                                                        ├─ Deepgram (STT) · ElevenLabs (TTS)
                                                         └─ SQLite (better-sqlite3)
 Phone (Phase 2) ──Tailscale + bearer token──────────►  same API
 ```
@@ -42,7 +46,9 @@ Phone (Phase 2) ──Tailscale + bearer token──────────► 
 - **Claude Code** installed and signed in (`claude --version` should work). The harness drives your
   existing, already-authenticated `claude` — no re-login, no Anthropic API cost.
 - **git** (used to show each session's repo/branch).
-- An **OpenAI API key** (Whisper STT) and an **ElevenLabs API key** (TTS).
+- A **Deepgram API key** (STT — get one at [console.deepgram.com](https://console.deepgram.com); new
+  accounts include free credit, no card required) and an **ElevenLabs API key** (TTS).
+- Optionally an **OpenAI API key** — used only for Wispr-style dictation cleanup, never for STT.
 - **Tailscale** (optional, for phone access later) — already detected automatically if installed.
 
 ---
@@ -63,9 +69,11 @@ npm install        # installs harness + desktop workspaces (builds native node-p
 
 Launch the desktop app (below). The **setup wizard** walks you through:
 
-1. **API keys** — paste your OpenAI + ElevenLabs keys and pick a voice (with a live preview button).
-   Keys are stored locally in SQLite at `~/.claude-voice-harness/harness.db` and used server-side
-   only — they are never sent to your phone.
+1. **API keys** — paste your Deepgram + ElevenLabs keys and pick a voice (with a live preview button).
+   There is a **Test transcription** button that records 3s from your mic and shows what Deepgram
+   heard, plus a **Batch / Live stream** dictation toggle (see below). Keys are stored locally in
+   SQLite at `~/.claude-voice-harness/harness.db` and used server-side only — they are never sent to
+   your phone.
 2. **Tunnel** — Tailscale (auto-detected), local-network-only, or a custom URL.
 3. **Claude hook** — copy the Stop-hook snippet (below) into your Claude settings.
 4. **Pairing** — a QR code for the future phone app.
@@ -147,13 +155,15 @@ curl -X POST http://localhost:4620/api/command \
      -H "Content-Type: application/json" \
      -d '{"sessionId":1,"text":"give me a one line summary of this project"}'
 
-# 4. full voice pipeline with a recorded clip (needs your OpenAI key configured)
+# 4. batch speech-to-text (needs your Deepgram key configured). Returns {text} —
+#    it does NOT run anything; in the apps that text lands in the command box for
+#    review and only Send types it into the session.
 #    Generate a test clip on Windows without recording:
 #    powershell -c "Add-Type -AssemblyName System.Speech; \
 #      $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; \
 #      $s.SetOutputToWaveFile('test.wav'); \
 #      $s.Speak('give me a one line summary of this project'); $s.Dispose()"
-curl -F audio=@test.wav -F sessionId=1 http://localhost:4620/api/command
+curl -F audio=@test.wav http://localhost:4620/api/transcribe
 ```
 
 Each `/api/command` returns `{ transcript, responseText, summary, audioUrl, interactionId }` and the
@@ -192,6 +202,32 @@ Entirely from the phone you can:
 > A `502` on the phone means either the harness isn't running on the PC, or something repointed the
 > Tailscale `serve` root off port 4620. The harness **self-heals** the `serve` mapping every 60s
 > (disable with `tailscale_serve=off`); to fix manually: `tailscale serve --bg 4620`.
+
+## Dictation: review before send
+
+Voice input is **never** injected into a Claude session automatically. However you dictate, the
+transcript lands in the command box on that device, you can edit it, and only **Send** (or **Run**,
+in the shell view) types it into the pty. There is no auto-send path — `/api/command` is text-only,
+and the two audio endpoints (`/api/transcribe`, `/ws/stt`) return text and nothing else.
+
+Two modes, toggled in desktop **Settings (⚙)** or on the phone's **Home** screen. The setting is
+stored harness-side (`stt_mode`), so both devices share it and it survives restarts.
+
+| Mode | How it feels | What happens |
+| --- | --- | --- |
+| **Batch** (default) | Tap mic, speak, tap again — text appears a beat later | The whole clip is POSTed to `/api/transcribe` → Deepgram pre-recorded (Nova-3, `smart_format`) |
+| **Live stream** | Words appear in the box *as you speak* | Audio frames stream over `/ws/stt` → Deepgram live (Nova-3, `interim_results`); `stt_partial` renders live, `stt_final` settles on release |
+
+Notes:
+- **Encoding:** clients send whatever `MediaRecorder` produces cheaply — Opus in a WebM container,
+  in 250ms timeslices. The harness relays those bytes as-is and lets Deepgram detect the container,
+  so no `encoding`/`sample_rate` params are needed.
+- **Resilience:** if the Deepgram stream dies mid-utterance, the client surfaces the error and
+  retries that same utterance as a batch upload of the audio it already recorded.
+- **Cost:** the Deepgram socket is keep-alived while you speak and closed immediately on mic release,
+  so an idle stream is never billed.
+- The Deepgram key never leaves the harness — the phone streams audio to *your PC*, which talks to
+  Deepgram.
 
 ## Two views per session: Terminal & Chat
 
@@ -303,8 +339,9 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/archive/:uuid` | GET | one archived session + first prompts (preview) |
 | `/api/archive/:uuid/resume` | POST | reopen `claude --resume <uuid>` in its original cwd → new live session |
 | `/api/archive/reindex` | POST | force a rescan of the transcript corpus |
-| `/api/command` | POST | JSON `{text,sessionId}` or multipart `audio`+`sessionId`+`cleanup` |
-| `/api/transcribe` | POST | multipart `audio` → `{text}` (STT only) |
+| `/api/command` | POST | JSON `{text,sessionId}` — **text only**; audio never reaches a pty in one hop |
+| `/api/transcribe` | POST | multipart `audio` → `{text}` (batch STT; text goes to the command box) |
+| `/api/stt/mode` | GET · POST | dictation mode `{mode:'batch'\|'stream'}` — shared by desktop + phone |
 | `/api/tts/:interactionId` | GET | replay cached mp3 |
 | `/api/tts/say` | POST | speak arbitrary `{text}` → mp3 |
 | `/api/hooks/stop` | POST | Claude Stop hook (localhost only) |
@@ -313,4 +350,5 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/tunnel/tailscale` | GET | Tailscale detection (localhost only) |
 | `/api/pairing/payload` · `/api/pairing/regen` | GET · POST | QR payload / new token (localhost only) |
 | `/ws` | WS | live `sessions` / `state` / `response` / `log` events |
+| `/ws/stt` | WS | live dictation: send audio frames → `stt_partial` / `stt_final` / `error` |
 ```
