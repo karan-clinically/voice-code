@@ -11,7 +11,7 @@ export default function Home({ onOpen, notify }) {
     let stop = false;
     const refresh = () =>
       listSessions()
-        .then((d) => !stop && setSessions(d.sessions.filter((s) => s.state !== 'dead')))
+        .then((d) => !stop && setSessions(d.sessions.filter((s) => s.alive)))
         .catch(() => {});
     refresh();
     const t = setInterval(refresh, 5000);

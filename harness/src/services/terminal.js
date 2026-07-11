@@ -22,6 +22,10 @@ const log = makeLogger('terminal');
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 const SCROLLBACK = 5000;
+// Raw-output replay buffer: kept per session so a newly-connected xterm client
+// (desktop /ws/term) can paint the existing screen + scrollback on connect.
+const REPLAY_CAP = 256 * 1024; // bytes retained
+const REPLAY_TRIM_AT = 384 * 1024; // slice back to CAP once we exceed this
 const isWin = process.platform === 'win32';
 
 // events: 'data' {id,data}, 'exit' {id,exitCode}, 'spawn' {id}
@@ -100,10 +104,13 @@ export function spawnSession({
     pid: ptyProc.pid,
     exitCode: null,
     createdAt: new Date().toISOString(),
+    replay: '',
   };
 
   ptyProc.onData((data) => {
     term.write(data);
+    session.replay += data;
+    if (session.replay.length > REPLAY_TRIM_AT) session.replay = session.replay.slice(-REPLAY_CAP);
     terminalEvents.emit('data', { id, data });
   });
   ptyProc.onExit(({ exitCode }) => {
@@ -265,6 +272,12 @@ export function captureColoredHtml(id, { full = false, maxLines = 600 } = {}) {
 export async function captureColoredHtmlFlushed(id, opts) {
   await flush(id);
   return captureColoredHtml(id, opts);
+}
+
+// Raw output retained for this session (for a fresh terminal client to replay).
+export function getReplayBuffer(id) {
+  const s = sessions.get(id);
+  return s ? s.replay : '';
 }
 
 export function listSessions() {

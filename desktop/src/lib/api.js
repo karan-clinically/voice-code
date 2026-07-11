@@ -62,6 +62,31 @@ export function ttsUrl(interactionId) {
   return `${baseUrl}/api/tts/${interactionId}`;
 }
 
+// Raw terminal WebSocket for a session (localhost bypasses auth).
+export function termWsUrl(sessionId) {
+  return `${baseUrl.replace(/^http/, 'ws')}/ws/term?session=${sessionId}`;
+}
+
+// STT for desktop push-to-talk. cleanup=true runs Wispr-style dictation cleanup
+// server-side; returns { text }.
+export async function transcribeAudio(blob, ext = 'webm', { cleanup = true } = {}) {
+  const fd = new FormData();
+  fd.append('audio', blob, `clip.${ext}`);
+  fd.append('cleanup', String(cleanup));
+  return handle(await fetch(baseUrl + '/api/transcribe', { method: 'POST', body: fd }));
+}
+
+// Speak arbitrary text → returns an object URL for the mp3.
+export async function ttsSay(text) {
+  const r = await fetch(baseUrl + '/api/tts/say', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!r.ok) throw new Error('tts failed');
+  return URL.createObjectURL(await r.blob());
+}
+
 // --- wizard / config ---
 export const configState = () => apiGet('/api/config/state');
 export const saveConfig = (obj) => apiPost('/api/config', obj);

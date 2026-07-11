@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const { createWriteStream, mkdirSync } = require('node:fs');
 const { join } = require('node:path');
 const { homedir } = require('node:os');
+const http = require('node:http');
 
 const MAX_RESTARTS = 3;
 
@@ -19,6 +20,7 @@ class HarnessManager {
     this.proc = null;
     this.restarts = 0;
     this.stopping = false;
+    this.adopted = false;
 
     const logDir = join(homedir(), '.claude-voice-harness');
     mkdirSync(logDir, { recursive: true });
@@ -30,8 +32,36 @@ class HarnessManager {
     return process.env.HARNESS_NODE || 'node';
   }
 
-  start() {
-    if (this.proc) return;
+  // Is a harness already serving this port? (e.g. the auto-start restart-loop.)
+  pingHarness() {
+    return new Promise((resolve) => {
+      const req = http.get(
+        { host: '127.0.0.1', port: this.port, path: '/api/health', timeout: 1200 },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode === 200);
+        }
+      );
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+    });
+  }
+
+  async start() {
+    if (this.proc || this.adopted) return;
+    // Adopt an existing harness rather than spawning a duplicate. Two harnesses
+    // share one SQLite DB, and each one's startup "mark all sessions dead" step
+    // clobbers the other's live session states — which is why the phone can show
+    // no sessions while the desktop shows live ones. Adopting avoids that.
+    if (await this.pingHarness()) {
+      this.adopted = true;
+      this.onLog(`[harnessManager] harness already running on :${this.port} — adopting it\n`);
+      this.onStatus('running');
+      return;
+    }
     const entry = join(this.repoRoot, 'harness', 'src', 'index.js');
     this.onStatus('starting');
     this.proc = spawn(this.nodeBin(), [entry], {

@@ -1,9 +1,9 @@
 // Electron main: boots the harness, shows the app window, and lives in the tray.
 // The renderer talks to the harness over http://localhost:<port> (REST + WS).
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, nativeImage, shell, clipboard } = require('electron');
 const { join } = require('node:path');
-const { existsSync } = require('node:fs');
+const { existsSync, writeFileSync } = require('node:fs');
 const { HarnessManager } = require('./harnessManager.cjs');
 
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -93,6 +93,21 @@ ipcMain.handle('dialog:pickFolder', async () => {
   return res.filePaths[0];
 });
 ipcMain.handle('shell:openExternal', (_e, url) => shell.openExternal(url));
+
+// If the clipboard holds an image, write it to a temp PNG and return the path so
+// the terminal can hand the path to Claude Code (which ingests images by path).
+// Returns null when the clipboard has no image (caller then pastes text).
+ipcMain.handle('clipboard:imageToTemp', () => {
+  try {
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return null;
+    const file = join(app.getPath('temp'), `cvh-paste-${Date.now()}.png`);
+    writeFileSync(file, img.toPNG());
+    return file;
+  } catch {
+    return null;
+  }
+});
 
 app.whenReady().then(() => {
   startHarness();

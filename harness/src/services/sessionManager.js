@@ -178,7 +178,19 @@ export function startReconciler(intervalMs = 5000) {
         sessionEvents.emit('change');
         log.info(`reconciler marked session db#${dbId} dead`);
       } else {
-        touchSeen.run(now, dbId);
+        // Heal a session whose PTY is alive but whose DB state was left 'dead'
+        // (e.g. a second harness's startup clobbered the shared DB). Typing
+        // straight into the terminal never runs the state machine, so nothing
+        // else would fix it.
+        const row = selOne.get(dbId);
+        if (row && row.state === 'dead') {
+          updState.run('idle', now, dbId);
+          sessionEvents.emit('state', { id: dbId, state: 'idle' });
+          sessionEvents.emit('change');
+          log.info(`reconciler healed session db#${dbId} (alive but marked dead)`);
+        } else {
+          touchSeen.run(now, dbId);
+        }
       }
     }
   }, intervalMs);

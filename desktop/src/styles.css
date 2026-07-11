@@ -322,3 +322,206 @@ label {
   font-size: 12px;
   border-radius: 6px;
 }
+
+/* ============================================================= */
+/* Terminal-first dashboard (dark IDE chrome, brand-green accent) */
+/* ============================================================= */
+:root {
+  --term-bg: #0d1117;
+  --term-chrome: #161b22;
+  --term-chrome-2: #0b0f14;
+  --term-line: #21262d;
+  --term-fg: #e6edf3;
+  --term-muted: #8b949e;
+  --brand: #1a4b40;
+  --brand-lit: #3fb950; /* readable green on dark */
+}
+
+.term-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  overflow: hidden;
+}
+
+.term-topbar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  background: var(--term-chrome-2);
+  border-bottom: 1px solid var(--term-line);
+  padding: 0 8px;
+  min-height: 40px;
+}
+
+.tabs-scroll {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 100%;
+  padding-top: 6px;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 6px 8px 7px 12px;
+  border: 1px solid var(--term-line);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: var(--term-chrome);
+  color: var(--term-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.tab:hover { color: var(--term-fg); }
+.tab.active {
+  background: var(--term-bg);
+  color: var(--term-fg);
+  border-bottom: 2px solid var(--brand-lit); /* selected state, not a decorative rail */
+  margin-bottom: -1px;
+}
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-edit {
+  width: 130px;
+  padding: 1px 4px;
+  font-size: 12.5px;
+  background: var(--term-chrome-2);
+  color: var(--term-fg);
+  border: 1px solid var(--brand-lit);
+  border-radius: 4px;
+}
+.tab-x {
+  border: none;
+  background: transparent;
+  color: var(--term-muted);
+  padding: 0 2px;
+  font-size: 15px;
+  line-height: 1;
+  border-radius: 4px;
+}
+.tab-x:hover { color: var(--term-fg); background: rgba(255, 255, 255, 0.08); border-color: transparent; }
+.tab-new {
+  align-self: center;
+  margin-left: 4px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--term-muted);
+  border: 1px solid var(--term-line);
+  border-radius: 6px;
+  font-size: 15px;
+}
+.tab-new:hover { color: var(--term-fg); border-color: var(--term-muted); }
+
+.term-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px 6px 0;
+}
+.tool {
+  padding: 5px 10px;
+  font-size: 12.5px;
+  background: var(--term-chrome);
+  color: var(--term-fg);
+  border: 1px solid var(--term-line);
+  border-radius: 7px;
+}
+.tool:hover { border-color: var(--term-muted); }
+.tool.on {
+  color: var(--brand-lit);
+  border-color: var(--brand-lit);
+  background: color-mix(in srgb, var(--brand-lit) 14%, transparent);
+}
+.tool.rec {
+  color: #ffa198;
+  border-color: #f85149;
+  background: color-mix(in srgb, #f85149 16%, transparent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.term-main {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: var(--term-bg);
+}
+.term-pane {
+  position: absolute;
+  inset: 0;
+  padding: 6px 8px;
+  background: var(--term-bg);
+  z-index: 1;
+}
+.term-pane:not(.active) { visibility: hidden; pointer-events: none; }
+.term-pane.active { visibility: visible; z-index: 2; }
+.term-pane .xterm,
+.term-pane .xterm-viewport,
+.term-pane .xterm-screen { height: 100% !important; }
+.term-pane .xterm-viewport { background: transparent !important; }
+/* Give the viewport scrollbar an explicit width so FitAddon reserves space for
+   it — otherwise Windows renders a 0-width overlay and the last column bleeds
+   under the scrollbar. */
+.term-pane .xterm-viewport::-webkit-scrollbar { width: 12px; }
+.term-pane .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+.term-pane .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.term-pane .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #484f58; background-clip: content-box; }
+
+.term-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  text-align: center;
+  color: var(--term-muted);
+}
+.term-empty strong { color: var(--brand-lit); }
+
+.term-logwrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  padding: 8px;
+  background: var(--term-chrome-2);
+  border-top: 1px solid var(--term-line);
+}
+
+.term-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 20;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #1c2128;
+  color: var(--term-fg);
+  border: 1px solid var(--term-line);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+}

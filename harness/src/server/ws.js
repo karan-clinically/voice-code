@@ -10,14 +10,18 @@ import { WebSocketServer } from 'ws';
 import { getConfig } from '../config.js';
 import { isLocalhost } from './auth.js';
 import { sessionEvents, listSessions } from '../services/sessionManager.js';
+import { events as claudeEvents } from '../services/claudeCode.js';
+import { createTermWss } from './wsTerm.js';
 import { logEvents } from '../util/logger.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('ws');
 let wss = null;
+let wssTerm = null;
 
 export function attachWs(server) {
   wss = new WebSocketServer({ noServer: true });
+  wssTerm = createTermWss(); // raw terminal transport (/ws/term)
 
   server.on('upgrade', (req, socket, head) => {
     let pathname = '';
@@ -26,7 +30,8 @@ export function attachWs(server) {
     } catch {
       pathname = '';
     }
-    if (pathname !== '/ws') {
+    const target = pathname === '/ws' ? wss : pathname === '/ws/term' ? wssTerm : null;
+    if (!target) {
       socket.destroy();
       return;
     }
@@ -35,7 +40,7 @@ export function attachWs(server) {
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    target.handleUpgrade(req, socket, head, (ws) => target.emit('connection', ws, req));
   });
 
   wss.on('connection', (ws) => {
@@ -44,6 +49,10 @@ export function attachWs(server) {
 
   sessionEvents.on('change', () => broadcast({ type: 'sessions', sessions: listSessions() }));
   sessionEvents.on('state', ({ id, state }) => broadcast({ type: 'state', sessionId: id, state }));
+  // A completed Claude turn (any input path, incl. typing straight into the
+  // terminal). Carries a spoken-length summary so the desktop can read it back
+  // when "Speak replies" is on. See claudeCode.signalStop().
+  claudeEvents.on('turn', ({ sessionId, text }) => broadcast({ type: 'turn', sessionId, text }));
   logEvents.on('log', (l) => {
     if (l.level === 'debug') return; // keep the LiveLog readable
     broadcast({ type: 'log', level: l.level, message: l.message });

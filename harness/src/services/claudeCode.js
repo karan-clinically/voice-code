@@ -116,6 +116,17 @@ function waitForCompletion(session, ptyId, sentAt, timeoutMs) {
 // in-flight command by CVH_SESSION_ID token (if forwarded) or cwd, else — if
 // exactly one command is in flight — that one.
 export function signalStop({ sessionId, cwd, lastAssistantMessage, stopReason, transcriptPath }) {
+  // Broadcast a 'turn' for every completed turn — including ones typed straight
+  // into the terminal (no in-flight executeCommand). Lets the desktop speak the
+  // reply on demand. Independent of the pending-command match below.
+  if (typeof lastAssistantMessage === 'string' && lastAssistantMessage.trim()) {
+    const turnDbId = findSessionForBroadcast(sessionId, cwd);
+    if (turnDbId != null) {
+      const spoken = summarizeForSpeech(lastAssistantMessage);
+      if (spoken) events.emit('turn', { sessionId: turnDbId, text: spoken });
+    }
+  }
+
   if (pending.size === 0) return false;
 
   let dbId = null;
@@ -229,6 +240,26 @@ export function summarizeForSpeech(text, maxChars = 600) {
     t = combined;
   }
   return `${t.slice(0, maxChars - 1).trim()}…`;
+}
+
+// Resolve a Stop-hook firing to a DB session id for the 'turn' broadcast,
+// without needing an in-flight command. Prefer the CVH_SESSION_ID token, else
+// the most-recent live session whose cwd matches.
+function findSessionForBroadcast(sessionId, cwd) {
+  if (sessionId) {
+    const byToken = sessions.getDbIdByToken(sessionId);
+    if (byToken != null) return byToken;
+  }
+  if (cwd) {
+    let best = null;
+    for (const s of sessions.listSessions()) {
+      if (s.alive && s.cwd && sameDir(s.cwd, cwd)) {
+        if (!best || s.id > best.id) best = s;
+      }
+    }
+    if (best) return best.id;
+  }
+  return null;
 }
 
 // Compare two directory paths tolerant of slash direction and trailing slash.
