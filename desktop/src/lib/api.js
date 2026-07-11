@@ -99,16 +99,16 @@ export async function ttsSay(text) {
 // --- wizard / config ---
 export const configState = () => apiGet('/api/config/state');
 export const saveConfig = (obj) => apiPost('/api/config', obj);
-export const listVoices = () => apiGet('/api/voices');
+export const listVoices = (provider) => apiGet('/api/voices' + (provider ? '?provider=' + encodeURIComponent(provider) : ''));
 export const pairingPayload = () => apiGet('/api/pairing/payload');
 export const regenToken = () => apiPost('/api/pairing/regen');
 export const tailscaleDetect = () => apiGet('/api/tunnel/tailscale');
 
-export async function previewVoiceUrl(voiceId) {
+export async function previewVoiceUrl(voiceId, provider) {
   const r = await fetch(baseUrl + '/api/voices/preview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ voiceId }),
+    body: JSON.stringify({ voiceId, provider }),
   });
   if (!r.ok) throw new Error('voice preview failed');
   return URL.createObjectURL(await r.blob());

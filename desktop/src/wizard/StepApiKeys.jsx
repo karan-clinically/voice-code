@@ -6,50 +6,91 @@ export default function StepApiKeys({ onNext }) {
   const [deepgram, setDeepgram] = useState('');
   const [openai, setOpenai] = useState('');
   const [eleven, setEleven] = useState('');
-  const [voices, setVoices] = useState([]);
-  const [voiceId, setVoiceId] = useState('');
   const [hasDeepgram, setHasDeepgram] = useState(false);
+  const [hasEleven, setHasEleven] = useState(false);
   const [sttMode, setSttMode] = useState('batch');
-  const [loaded, setLoaded] = useState(false);
+
+  // TTS: one active provider, each remembering its own voice.
+  const [provider, setProvider] = useState('deepgram');
+  const [voices, setVoices] = useState([]);
+  const [elevenVoice, setElevenVoice] = useState('');
+  const [dgVoice, setDgVoice] = useState('');
+
   const [busy, setBusy] = useState(false);
   const [sttBusy, setSttBusy] = useState(false);
   const [sttResult, setSttResult] = useState('');
   const [err, setErr] = useState('');
   const audioRef = useRef(null);
 
+  const voiceId = provider === 'elevenlabs' ? elevenVoice : dgVoice;
+  const setVoiceId = provider === 'elevenlabs' ? setElevenVoice : setDgVoice;
+
   useEffect(() => {
     configState()
       .then((s) => {
         setHasDeepgram(!!s.hasDeepgram);
+        setHasEleven(!!s.hasElevenLabs);
         if (s.sttMode) setSttMode(s.sttMode);
-        if (s.voiceId) setVoiceId(s.voiceId);
-        if (s.hasElevenLabs) loadVoices(true);
+        if (s.ttsProvider) setProvider(s.ttsProvider);
+        if (s.voiceId) setElevenVoice(s.voiceId);
+        if (s.deepgramVoice) setDgVoice(s.deepgramVoice);
+        loadVoices(s.ttsProvider || 'deepgram');
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadVoices(skipSave = false) {
+  async function loadVoices(p) {
+    setErr('');
+    try {
+      const { voices: v } = await listVoices(p);
+      setVoices(v);
+      // Adopt the first voice only if this provider has none chosen yet.
+      if (p === 'elevenlabs') setElevenVoice((cur) => cur || v[0]?.voice_id || '');
+      else setDgVoice((cur) => cur || v[0]?.voice_id || '');
+    } catch (e) {
+      setVoices([]);
+      setErr(e.message);
+    }
+  }
+
+  async function saveKeys() {
     setErr('');
     setBusy(true);
     try {
-      if (!skipSave) {
-        await saveConfig({
-          deepgram_api_key: deepgram || undefined,
-          openai_api_key: openai || undefined,
-          elevenlabs_api_key: eleven || undefined,
-        });
-        if (deepgram) setHasDeepgram(true);
-      }
-      const { voices: v } = await listVoices();
-      setVoices(v);
-      setLoaded(true);
-      setVoiceId((cur) => cur || v[0]?.voice_id || '');
+      await saveConfig({
+        deepgram_api_key: deepgram || undefined,
+        openai_api_key: openai || undefined,
+        elevenlabs_api_key: eleven || undefined,
+      });
+      if (deepgram) setHasDeepgram(true);
+      if (eleven) setHasEleven(true);
+      // Only a Deepgram key? Then Deepgram is the only provider that can speak.
+      const next = !eleven && !hasEleven ? 'deepgram' : provider;
+      if (next !== provider) setProvider(next);
+      await saveConfig({ tts_provider: next });
+      await loadVoices(next);
     } catch (e) {
       setErr(e.message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function chooseProvider(p) {
+    setProvider(p);
+    setVoices([]);
+    try {
+      await saveConfig({ tts_provider: p });
+      await loadVoices(p);
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  function chooseSttMode(m) {
+    setSttMode(m);
+    saveConfig({ stt_mode: m }).catch((e) => setErr(e.message));
   }
 
   // Record 3s from the desktop mic and run a batch transcription so the user can
@@ -78,15 +119,11 @@ export default function StepApiKeys({ onNext }) {
     }
   }
 
-  function chooseMode(m) {
-    setSttMode(m);
-    saveConfig({ stt_mode: m }).catch((e) => setErr(e.message));
-  }
-
-  async function test() {
+  // Speak a sample with the currently selected provider + voice.
+  async function testVoice() {
     setErr('');
     try {
-      const url = await previewVoiceUrl(voiceId);
+      const url = await previewVoiceUrl(voiceId, provider);
       if (audioRef.current) {
         audioRef.current.src = url;
         audioRef.current.play();
@@ -99,14 +136,19 @@ export default function StepApiKeys({ onNext }) {
   async function cont() {
     setErr('');
     try {
-      await saveConfig({ elevenlabs_voice_id: voiceId });
+      await saveConfig({
+        tts_provider: provider,
+        elevenlabs_voice_id: elevenVoice || undefined,
+        deepgram_tts_voice: dgVoice || undefined,
+      });
       onNext();
     } catch (e) {
       setErr(e.message);
     }
   }
 
-  const canContinue = !!voiceId && (hasDeepgram || !!deepgram);
+  const elevenAvailable = hasEleven || !!eleven;
+  const canContinue = (hasDeepgram || !!deepgram) && !!voiceId;
 
   return (
     <div className="stack">
@@ -115,7 +157,7 @@ export default function StepApiKeys({ onNext }) {
       <p className="muted">Stored locally on this PC (SQLite) and used server-side only — never sent to your phone.</p>
 
       <label>
-        Deepgram API key <span className="muted">(speech-to-text)</span>
+        Deepgram API key <span className="muted">(speech-to-text, and optionally the voice too)</span>
       </label>
       <input
         type="password"
@@ -134,17 +176,27 @@ export default function StepApiKeys({ onNext }) {
         Dictation mode <span className="muted">(how voice reaches the command box)</span>
       </label>
       <div className="seg" style={{ alignSelf: 'flex-start' }}>
-        <button type="button" className={'seg-btn' + (sttMode !== 'stream' ? ' on' : '')} onClick={() => chooseMode('batch')}>
+        <button type="button" className={'seg-btn' + (sttMode !== 'stream' ? ' on' : '')} onClick={() => chooseSttMode('batch')}>
           Batch
         </button>
-        <button type="button" className={'seg-btn' + (sttMode === 'stream' ? ' on' : '')} onClick={() => chooseMode('stream')}>
+        <button type="button" className={'seg-btn' + (sttMode === 'stream' ? ' on' : '')} onClick={() => chooseSttMode('stream')}>
           Live stream
         </button>
       </div>
       <p className="muted" style={{ marginTop: 0 }}>
-        Batch transcribes the whole clip after you stop; Live stream shows words as you speak. Either way the text lands
+        Batch transcribes the whole clip when you stop; Live stream shows words as you speak. Either way the text lands
         in the box for review — nothing sends until you press Send.
       </p>
+
+      <label>
+        ElevenLabs API key <span className="muted">(optional — only if you want ElevenLabs voices)</span>
+      </label>
+      <input
+        type="password"
+        placeholder={hasEleven ? '•••• (saved — blank keeps existing)' : 'optional — Deepgram can do the voice too'}
+        value={eleven}
+        onChange={(e) => setEleven(e.target.value)}
+      />
 
       <label>
         OpenAI API key <span className="muted">(optional — dictation cleanup)</span>
@@ -156,33 +208,47 @@ export default function StepApiKeys({ onNext }) {
         onChange={(e) => setOpenai(e.target.value)}
       />
 
-      <label>
-        ElevenLabs API key <span className="muted">(text-to-speech)</span>
-      </label>
-      <input type="password" placeholder="…  (blank keeps existing)" value={eleven} onChange={(e) => setEleven(e.target.value)} />
-
       <div className="row">
-        <button onClick={() => loadVoices(false)} disabled={busy}>
-          {busy ? 'Loading…' : 'Save keys & load voices'}
-        </button>
+        <button onClick={saveKeys} disabled={busy}>{busy ? 'Saving…' : 'Save keys'}</button>
       </div>
 
-      {loaded && (
-        <>
-          <label>Voice</label>
-          <div className="row">
-            <select value={voiceId} onChange={(e) => setVoiceId(e.target.value)}>
-              {voices.map((v) => (
-                <option key={v.voice_id} value={v.voice_id}>
-                  {v.name}
-                </option>
-              ))}
-            </select>
-            <button onClick={test} disabled={!voiceId}>▶ Test</button>
-          </div>
-          <audio ref={audioRef} hidden />
-        </>
-      )}
+      <label>Voice</label>
+      <div className="seg" style={{ alignSelf: 'flex-start' }}>
+        <button
+          type="button"
+          className={'seg-btn' + (provider === 'deepgram' ? ' on' : '')}
+          onClick={() => chooseProvider('deepgram')}
+        >
+          Deepgram (Aura-2)
+        </button>
+        <button
+          type="button"
+          className={'seg-btn' + (provider === 'elevenlabs' ? ' on' : '')}
+          onClick={() => chooseProvider('elevenlabs')}
+          disabled={!elevenAvailable}
+          title={elevenAvailable ? '' : 'Add an ElevenLabs key above to use these voices'}
+        >
+          ElevenLabs
+        </button>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        ElevenLabs voices are more expressive and natural. Deepgram Aura-2 is utility-grade — clear and fast, built for
+        agent replies rather than narration, and it needs no extra signup (same key and credit as speech-to-text). For
+        short spoken summaries, Aura-2 is usually plenty.
+      </p>
+
+      <div className="row">
+        <select value={voiceId} onChange={(e) => setVoiceId(e.target.value)} disabled={!voices.length}>
+          {voices.length === 0 && <option value="">(no voices — save your key first)</option>}
+          {voices.map((v) => (
+            <option key={v.voice_id} value={v.voice_id}>
+              {v.name}
+            </option>
+          ))}
+        </select>
+        <button onClick={testVoice} disabled={!voiceId}>▶ Test voice</button>
+      </div>
+      <audio ref={audioRef} hidden />
 
       {err && <p style={{ color: 'var(--err)' }}>{err}</p>}
       <div className="row" style={{ justifyContent: 'flex-end' }}>
