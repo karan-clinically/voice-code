@@ -123,7 +123,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
             notify?.(spoken || 'Voice input failed');
             if (recovered) {
               try {
-                const { text: t } = await transcribeAudio(recovered, 'webm', { cleanup: true });
+                const { text: t } = await transcribeAudio(recovered, 'wav', { cleanup: true });
                 if (t) applyStream(t);
               } catch {
                 /* give up quietly — the spoken error already fired */

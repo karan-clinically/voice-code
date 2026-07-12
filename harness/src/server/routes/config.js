@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { localhostOnly } from '../auth.js';
 import { getConfig, setConfig, isFirstRun, isTtsReady } from '../../config.js';
 import { activeProviderName, providers } from '../../services/tts/index.js';
+import { activeProviderName as activeSttProvider } from '../../services/stt/index.js';
 
 const router = Router();
 router.use(localhostOnly);
@@ -18,8 +19,10 @@ const ALLOWED = new Set([
   'tunnel_provider',
   'tunnel_url',
   'tts_playback_target',
+  'stt_provider',
   'tts_provider',
   'deepgram_tts_voice',
+  'elevenlabs_stt_model',
   'device_name',
   'stt_mode',
   'stt_model',
@@ -37,6 +40,7 @@ router.get('/state', (req, res) => {
     hasOpenAI: !!getConfig('openai_api_key'),
     hasElevenLabs: !!getConfig('elevenlabs_api_key'),
     sttMode: getConfig('stt_mode', 'batch'),
+    sttProvider: activeSttProvider(),
     ttsProvider: activeProviderName(),
     ttsReady: isTtsReady(),
     voiceId: getConfig('elevenlabs_voice_id') || null,

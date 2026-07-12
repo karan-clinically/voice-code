@@ -10,6 +10,11 @@ export default function StepApiKeys({ onNext }) {
   const [hasEleven, setHasEleven] = useState(false);
   const [sttMode, setSttMode] = useState('batch');
 
+  // The whole loop can run on one vendor, or be mixed. `vendor` is derived UI
+  // state; the harness only ever stores stt_provider + tts_provider.
+  const [vendor, setVendor] = useState('deepgram');
+  const [sttProvider, setSttProvider] = useState('deepgram');
+
   // TTS: one active provider, each remembering its own voice.
   const [provider, setProvider] = useState('deepgram');
   const [voices, setVoices] = useState([]);
@@ -32,6 +37,11 @@ export default function StepApiKeys({ onNext }) {
         setHasEleven(!!s.hasElevenLabs);
         if (s.sttMode) setSttMode(s.sttMode);
         if (s.ttsProvider) setProvider(s.ttsProvider);
+        if (s.sttProvider) setSttProvider(s.sttProvider);
+        // "All X" when both halves agree, otherwise show the mixed controls.
+        if (s.sttProvider && s.ttsProvider) {
+          setVendor(s.sttProvider === s.ttsProvider ? s.sttProvider : 'mixed');
+        }
         if (s.voiceId) setElevenVoice(s.voiceId);
         if (s.deepgramVoice) setDgVoice(s.deepgramVoice);
         loadVoices(s.ttsProvider || 'deepgram');
@@ -74,6 +84,29 @@ export default function StepApiKeys({ onNext }) {
       setErr(e.message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  // One vendor for both halves — a single key and credit pool.
+  async function chooseVendor(v) {
+    setVendor(v);
+    setSttProvider(v);
+    setProvider(v);
+    setVoices([]);
+    try {
+      await saveConfig({ stt_provider: v, tts_provider: v });
+      await loadVoices(v);
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function chooseSttProvider(p) {
+    setSttProvider(p);
+    try {
+      await saveConfig({ stt_provider: p });
+    } catch (e) {
+      setErr(e.message);
     }
   }
 
@@ -137,6 +170,7 @@ export default function StepApiKeys({ onNext }) {
     setErr('');
     try {
       await saveConfig({
+        stt_provider: sttProvider,
         tts_provider: provider,
         elevenlabs_voice_id: elevenVoice || undefined,
         deepgram_tts_voice: dgVoice || undefined,
@@ -211,6 +245,64 @@ export default function StepApiKeys({ onNext }) {
       <div className="row">
         <button onClick={saveKeys} disabled={busy}>{busy ? 'Saving…' : 'Save keys'}</button>
       </div>
+
+      <label>
+        Run the whole voice loop on <span className="muted">(listening + speaking)</span>
+      </label>
+      <div className="seg" style={{ alignSelf: 'flex-start' }}>
+        <button
+          type="button"
+          className={'seg-btn' + (vendor === 'deepgram' ? ' on' : '')}
+          onClick={() => chooseVendor('deepgram')}
+          disabled={!hasDeepgram && !deepgram}
+        >
+          All Deepgram
+        </button>
+        <button
+          type="button"
+          className={'seg-btn' + (vendor === 'elevenlabs' ? ' on' : '')}
+          onClick={() => chooseVendor('elevenlabs')}
+          disabled={!elevenAvailable}
+          title={elevenAvailable ? '' : 'Add an ElevenLabs key above'}
+        >
+          All ElevenLabs
+        </button>
+        <button
+          type="button"
+          className={'seg-btn' + (vendor === 'mixed' ? ' on' : '')}
+          onClick={() => setVendor('mixed')}
+        >
+          Mix &amp; match
+        </button>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Either vendor can do both halves, so you can run on a single key and credit pool. Pick “Mix &amp; match” to
+        choose speech-to-text and the voice independently below.
+      </p>
+
+      {vendor === 'mixed' && (
+        <>
+          <label>Speech-to-text</label>
+          <div className="seg" style={{ alignSelf: 'flex-start' }}>
+            <button
+              type="button"
+              className={'seg-btn' + (sttProvider === 'deepgram' ? ' on' : '')}
+              onClick={() => chooseSttProvider('deepgram')}
+              disabled={!hasDeepgram && !deepgram}
+            >
+              Deepgram (Nova-3)
+            </button>
+            <button
+              type="button"
+              className={'seg-btn' + (sttProvider === 'elevenlabs' ? ' on' : '')}
+              onClick={() => chooseSttProvider('elevenlabs')}
+              disabled={!elevenAvailable}
+            >
+              ElevenLabs (Scribe)
+            </button>
+          </div>
+        </>
+      )}
 
       <label>Voice</label>
       <div className="seg" style={{ alignSelf: 'flex-start' }}>

@@ -1,22 +1,35 @@
-// Deepgram speech-to-text provider (batch + live streaming) via the official
-// @deepgram/sdk v5. API surface verified against the installed SDK's type defs:
-//   batch : client.listen.v1.media.transcribeFile(buffer, { model, smart_format })
-//           -> results.channels[0].alternatives[0].transcript
-//   stream: client.listen.v1.connect({ model, interim_results, smart_format,
-//           endpointing, Authorization }) -> V1Socket (sendMedia / sendKeepAlive /
-//           sendFinalize / sendCloseStream / .on('message'|'error'|'close'))
-// The API key never leaves the harness (config key `deepgram_api_key`, env
-// DEEPGRAM_API_KEY). Audio is sent as-is; Deepgram auto-detects the container
-// (webm/opus from MediaRecorder, wav, mp3…) so no encoding param is needed.
+// Deepgram speech-to-text provider (batch + live streaming).
+//
+//   batch : @deepgram/sdk v5 — client.listen.v1.media.transcribeFile(buffer,
+//           { model, smart_format }) -> results.channels[0].alternatives[0].transcript
+//
+//   stream: RAW `ws`, deliberately NOT the SDK. The SDK's listen.v1.connect()
+//           socket does not send the Authorization header under Node: Deepgram
+//           rejects the handshake and closes immediately, while the SDK's
+//           waitForOpen() never settles — a silent hang with no error. The plain
+//           WebSocket below, with `Authorization: Token <key>`, connects fine.
+//             wss://api.deepgram.com/v1/listen?model=…&encoding=linear16&…
+//             client -> binary PCM frames; {"type":"KeepAlive"|"Finalize"|"CloseStream"}
+//             server -> {type:'Results', is_final, channel:{alternatives:[{transcript}]}}
+//
+// Streaming audio is raw linear16 @16kHz mono (see services/stt/index.js for why),
+// so encoding/sample_rate must be declared. The key never leaves the harness.
 
+import WebSocket from 'ws';
 import { getConfig } from '../../../config.js';
 import { deepgramClient as client, deepgramKey } from '../../deepgramClient.js';
 import { makeLogger } from '../../../util/logger.js';
 
 const log = makeLogger('stt:deepgram');
+const WS_URL = 'wss://api.deepgram.com/v1/listen';
 const DEFAULT_MODEL = 'nova-3';
 const MAX_BYTES = 25 * 1024 * 1024;
+const SAMPLE_RATE = 16000;
 const KEEPALIVE_MS = 8000; // Deepgram drops the socket after ~10s of no audio.
+
+export function isConfigured() {
+  return !!deepgramKey();
+}
 
 export async function transcribeBatch(buffer, { model, language } = {}) {
   if (!buffer || buffer.length === 0) throw new Error('empty audio buffer');
@@ -48,29 +61,48 @@ export async function createStream({ model, language, onOpen, onPartial, onError
   if (!key) throw new Error('Deepgram API key not configured');
   const m = model || getConfig('stt_model', DEFAULT_MODEL);
 
-  const args = {
+  // Raw linear16 @16kHz, matching what the clients now capture, so encoding and
+  // sample_rate must be declared (Deepgram would auto-detect a container, but
+  // ElevenLabs' realtime endpoint cannot take one — both get identical PCM).
+  const qs = new URLSearchParams({
     model: m,
-    interim_results: true,
-    smart_format: true,
-    endpointing: 300,
-    Authorization: `Token ${key}`,
-  };
-  if (language) args.language = language;
+    interim_results: 'true',
+    smart_format: 'true',
+    endpointing: '300',
+    encoding: 'linear16',
+    sample_rate: String(SAMPLE_RATE),
+    channels: '1',
+  });
+  if (language) qs.set('language', language);
 
-  let socket;
-  try {
-    socket = await client().listen.v1.connect(args);
-  } catch (err) {
-    log.error(`stream connect failed: ${err.message}`);
-    throw new Error(`stream connect failed: ${err.message}`);
-  }
+  const ws = new WebSocket(`${WS_URL}?${qs.toString()}`, {
+    headers: { Authorization: `Token ${key}` },
+  });
 
   let finalized = '';
   const withInterim = (interim) => (finalized && interim ? finalized + ' ' + interim : finalized || interim);
 
-  socket.on('open', () => onOpen?.());
-  socket.on('message', (msg) => {
-    if (!msg || msg.type !== 'Results') return;
+  try {
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', (err) => reject(new Error(err.message)));
+      ws.once('close', (code) => reject(new Error(`Deepgram closed the socket (${code})`)));
+      setTimeout(() => reject(new Error('Deepgram handshake timed out')), 10000);
+    });
+  } catch (err) {
+    log.error(`stream connect failed: ${err.message}`);
+    throw new Error(`stream connect failed: ${err.message}`);
+  }
+  onOpen?.();
+
+  ws.on('message', (buf) => {
+    let msg;
+    try {
+      msg = JSON.parse(buf.toString());
+    } catch {
+      return;
+    }
+    if (msg.type !== 'Results') return;
     const t = (msg.channel?.alternatives?.[0]?.transcript || '').trim();
     if (!t) return;
     if (msg.is_final) {
@@ -80,30 +112,27 @@ export async function createStream({ model, language, onOpen, onPartial, onError
       onPartial?.(withInterim(t));
     }
   });
-  socket.on('error', (err) => onError?.(err));
-  socket.on('close', () => onClose?.(finalized));
+  ws.on('error', (err) => onError?.(err));
+  ws.on('close', () => onClose?.(finalized));
 
-  const ka = setInterval(() => {
-    try {
-      socket.sendKeepAlive({ type: 'KeepAlive' });
-    } catch {
-      /* socket already gone */
-    }
-  }, KEEPALIVE_MS);
+  const sendJson = (obj) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  };
+  const ka = setInterval(() => sendJson({ type: 'KeepAlive' }), KEEPALIVE_MS);
 
   return {
     sendAudio(chunk) {
       try {
-        socket.sendMedia(chunk);
+        if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
       } catch (err) {
         onError?.(err);
       }
     },
-    // Flush any buffered audio and ask Deepgram to close cleanly (stops billing).
+    // Flush buffered audio and ask Deepgram to close cleanly (stops billing).
     finish() {
       try {
-        socket.sendFinalize({ type: 'Finalize' });
-        socket.sendCloseStream({ type: 'CloseStream' });
+        sendJson({ type: 'Finalize' });
+        sendJson({ type: 'CloseStream' });
       } catch {
         /* already closing */
       }
@@ -111,7 +140,7 @@ export async function createStream({ model, language, onOpen, onPartial, onError
     close() {
       clearInterval(ka);
       try {
-        socket.close();
+        ws.close();
       } catch {
         /* already closed */
       }

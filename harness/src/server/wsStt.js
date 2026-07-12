@@ -73,12 +73,49 @@ export function createSttWss() {
       }
     };
 
+    // Attach the message handler BEFORE opening the provider socket. Opening it
+    // takes 1-2s, and the mic is already running — if we only started listening
+    // afterwards, every frame spoken during the handshake would hit a socket with
+    // no 'message' listener and be dropped on the floor, eating the first second
+    // or two of every utterance. Buffer those frames instead and flush on ready.
+    let doneRequested = false;
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) {
+        if (ready) stream.sendAudio(data);
+        else pending.push(data);
+        return;
+      }
+      let m;
+      try {
+        m = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (m.t === 'done') {
+        if (!ready) {
+          doneRequested = true; // mic released mid-handshake; finalize once open
+          return;
+        }
+        finalize();
+      }
+    });
+
+    // Flush buffered audio, ask the provider to close, and emit the settled text
+    // once its trailing finals land (or after a short grace, whichever is first).
+    const finalize = () => {
+      stream.finish();
+      setTimeout(() => {
+        sendFinal(stream.getText());
+        stream.close();
+      }, FINALIZE_GRACE_MS);
+    };
+
     try {
       stream = await createStream({
         language,
         onPartial: (text) => send(ws, { type: 'stt_partial', text }),
         onError: (err) => {
-          log.warn(`deepgram stream error: ${err?.message || err}`);
+          log.warn(`stt stream error: ${err?.message || err}`);
           send(ws, { type: 'error', error: String(err?.message || err), spoken: 'Transcription failed' });
         },
         onClose: (finalized) => sendFinal(finalized),
@@ -93,29 +130,7 @@ export function createSttWss() {
     ready = true;
     for (const chunk of pending) stream.sendAudio(chunk);
     pending.length = 0;
-
-    ws.on('message', (data, isBinary) => {
-      if (isBinary) {
-        if (ready) stream.sendAudio(data);
-        else pending.push(data);
-        return;
-      }
-      let m;
-      try {
-        m = JSON.parse(data.toString());
-      } catch {
-        return;
-      }
-      if (m.t === 'done') {
-        // Flush buffered audio and ask Deepgram to close; emit the settled text
-        // once its trailing finals land (or after a short grace, whichever first).
-        stream.finish();
-        setTimeout(() => {
-          sendFinal(stream.getText());
-          stream.close();
-        }, FINALIZE_GRACE_MS);
-      }
-    });
+    if (doneRequested) finalize(); // they finished speaking before we were ready
 
     ws.on('close', () => {
       // Mic released / tab closed — close the Deepgram socket promptly so we do

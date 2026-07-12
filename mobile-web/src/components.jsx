@@ -55,41 +55,50 @@ export function SttModeToggle({ notify }) {
 // the ElevenLabs option is offered only when a key for it exists on the PC — the
 // phone learns that as a boolean and never sees the key itself.
 export function TtsProviderToggle({ notify }) {
-  const [provider, setProvider] = useState('deepgram');
+  const [stt, setStt] = useState('deepgram');
+  const [tts, setTts] = useState('deepgram');
   const [elevenOk, setElevenOk] = useState(false);
 
   useEffect(() => {
     getSettings()
       .then((s) => {
         setElevenOk(!!s.elevenlabs_available);
-        setProvider(s.tts_provider || (s.elevenlabs_available ? 'elevenlabs' : 'deepgram'));
+        const fallback = s.elevenlabs_available ? 'elevenlabs' : 'deepgram';
+        setStt(s.stt_provider || 'deepgram');
+        setTts(s.tts_provider || fallback);
       })
       .catch(() => {});
   }, []);
 
-  const choose = async (p) => {
-    const prev = provider;
-    setProvider(p); // optimistic
+  // Both halves run on the chosen vendor — one key, one credit pool. (The desktop
+  // wizard can still mix them; this shows "Mixed" if it has been.)
+  const vendor = stt === tts ? stt : 'mixed';
+  const choose = async (v) => {
+    const prev = { stt, tts };
+    setStt(v);
+    setTts(v); // optimistic
     try {
-      await saveSettings({ tts_provider: p });
+      await saveSettings({ stt_provider: v, tts_provider: v });
     } catch (e) {
-      setProvider(prev);
+      setStt(prev.stt);
+      setTts(prev.tts);
       notify?.(e.message);
     }
   };
 
   return (
-    <div className="seg" title="Which voice reads Claude's replies back">
-      <button className={'seg-btn' + (provider === 'deepgram' ? ' on' : '')} onClick={() => choose('deepgram')}>
-        Aura-2
+    <div className="seg" title="Which vendor does both the listening and the speaking">
+      <button className={'seg-btn' + (vendor === 'deepgram' ? ' on' : '')} onClick={() => choose('deepgram')}>
+        Deepgram
       </button>
       <button
-        className={'seg-btn' + (provider === 'elevenlabs' ? ' on' : '')}
+        className={'seg-btn' + (vendor === 'elevenlabs' ? ' on' : '')}
         onClick={() => elevenOk && choose('elevenlabs')}
         disabled={!elevenOk}
       >
         ElevenLabs
       </button>
+      {vendor === 'mixed' && <button className="seg-btn on" disabled>Mixed</button>}
     </div>
   );
 }

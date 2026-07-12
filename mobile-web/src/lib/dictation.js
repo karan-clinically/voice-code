@@ -85,7 +85,7 @@ export function useDictation({ text, setText, notify }) {
             notify?.(spoken || 'Voice input failed');
             if (recovered) {
               try {
-                const t = (await transcribe(recovered, 'webm')).trim();
+                const t = (await transcribe(recovered, 'wav')).trim();
                 if (t) apply(t);
               } catch {
                 /* the spoken error already fired */

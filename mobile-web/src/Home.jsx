@@ -60,9 +60,10 @@ export default function Home({ onOpen, onHistory, notify }) {
         </div>
         <div className="row" style={{ alignItems: 'center' }}>
           <div style={{ flex: 1 }}>
-            <strong>Voice</strong>
+            <strong>Voice provider</strong>
             <div className="muted">
-              Aura-2 is fast and clear (no extra signup); ElevenLabs is more expressive.
+              Runs both halves — listening and speaking — on one vendor, so it's a single key and credit pool. Deepgram
+              is fast and clear; ElevenLabs is more expressive.
             </div>
           </div>
           <TtsProviderToggle notify={notify} />
