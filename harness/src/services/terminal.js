@@ -105,6 +105,8 @@ export function spawnSession({
     exitCode: null,
     createdAt: new Date().toISOString(),
     replay: '',
+    cols,
+    rows,
   };
 
   ptyProc.onData((data) => {
@@ -297,9 +299,15 @@ export function sessionExists(id) {
 export function resize(id, cols, rows) {
   const s = sessions.get(id);
   if (!s || !s.alive) return false;
+  // Idempotent: skip an unchanged resize so re-opening a session (which re-measures
+  // and re-fits) can't fire a needless SIGWINCH that disrupts an in-progress
+  // operation like /compact.
+  if (s.cols === cols && s.rows === rows) return true;
   try {
     s.pty.resize(cols, rows);
     s.term.resize(cols, rows);
+    s.cols = cols;
+    s.rows = rows;
     return true;
   } catch (err) {
     log.warn(`resize failed for ${id}: ${err.message}`);

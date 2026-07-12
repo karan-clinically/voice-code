@@ -146,8 +146,11 @@ export function Terminal({ sessionId, className }) {
   }, [fontPx]);
 
   // Fit the PTY to the box: measure the monospace cell at the current font, derive
-  // cols/rows, and resize the session so Claude renders exactly this wide.
-  const fitPty = useCallback(() => {
+  // cols/rows, and resize the session so Claude renders exactly this wide. Only
+  // POST when the size actually changes; the harness skips resizes while a command
+  // is running (a SIGWINCH would cancel /compact), so we retry until it applies.
+  const lastFit = useRef({ cols: 0, rows: 0 });
+  const fitPty = useCallback(async () => {
     const outer = outerRef.current;
     if (!outer || !outer.clientWidth) return;
     const probe = document.createElement('span');
@@ -159,15 +162,22 @@ export function Terminal({ sessionId, className }) {
     if (!charW) return;
     const cols = Math.max(20, Math.min(120, Math.floor((outer.clientWidth - 20) / charW)));
     const rows = Math.max(12, Math.min(60, Math.floor((outer.clientHeight - 20) / (fontPx * 1.3))));
-    sessionResize(sessionId, cols, rows).catch(() => {});
+    if (lastFit.current.cols === cols && lastFit.current.rows === rows) return;
+    try {
+      const r = await sessionResize(sessionId, cols, rows);
+      if (r && !r.skipped) lastFit.current = { cols, rows }; // lock in only if actually applied
+    } catch {
+      /* offline / route not deployed yet */
+    }
   }, [sessionId, fontPx]);
 
   useEffect(() => {
     const t = setTimeout(fitPty, 150); // after layout settles
+    const iv = setInterval(fitPty, 4000); // self-heal once a busy session goes idle
     let rt;
     const onResize = () => { clearTimeout(rt); rt = setTimeout(fitPty, 250); };
     window.addEventListener('resize', onResize);
-    return () => { clearTimeout(t); clearTimeout(rt); window.removeEventListener('resize', onResize); };
+    return () => { clearTimeout(t); clearInterval(iv); clearTimeout(rt); window.removeEventListener('resize', onResize); };
   }, [fitPty]);
 
   useEffect(() => {

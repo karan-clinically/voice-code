@@ -146,6 +146,10 @@ router.post('/:id/resize', (req, res) => {
   const cols = Math.max(20, Math.min(200, Number(req.body?.cols) | 0));
   const rows = Math.max(8, Math.min(80, Number(req.body?.rows) | 0));
   if (!cols || !rows) return res.status(400).json({ error: 'cols and rows required' });
+  // A resize sends SIGWINCH, which cancels modal operations like /compact. Skip
+  // auto-fit while a command is running (e.g. re-opening the terminal mid-/compact);
+  // the terminal re-fits once the turn finishes. terminal.resize is also idempotent.
+  if (session.state === 'busy') return res.json({ ok: true, skipped: 'busy' });
   try {
     resizeSession(req.params.id, cols, rows);
     res.json({ ok: true, cols, rows });
