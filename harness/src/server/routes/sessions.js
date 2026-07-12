@@ -92,6 +92,32 @@ function repoSlug(cwd) {
 
 const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 
+// The remote-control bridge can reconnect a session without a clean handoff,
+// leaving the OLD connection's record stuck reporting connection_status
+// "connected" server-side (the API exposes no lineage field to link a
+// reconnect back to its predecessor) — surfacing as several near-identical rows
+// for the same piece of work. Collapse those: group by name+repo; if any record
+// in a group resolves to a live local process (bridgeSuffixMap), trust that one
+// and drop the rest; otherwise keep only the most recently active record.
+function collapseGhosts(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.name + '|' + (r.repo || '');
+    (groups.get(key) || groups.set(key, []).get(key)).push(r);
+  }
+  const out = [];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      out.push(group[0]);
+      continue;
+    }
+    const resolved = group.filter((r) => r.sessionId);
+    if (resolved.length) out.push(...resolved);
+    else out.push(group.reduce((a, b) => (Date.parse(b.ts || 0) > Date.parse(a.ts || 0) ? b : a)));
+  }
+  return out;
+}
+
 // Connected + active sessions for the phone's Sessions tab, styled like the
 // Claude Code app: one list (the client buckets it by day) of every session whose
 // process is live right now — no time-window filter. Two sources:
@@ -105,7 +131,7 @@ router.get('/recent', (req, res) => {
 
   // Disconnected sessions don't belong in this list — a session you can't reach
   // right now isn't "recent", it's history (resumable there instead).
-  const remote = codeSessions().filter((s) => s.connected).map((s) => {
+  const remote = collapseGhosts(codeSessions().filter((s) => s.connected).map((s) => {
     const local = bridges.get(s.suffix) || null;
     const uuid = local?.sessionId || null;
     const meta = uuid ? getArchiveMeta(uuid) : null;
@@ -126,7 +152,7 @@ router.get('/recent', (req, res) => {
       ts: s.ts,
       resumeUuid: meta?.cwdExists ? uuid : null,
     };
-  });
+  }));
 
   // A harness PTY that has bridged also appears in the API list — don't list twice.
   const seen = new Set(remote.map((r) => r.sessionId).filter(Boolean));
