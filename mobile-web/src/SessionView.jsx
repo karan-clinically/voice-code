@@ -32,7 +32,15 @@ export default function SessionView({ session, onBack, notify }) {
     const t = (typeof override === 'string' ? override : text).trim();
     if (!t) return;
     setText('');
-    setExpanded(false);
+    // Slash commands drive Claude Code's own TUI menu. The prompt pipeline
+    // (/api/command) mishandles that menu, so send them as raw keystrokes over
+    // /ws/term (exactly like the desktop terminal): type it, then Enter once the
+    // menu has filtered. The screen poll shows the result.
+    if (t.startsWith('/')) {
+      sendRaw(t);
+      setTimeout(() => sendRaw('\r'), 200);
+      return;
+    }
     runResult(commandText(session.id, t));
   }
 
@@ -88,6 +96,10 @@ export default function SessionView({ session, onBack, notify }) {
               className="composer-input"
               rows={1}
               enterKeyHint="send"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
               placeholder="Type a command…"
               value={text}
               onChange={(e) => {

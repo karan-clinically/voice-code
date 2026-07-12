@@ -153,6 +153,11 @@ export function Terminal({ sessionId, className }) {
   const fitPty = useCallback(async () => {
     const outer = outerRef.current;
     if (!outer || !outer.clientWidth) return;
+    // Don't resize while the user is typing — opening the phone keyboard resizes
+    // the viewport, and the resulting SIGWINCH cancels the slash-command menu (or
+    // any open prompt) the user is building. The initial fit runs before focus.
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) return;
     const probe = document.createElement('span');
     probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font-family:${getComputedStyle(outer).fontFamily};font-size:${fontPx}px`;
     probe.textContent = 'X'.repeat(40);
@@ -162,7 +167,10 @@ export function Terminal({ sessionId, className }) {
     if (!charW) return;
     const cols = Math.max(20, Math.min(120, Math.floor((outer.clientWidth - 20) / charW)));
     const rows = Math.max(12, Math.min(60, Math.floor((outer.clientHeight - 20) / (fontPx * 1.3))));
-    if (lastFit.current.cols === cols && lastFit.current.rows === rows) return;
+    // Only resize on a real WIDTH (cols) change. Opening/closing the phone keyboard
+    // changes height (rows) only — resizing for that fires a SIGWINCH that cancels
+    // the slash-command menu or a modal right as you send. Skip height-only changes.
+    if (lastFit.current.cols === cols) return;
     try {
       const r = await sessionResize(sessionId, cols, rows);
       if (r && !r.skipped) lastFit.current = { cols, rows }; // lock in only if actually applied
@@ -172,12 +180,11 @@ export function Terminal({ sessionId, className }) {
   }, [sessionId, fontPx]);
 
   useEffect(() => {
-    const t = setTimeout(fitPty, 150); // after layout settles
-    const iv = setInterval(fitPty, 4000); // self-heal once a busy session goes idle
+    const t = setTimeout(fitPty, 200); // one fit after open; then only on width change
     let rt;
-    const onResize = () => { clearTimeout(rt); rt = setTimeout(fitPty, 250); };
-    window.addEventListener('resize', onResize);
-    return () => { clearTimeout(t); clearInterval(iv); clearTimeout(rt); window.removeEventListener('resize', onResize); };
+    const onResize = () => { clearTimeout(rt); rt = setTimeout(fitPty, 300); };
+    window.addEventListener('resize', onResize); // rotation (a real width change) re-fits
+    return () => { clearTimeout(t); clearTimeout(rt); window.removeEventListener('resize', onResize); };
   }, [fitPty]);
 
   useEffect(() => {
