@@ -14,6 +14,7 @@ export default function SessionView({ session, onBack, notify }) {
   const [state, setState] = useState(session.state || 'idle');
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
   const [voice, setVoice] = useState(false); // hands-free overlay
+  const [showKeys, setShowKeys] = useState(false); // raw-key popover
   const title = 'Claude · ' + (session.label || basename(session.cwd));
 
   async function runResult(promise) {
@@ -73,13 +74,6 @@ export default function SessionView({ session, onBack, notify }) {
       ) : (
         <>
           <Terminal sessionId={session.id} className="sv-term" />
-          <div className="sv-keys">
-            <button onClick={() => sendRaw('\x1b')}>Esc</button>
-            <button onClick={() => sendRaw('\x1b[A')}>↑</button>
-            <button onClick={() => sendRaw('\x1b[B')}>↓</button>
-            <button onClick={() => sendRaw(' ')} title="Toggle (multi-select)">␣</button>
-            <button className="sv-key-enter" onClick={() => sendRaw('\r')}>⏎ Enter</button>
-          </div>
           <div className="sv-bar">
             <DictationMic className="micbtn" text={text} setText={setText} notify={notify} />
             <textarea
@@ -104,6 +98,25 @@ export default function SessionView({ session, onBack, notify }) {
                 }
               }}
             />
+            <div className="sv-keymenu">
+              <button type="button" className="sv-keymenu-btn" onClick={() => setShowKeys((v) => !v)} aria-label="Keys">⋯</button>
+              {showKeys && (
+                <>
+                  <div className="sv-keypop-backdrop" onClick={() => setShowKeys(false)} />
+                  <div className="sv-keypop">
+                    <div className="sv-keypop-title">Send a key</div>
+                    <button onClick={() => sendRaw('\r')}>⏎&nbsp;&nbsp;Enter</button>
+                    <button onClick={() => sendRaw('\x1b')}>⎋&nbsp;&nbsp;Esc</button>
+                    <button onClick={() => sendRaw('\t')}>⇥&nbsp;&nbsp;Tab</button>
+                    <button onClick={() => sendRaw(' ')}>␣&nbsp;&nbsp;Space</button>
+                    <button onClick={() => sendRaw('\x1b[A')}>↑&nbsp;&nbsp;Up</button>
+                    <button onClick={() => sendRaw('\x1b[B')}>↓&nbsp;&nbsp;Down</button>
+                    <button onClick={() => sendRaw('\x1b[D')}>←&nbsp;&nbsp;Left</button>
+                    <button onClick={() => sendRaw('\x1b[C')}>→&nbsp;&nbsp;Right</button>
+                  </div>
+                </>
+              )}
+            </div>
             <button className="primary sv-send" onClick={sendText}>Send</button>
           </div>
           <div className={stateCls}>{state}</div>
