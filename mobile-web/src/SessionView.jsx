@@ -3,6 +3,7 @@ import { commandText, mediaUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { DictationMic, Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
+import VoiceView from './VoiceView.jsx';
 
 // Full-screen Claude session — terminal is the main view. Voice dictates into the
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
@@ -12,6 +13,7 @@ export default function SessionView({ session, onBack, notify }) {
   const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState(session.state || 'idle');
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
+  const [voice, setVoice] = useState(false); // hands-free overlay
   const title = 'Claude · ' + (session.label || basename(session.cwd));
 
   async function runResult(promise) {
@@ -40,11 +42,14 @@ export default function SessionView({ session, onBack, notify }) {
       <div className="sv-top">
         <button className="ghost sv-back" onClick={onBack}>←</button>
         <div className="sv-title">{title}</div>
+        <button className="ghost" onClick={() => setVoice(true)} title="Hands-free voice session">🎧</button>
         <div className="seg">
           <button className={'seg-btn' + (mode !== 'chat' ? ' on' : '')} onClick={() => setMode('terminal')}>Terminal</button>
           <button className={'seg-btn' + (mode === 'chat' ? ' on' : '')} onClick={() => setMode('chat')}>Chat</button>
         </div>
       </div>
+
+      {voice && <VoiceView session={session} onBack={() => setVoice(false)} notify={notify} />}
 
       {mode === 'chat' ? (
         <ChatView session={session} notify={notify} />

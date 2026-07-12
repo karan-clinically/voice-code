@@ -45,6 +45,23 @@ export function playUrl(u) {
   });
 }
 
+// Cut playback short — used by hands-free barge-in when you talk over a reply.
+// Resolves whatever promise playUrl() handed out, so the caller's turn loop
+// carries on rather than waiting for audio that will never finish.
+export function stopAudio() {
+  try {
+    if (!player) return;
+    player.pause();
+    const done = player.onended;
+    player.onended = null;
+    player.removeAttribute('src');
+    player.load();
+    if (done) done();
+  } catch {
+    /* nothing playing */
+  }
+}
+
 export function pickMime() {
   for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg']) {
     if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
