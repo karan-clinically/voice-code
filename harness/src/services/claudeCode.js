@@ -13,6 +13,7 @@ import { EventEmitter } from 'node:events';
 import * as terminal from './terminal.js';
 import * as sessions from './sessionManager.js';
 import { recordAssistantMessage } from './conversation.js';
+import { summarizeForSpeech } from './summarize.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('claude');
@@ -134,8 +135,14 @@ export function signalStop({ sessionId, cwd, lastAssistantMessage, stopReason, t
       // Record the full assistant text for the Chat view (single source of truth
       // for assistant turns — fires for every input path incl. terminal-typed).
       recordAssistantMessage(turnDbId, lastAssistantMessage);
-      const spoken = summarizeForSpeech(lastAssistantMessage);
-      if (spoken) events.emit('turn', { sessionId: turnDbId, text: spoken });
+      // Summarizing is an async model call now, but signalStop stays synchronous
+      // (routes/hooks.js uses its return value). The 'turn' event is consumed
+      // asynchronously over the WebSocket anyway, so emit it when the summary lands.
+      summarizeForSpeech(lastAssistantMessage)
+        .then((spoken) => {
+          if (spoken) events.emit('turn', { sessionId: turnDbId, text: spoken });
+        })
+        .catch((err) => log.warn(`spoken summary failed: ${err.message}`));
     }
   }
 
@@ -230,30 +237,6 @@ function isChrome(line) {
 // long and full of code; never speak them raw. Strip code blocks (replaced with
 // a spoken note), markdown markers, collapse whitespace, and cap length — taking
 // first + last paragraph when very long.
-export function summarizeForSpeech(text, maxChars = 600) {
-  if (!text) return '';
-  let t = text;
-  // fenced code blocks -> spoken note
-  t = t.replace(/```[\s\S]*?```/g, (m) => {
-    const n = Math.max(1, m.split('\n').length - 2);
-    return ` (a code block of ${n} lines) `;
-  });
-  t = t.replace(/`([^`]+)`/g, '$1'); // inline code
-  t = t.replace(/^#{1,6}\s+/gm, ''); // headings
-  t = t.replace(/^\s*[-*+]\s+/gm, ''); // bullets
-  t = t.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1'); // emphasis
-  t = t.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
-  if (t.length <= maxChars) return t;
-
-  const paras = t.split('\n').map((s) => s.trim()).filter(Boolean);
-  if (paras.length > 2) {
-    const combined = `${paras[0]} … ${paras[paras.length - 1]}`;
-    if (combined.length <= maxChars) return combined;
-    t = combined;
-  }
-  return `${t.slice(0, maxChars - 1).trim()}…`;
-}
-
 // Resolve a Stop-hook firing to a DB session id for the 'turn' broadcast,
 // without needing an in-flight command. Prefer the CVH_SESSION_ID token, else
 // the most-recent live session whose cwd matches.

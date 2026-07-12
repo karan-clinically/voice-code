@@ -10,7 +10,8 @@ import { Router } from 'express';
 import db from '../../db.js';
 import { getConfig } from '../../config.js';
 import { getSession } from '../../services/sessionManager.js';
-import { executeCommand, summarizeForSpeech } from '../../services/claudeCode.js';
+import { executeCommand } from '../../services/claudeCode.js';
+import { summarizeForSpeech } from '../../services/summarize.js';
 import { recordUserMessage } from '../../services/conversation.js';
 import { isConfigured as ttsConfigured } from '../../services/tts/index.js';
 import { ensureAudio } from '../../services/ttsCache.js';
@@ -42,7 +43,7 @@ router.post('/', async (req, res) => {
     recordUserMessage(session.id, sent); // Chat-view conversation log
 
     const result = await executeCommand(session, sent);
-    const summary = summarizeForSpeech(result.text);
+    const summary = await summarizeForSpeech(result.text);
 
     // The reply is recorded with no audio yet. Synthesis is the slowest step in a
     // turn (~2s for a full render), so we do NOT block the response on it: the
