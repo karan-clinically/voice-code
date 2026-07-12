@@ -208,6 +208,13 @@ const liveClaudeIds = db.prepare(
   "SELECT claude_session_id FROM sessions WHERE claude_session_id IS NOT NULL AND state != 'dead'"
 );
 
+// Every Claude session id this harness has ever owned (live or dead) — used to
+// exclude harness-spawned sessions from the "external" list so they aren't shown
+// in both the harness and remote-control groups.
+const ownedClaudeIds = db.prepare(
+  'SELECT claude_session_id FROM sessions WHERE claude_session_id IS NOT NULL'
+);
+
 // Build a safe FTS5 MATCH expression from free-text: quote each term (so FTS
 // special chars can't cause a syntax error), implicit-AND them.
 function toMatch(q) {
@@ -271,6 +278,28 @@ export function searchArchive({ q = '', project = '', limit = 60 } = {}) {
     `SELECT * FROM archive_sessions ${where} ORDER BY last_ts DESC LIMIT ?`
   ).all(...params);
   return rows.map((r) => shape(r, null, live.has(r.uuid)));
+}
+
+// Claude Code sessions written to disk recently that this harness did NOT spawn —
+// i.e. started in another terminal and driven from claude.ai remote control. The
+// filename uuid IS the session id, so these resume through the same archive path.
+// Excludes any uuid the harness owns (shown in the harness group instead).
+// `active` = the transcript was touched within activeWindowMs (a good proxy for
+// "being driven right now"); recency comes from file_mtime, refreshed by reindex.
+export function recentExternalSessions({ sinceMs, activeWindowMs = 6 * 60_000, limit = 40 } = {}) {
+  const owned = new Set(ownedClaudeIds.all().map((r) => r.claude_session_id));
+  const lim = Math.min(Math.max(Number(limit) || 40, 1), 200);
+  const now = Date.now();
+  const rows = db
+    .prepare('SELECT * FROM archive_sessions WHERE file_mtime >= ? ORDER BY file_mtime DESC LIMIT ?')
+    .all(Math.floor(sinceMs), lim);
+  return rows
+    .filter((r) => !owned.has(r.uuid))
+    .map((r) => ({
+      ...shape(r, null, false),
+      mtime: r.file_mtime,
+      active: typeof r.file_mtime === 'number' && now - r.file_mtime < activeWindowMs,
+    }));
 }
 
 const selOneArchive = db.prepare('SELECT * FROM archive_sessions WHERE uuid = ?');

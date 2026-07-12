@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { listSessions, createSession, transcribe, usageSummary } from './lib/api.js';
+import { createSession, transcribe, usageSummary, recentSessions, reindexArchive, resumeArchive } from './lib/api.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
@@ -15,18 +15,22 @@ function friendlyState(state) {
   );
 }
 
-// Active sessions split by where they were started: 'harness' (the desktop app on
-// the PC) vs 'remote' (this phone, over Tailscale). Rows predating the origin
-// column default to harness.
-const ORIGIN_GROUPS = [
-  { key: 'harness', title: 'In the harness', sub: 'Started on the PC' },
-  { key: 'remote', title: 'Remote control', sub: 'Started from a phone' },
-];
+// Short relative time for a session's last activity.
+function timeAgo(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
 export default function Home({ onOpen, onHistory, notify }) {
   const [tab, setTab] = useState('start'); // start | sessions
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
-  const [sessions, setSessions] = useState([]);
+  const [recent, setRecent] = useState({ harness: [], remote: [] });
   const [picking, setPicking] = useState(false);
   const [spend, setSpend] = useState(null); // estimated total USD, for the header tally
   const [showSpend, setShowSpend] = useState(false);
@@ -35,8 +39,8 @@ export default function Home({ onOpen, onHistory, notify }) {
   useEffect(() => {
     let stop = false;
     const refresh = () => {
-      listSessions()
-        .then((d) => !stop && setSessions(d.sessions.filter((s) => s.alive)))
+      recentSessions()
+        .then((d) => !stop && setRecent({ harness: d.harness || [], remote: d.remote || [] }))
         .catch(() => {});
       usageSummary()
         .then((d) => !stop && setSpend(d.totalUsd))
@@ -49,6 +53,12 @@ export default function Home({ onOpen, onHistory, notify }) {
       clearInterval(t);
     };
   }, []);
+
+  // Freshen the transcript archive when the tab opens so externally-run (remote-
+  // controlled) sessions show up promptly — reindex is incremental, so it's cheap.
+  useEffect(() => {
+    if (tab === 'sessions') reindexArchive().catch(() => {});
+  }, [tab]);
 
   async function startClaude() {
     try {
@@ -67,22 +77,60 @@ export default function Home({ onOpen, onHistory, notify }) {
       notify(e.message);
     }
   }
+  async function resumeUuid(uuid) {
+    try {
+      onOpen(await resumeArchive(uuid));
+    } catch (e) {
+      notify(e.message);
+    }
+  }
 
-  const sessionCard = (s) => (
-    <button key={s.id} className="sess" onClick={() => onOpen(s)}>
+  // A harness-spawned session: tap opens it if live, or resumes it (via its Claude
+  // session id) if it ended recently.
+  const harnessCard = (s) => {
+    const canResume = !!s.claude_session_id;
+    const onClick = s.alive ? () => onOpen(s) : canResume ? () => resumeUuid(s.claude_session_id) : undefined;
+    return (
+      <button key={'h' + s.id} className="sess" onClick={onClick} disabled={!onClick}>
+        <span className="sess-main">
+          <span className="sess-title">{s.label || basename(s.cwd) || `Session ${s.id}`}</span>
+          {s.cwd && <span className="sess-line">{s.cwd}</span>}
+          {s.git_repo && <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>}
+          <span className="sess-line sess-meta">
+            {s.kind === 'shell' ? 'Shell' : 'Claude'}
+            {!s.alive && ` · ended ${timeAgo(s.last_seen_at)}`}
+          </span>
+        </span>
+        <span className={'pill' + (s.alive && STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>
+          {s.alive ? friendlyState(s.state) : canResume ? 'Resume' : 'Ended'}
+        </span>
+      </button>
+    );
+  };
+
+  // An external (remote-controlled) Claude session, discovered from its transcript.
+  // Shows the session id and resumes into a harness PTY when tapped.
+  const remoteCard = (s) => (
+    <button
+      key={'r' + s.uuid}
+      className="sess"
+      onClick={s.cwdExists ? () => resumeUuid(s.uuid) : undefined}
+      disabled={!s.cwdExists}
+      title={s.cwdExists ? 'Resume this session' : 'Original folder is gone'}
+    >
       <span className="sess-main">
-        <span className="sess-title">{s.label || basename(s.cwd)}</span>
+        <span className="sess-title">{s.title || basename(s.cwd) || s.uuid.slice(0, 8)}</span>
         {s.cwd && <span className="sess-line">{s.cwd}</span>}
-        {s.git_repo && (
-          <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>
-        )}
-        <span className="sess-line sess-meta">{s.kind === 'shell' ? 'Shell' : 'Claude'}</span>
+        <span className="sess-line sess-meta">
+          session {s.uuid.slice(0, 8)}
+          {s.lastTs ? ` · ${timeAgo(s.lastTs)}` : ''}
+        </span>
       </span>
-      <span className={'pill' + (STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>
-        {friendlyState(s.state)}
-      </span>
+      <span className={'pill' + (s.active ? ' ready' : '')}>{s.active ? 'Active' : 'Resume'}</span>
     </button>
   );
+
+  const total = recent.harness.length + recent.remote.length;
 
   return (
     <div>
@@ -103,7 +151,7 @@ export default function Home({ onOpen, onHistory, notify }) {
         <button className={'tab' + (tab === 'start' ? ' on' : '')} onClick={() => setTab('start')}>Start</button>
         <button className={'tab' + (tab === 'sessions' ? ' on' : '')} onClick={() => setTab('sessions')}>
           Sessions
-          {sessions.length > 0 && <span className="tab-n">{sessions.length}</span>}
+          {total > 0 && <span className="tab-n">{total}</span>}
         </button>
       </div>
 
@@ -142,26 +190,34 @@ export default function Home({ onOpen, onHistory, notify }) {
       )}
 
       {tab === 'sessions' && (
-        sessions.length === 0 ? (
+        total === 0 ? (
           <div className="card">
             <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
-              No active sessions. Start one from the Start tab.
+              No recent sessions. Start one from the Start tab — or run Claude in any terminal and it'll appear under
+              Remote control.
             </p>
           </div>
         ) : (
-          ORIGIN_GROUPS.map((g) => {
-            const rows = sessions.filter((s) => (s.origin || 'harness') === g.key);
-            if (rows.length === 0) return null;
-            return (
-              <div key={g.key} className="sess-group">
+          <>
+            {recent.harness.length > 0 && (
+              <div className="sess-group">
                 <div className="sess-group-head">
-                  <span className="sess-group-title">{g.title}</span>
-                  <span className="sess-group-sub">{g.sub}</span>
+                  <span className="sess-group-title">In the harness</span>
+                  <span className="sess-group-sub">Started on this PC · live + recently ended</span>
                 </div>
-                <div className="stack">{rows.map(sessionCard)}</div>
+                <div className="stack">{recent.harness.map(harnessCard)}</div>
               </div>
-            );
-          })
+            )}
+            {recent.remote.length > 0 && (
+              <div className="sess-group">
+                <div className="sess-group-head">
+                  <span className="sess-group-title">Remote control</span>
+                  <span className="sess-group-sub">Started in another terminal</span>
+                </div>
+                <div className="stack">{recent.remote.map(remoteCard)}</div>
+              </div>
+            )}
+          </>
         )
       )}
 

@@ -19,6 +19,7 @@ import {
   getPtyId, markState,
 } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
+import { recentExternalSessions } from '../../services/archiveIndex.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt } from '../../services/prompt.js';
@@ -66,6 +67,24 @@ const selHistory = db.prepare(
 
 router.get('/', (req, res) => {
   res.json({ sessions: listSessions() });
+});
+
+// Recent sessions for the phone's Sessions tab, in two groups:
+//   harness — sessions this harness spawned that are live or ended in the last 48h.
+//   remote  — Claude Code sessions started in another terminal (driven from
+//             claude.ai remote control), discovered from the transcript archive by
+//             recent file activity and keyed by their session id (uuid).
+// Registered before '/:id' so Express doesn't treat "recent" as an id.
+router.get('/recent', (req, res) => {
+  const cutoff = Date.now() - 48 * 3600 * 1000;
+  const all = listSessions();
+  const live = all.filter((s) => s.alive); // listSessions is already id-desc (recent first)
+  const ended = all
+    .filter((s) => !s.alive && s.last_seen_at && Date.parse(s.last_seen_at) >= cutoff)
+    .sort((a, b) => Date.parse(b.last_seen_at) - Date.parse(a.last_seen_at))
+    .slice(0, 15);
+  const remote = recentExternalSessions({ sinceMs: cutoff });
+  res.json({ harness: [...live, ...ended], remote });
 });
 
 router.post('/', async (req, res) => {

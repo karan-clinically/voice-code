@@ -44,6 +44,11 @@ export const termWsUrl = (id) =>
   base.replace(/^http/, 'ws') + `/ws/term?session=${id}` + (authQS ? '&' + authQS : '');
 
 export const listSessions = () => jget('/api/sessions');
+// Recent sessions for the Sessions tab: { harness: [...], remote: [...] } — the
+// harness-spawned ones (live + recently ended) and external Claude sessions
+// started in another terminal (driven from claude.ai remote control).
+export const recentSessions = () => jget('/api/sessions/recent');
+export const reindexArchive = () => jpost('/api/archive/reindex');
 export const createSession = (body) => jpost('/api/sessions', body);
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`);
