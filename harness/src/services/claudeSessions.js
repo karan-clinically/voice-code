@@ -78,5 +78,30 @@ export function liveClaudeSessions() {
   return out;
 }
 
+// Map the app's session id back to the local transcript, so a session listed by
+// the API can still be resumed here. Claude records the bridge id as
+// `session_<suffix>` while the API returns `cse_<same suffix>` — join on that.
+// Reads every session file (not just live ones), since a disconnected session is
+// still resumable from its transcript.
+export function bridgeSuffixMap() {
+  const map = new Map();
+  let files;
+  try {
+    files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith('.json'));
+  } catch {
+    return map;
+  }
+  for (const f of files) {
+    try {
+      const j = JSON.parse(readFileSync(join(SESSIONS_DIR, f), 'utf8'));
+      if (!j?.bridgeSessionId || !j.sessionId) continue;
+      map.set(String(j.bridgeSessionId).replace(/^session_/, ''), { sessionId: j.sessionId, cwd: j.cwd || null });
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return map;
+}
+
 // Warm the PID set at boot so the first poll already has data.
 refreshLivePids();

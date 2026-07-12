@@ -5,7 +5,7 @@ import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
 
 // Avatar glyph by where a session was started.
-const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️' };
+const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '☁️' };
 
 // Compact relative time, like the Claude Code app ("now", "4m", "8h", "3d").
 function shortAgo(ts) {
@@ -106,17 +106,18 @@ export default function Home({ onOpen, onHistory, notify }) {
     const openable = canOpen(it);
     return (
       <button key={it.key} className="cc-item" onClick={openable ? () => openItem(it) : undefined} disabled={!openable}>
-        <span className={'cc-avatar cc-' + it.origin}>{ORIGIN_ICON[it.origin] || '⌨️'}</span>
+        <span className={'cc-avatar cc-' + it.origin}>
+          {ORIGIN_ICON[it.origin] || '⌨️'}
+          {it.unread && <span className="cc-unread" />}
+        </span>
         <span className="cc-body">
           <span className="cc-line1">
             <span className="cc-name">{it.name}</span>
             <span className="cc-time">{shortAgo(it.ts)}</span>
           </span>
           <span className="cc-status">
-            <span className={'cc-dot ' + (it.active ? 'busy' : it.connected ? 'on' : '')} />
-            <span className={'cc-conn ' + (it.active ? 'busy' : it.connected ? 'on' : '')}>
-              {it.active ? 'Working' : it.connected ? 'Connected' : 'Disconnected'}
-            </span>
+            <span className={'cc-dot ' + (it.active ? 'busy' : 'on')} />
+            <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>{it.active ? 'Working' : 'Connected'}</span>
             <span className="cc-sep">·</span>
             <span className="cc-origin">{it.originLabel}</span>
           </span>

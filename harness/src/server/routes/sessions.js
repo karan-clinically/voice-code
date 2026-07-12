@@ -20,7 +20,8 @@ import {
 } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
 import { getArchiveMeta } from '../../services/archiveIndex.js';
-import { liveClaudeSessions } from '../../services/claudeSessions.js';
+import { bridgeSuffixMap } from '../../services/claudeSessions.js';
+import { codeSessions } from '../../services/codeSessions.js';
 import { getRemoteSlug } from '../../services/terminal.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
@@ -100,17 +101,44 @@ const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 // Each row carries a friendly name, whether it's Working (busy) or just Connected,
 // and repo/branch + session id. Registered before '/:id'.
 router.get('/recent', (req, res) => {
-  const harnessRows = listSessions();
-  const ownedUuids = new Set(harnessRows.filter((s) => s.claude_session_id).map((s) => s.claude_session_id));
+  const bridges = bridgeSuffixMap(); // app session id -> local transcript, for resume
 
-  const harness = harnessRows
-    .filter((s) => s.alive)
+  // Disconnected sessions don't belong in this list — a session you can't reach
+  // right now isn't "recent", it's history (resumable there instead).
+  const remote = codeSessions().filter((s) => s.connected).map((s) => {
+    const local = bridges.get(s.suffix) || null;
+    const uuid = local?.sessionId || null;
+    const meta = uuid ? getArchiveMeta(uuid) : null;
+    const cwd = local?.cwd || meta?.cwd || null;
+    return {
+      key: 'c' + s.id,
+      kind: 'code',
+      name: s.title || (uuid ? uuid.slice(0, 8) : s.suffix.slice(0, 8)),
+      connected: s.connected,
+      active: s.working,
+      unread: s.unread,
+      origin: s.envKind === 'anthropic_cloud' ? 'cloud' : 'terminal',
+      originLabel: s.envKind === 'anthropic_cloud' ? 'Cloud' : 'Remote control',
+      repo: s.repo || repoSlug(cwd) || null,
+      branch: s.branch || meta?.gitBranch || null,
+      cwd,
+      sessionId: uuid, // local transcript uuid, when this session ran on this PC
+      ts: s.ts,
+      resumeUuid: meta?.cwdExists ? uuid : null,
+    };
+  });
+
+  // A harness PTY that has bridged also appears in the API list — don't list twice.
+  const seen = new Set(remote.map((r) => r.sessionId).filter(Boolean));
+  const harness = listSessions()
+    .filter((s) => s.alive && !(s.claude_session_id && seen.has(s.claude_session_id)))
     .map((s) => ({
       key: 'h' + s.id,
       kind: 'harness',
       name: s.label || baseName(s.cwd) || `Session ${s.id}`,
       connected: true,
       active: s.state === 'busy',
+      unread: false,
       origin: s.origin === 'remote' ? 'phone' : 'pc',
       originLabel: s.origin === 'remote' ? 'Phone' : 'This PC',
       shell: s.kind === 'shell',
@@ -123,35 +151,12 @@ router.get('/recent', (req, res) => {
       alive: true,
     }));
 
-  const remote = liveClaudeSessions()
-    .filter((ls) => !ownedUuids.has(ls.sessionId))
-    .map((ls) => {
-      const meta = getArchiveMeta(ls.sessionId); // friendly title/repo, or null if unindexed
-      const stub = ls.sessionId.slice(0, 8);
-      const title = meta && meta.title && meta.title !== stub ? meta.title : null;
-      const cwd = ls.cwd || (meta && meta.cwd) || null;
-      return {
-        key: 'r' + ls.sessionId,
-        kind: 'external',
-        name: title || ls.name || (meta && meta.project) || baseName(cwd) || stub,
-        connected: true,
-        active: ls.status === 'busy',
-        origin: 'terminal',
-        originLabel: 'Remote control',
-        repo: repoSlug(cwd) || null,
-        branch: (meta && meta.gitBranch) || null,
-        cwd,
-        sessionId: ls.sessionId,
-        ts: ls.updatedAt ? new Date(ls.updatedAt).toISOString() : (meta && meta.lastTs) || null,
-        resumeUuid: (meta ? meta.cwdExists : true) ? ls.sessionId : null,
-        cwdExists: meta ? meta.cwdExists : true,
-      };
-    });
-
-  // Active (busy) first, then most-recently-active.
-  const sessions = [...harness, ...remote].sort(
-    (a, b) => Number(b.active) - Number(a.active) || Date.parse(b.ts || 0) - Date.parse(a.ts || 0)
-  );
+  // Newest activity first — the client buckets by day, like the app. Every row
+  // reaching here is connected by construction, but filter explicitly so that
+  // invariant holds even if a future source doesn't pre-filter.
+  const sessions = [...harness, ...remote]
+    .filter((s) => s.connected)
+    .sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0));
   res.json({ sessions });
 });
 
