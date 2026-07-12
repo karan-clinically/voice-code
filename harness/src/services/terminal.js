@@ -352,6 +352,19 @@ export async function getGitInfo(cwd) {
   }
 }
 
+// "owner/repo" from a repo's origin remote (like the Claude Code app shows), or
+// null when there's no origin / not a repo. Handles both SSH and HTTPS remotes.
+export async function getRemoteSlug(cwd) {
+  if (!cwd) return null;
+  try {
+    const { stdout } = await pexecFile('git', ['-C', cwd, 'remote', 'get-url', 'origin']);
+    const m = stdout.trim().match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/);
+    return m ? `${m[1]}/${m[2]}` : null;
+  } catch {
+    return null;
+  }
+}
+
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }

@@ -20,6 +20,7 @@ import {
 } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
 import { recentExternalSessions } from '../../services/archiveIndex.js';
+import { getRemoteSlug } from '../../services/terminal.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt } from '../../services/prompt.js';
@@ -69,18 +70,78 @@ router.get('/', (req, res) => {
   res.json({ sessions: listSessions() });
 });
 
-// Currently-active sessions for the phone's Sessions tab, in two groups:
-//   harness — sessions this harness spawned that are live right now.
-//   remote  — Claude Code sessions started in another terminal (driven from
-//             claude.ai remote control) that are being driven right now, found in
-//             the transcript archive by very recent file activity and keyed by
-//             their session id (uuid).
-// Ended sessions deliberately aren't here — they live in History (resume there).
+// Repo "owner/repo" slug per cwd, resolved off the git origin remote — cached and
+// filled in the background so the (5s-polled) /recent handler never blocks on git.
+// A cache miss returns null now and the slug appears on a later poll.
+const slugCache = new Map(); // cwd -> "owner/repo" | null
+const slugPending = new Set();
+function repoSlug(cwd) {
+  if (!cwd) return null;
+  if (slugCache.has(cwd)) return slugCache.get(cwd);
+  if (!slugPending.has(cwd)) {
+    slugPending.add(cwd);
+    getRemoteSlug(cwd)
+      .then((slug) => slugCache.set(cwd, slug))
+      .catch(() => slugCache.set(cwd, null))
+      .finally(() => slugPending.delete(cwd));
+  }
+  return null;
+}
+
+const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
+
+// Active sessions for the phone's Sessions tab, styled like the Claude Code app:
+// one recency-sorted list (the client buckets it by day) of currently-connected
+// sessions. Each carries the friendly name, connection state, and where it was
+// started — 'Phone' / 'This PC' for harness-spawned PTYs (via the origin column)
+// and 'Remote control' for Claude sessions driven from another terminal (found in
+// the transcript archive by recent file activity). Ended sessions live in History.
 // Registered before '/:id' so Express doesn't treat "recent" as an id.
 router.get('/recent', (req, res) => {
-  const harness = listSessions().filter((s) => s.alive); // id-desc (recent first)
-  const remote = recentExternalSessions({ sinceMs: Date.now() - 20 * 60_000 }).filter((s) => s.active);
-  res.json({ harness, remote });
+  const harness = listSessions()
+    .filter((s) => s.alive)
+    .map((s) => ({
+      key: 'h' + s.id,
+      kind: 'harness',
+      name: s.label || baseName(s.cwd) || `Session ${s.id}`,
+      connected: true,
+      origin: s.origin === 'remote' ? 'phone' : 'pc',
+      originLabel: s.origin === 'remote' ? 'Phone' : 'This PC',
+      shell: s.kind === 'shell',
+      repo: repoSlug(s.cwd) || s.git_repo || null,
+      branch: s.git_branch || null,
+      cwd: s.cwd || null,
+      sessionId: s.claude_session_id || null,
+      ts: s.last_seen_at,
+      harnessId: s.id,
+      alive: true,
+    }));
+
+  const remote = recentExternalSessions({ sinceMs: Date.now() - 20 * 60_000 })
+    .filter((s) => s.active)
+    .map((s) => {
+      const stub = s.uuid.slice(0, 8);
+      return {
+        key: 'r' + s.uuid,
+        kind: 'external',
+        name: s.title && s.title !== stub ? s.title : s.project || baseName(s.cwd) || stub,
+        connected: true,
+        origin: 'terminal',
+        originLabel: 'Remote control',
+        repo: repoSlug(s.cwd) || null,
+        branch: s.gitBranch || null,
+        cwd: s.cwd || null,
+        sessionId: s.uuid,
+        ts: s.lastTs,
+        resumeUuid: s.cwdExists ? s.uuid : null,
+        cwdExists: s.cwdExists,
+      };
+    });
+
+  const sessions = [...harness, ...remote]
+    .filter((x) => x.ts)
+    .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+  res.json({ sessions });
 });
 
 router.post('/', async (req, res) => {

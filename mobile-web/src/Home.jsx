@@ -4,33 +4,36 @@ import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
 
-// Raw session states (idle | busy | response_ready) shown as friendly words, and
-// mapped to the existing tinted-pill variants.
-const STATE_LABEL = { idle: 'Idle', busy: 'Working', response_ready: 'Ready', awaiting_input: 'Waiting' };
-const STATE_PILL = { busy: 'busy', response_ready: 'ready', awaiting_input: 'ready' };
-function friendlyState(state) {
-  return (
-    STATE_LABEL[state] ||
-    String(state || 'idle').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-  );
-}
+// Avatar glyph by where a session was started.
+const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️' };
 
-// Short relative time for a session's last activity.
-function timeAgo(ts) {
+// Compact relative time, like the Claude Code app ("now", "4m", "8h", "3d").
+function shortAgo(ts) {
   if (!ts) return '';
   const s = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
-  if (s < 60) return 'just now';
+  if (s < 45) return 'now';
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+// Day bucket header (Today / Yesterday / Earlier) for a session's last activity.
+const BUCKETS = ['Today', 'Yesterday', 'Earlier'];
+function dayBucket(ts) {
+  const t = Date.parse(ts);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (t >= startToday) return 'Today';
+  if (t >= startToday - 86400000) return 'Yesterday';
+  return 'Earlier';
 }
 
 export default function Home({ onOpen, onHistory, notify }) {
   const [tab, setTab] = useState('start'); // start | sessions
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
-  const [recent, setRecent] = useState({ harness: [], remote: [] });
+  const [sessions, setSessions] = useState([]);
   const [picking, setPicking] = useState(false);
   const [spend, setSpend] = useState(null); // estimated total USD, for the header tally
   const [showSpend, setShowSpend] = useState(false);
@@ -40,7 +43,7 @@ export default function Home({ onOpen, onHistory, notify }) {
     let stop = false;
     const refresh = () => {
       recentSessions()
-        .then((d) => !stop && setRecent({ harness: d.harness || [], remote: d.remote || [] }))
+        .then((d) => !stop && setSessions(d.sessions || []))
         .catch(() => {});
       usageSummary()
         .then((d) => !stop && setSpend(d.totalUsd))
@@ -85,49 +88,41 @@ export default function Home({ onOpen, onHistory, notify }) {
     }
   }
 
-  // A live harness-spawned session: tap opens it.
-  const harnessCard = (s) => (
-    <button key={'h' + s.id} className="sess" onClick={() => onOpen(s)}>
-      <span className="sess-main">
-        <span className="sess-title">{s.label || basename(s.cwd) || `Session ${s.id}`}</span>
-        {s.cwd && <span className="sess-line">{s.cwd}</span>}
-        {s.git_repo && <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>}
-        <span className="sess-line sess-meta">{s.kind === 'shell' ? 'Shell' : 'Claude'}</span>
-      </span>
-      <span className={'pill' + (STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>{friendlyState(s.state)}</span>
-    </button>
-  );
+  // Tap: open a live harness session directly; resume any other into a harness PTY.
+  const canOpen = (it) => (it.kind === 'harness' && it.alive) || !!it.resumeUuid;
+  function openItem(it) {
+    if (it.kind === 'harness' && it.alive) {
+      onOpen({ id: it.harnessId, kind: it.shell ? 'shell' : 'claude', label: it.name, cwd: it.cwd });
+    } else if (it.resumeUuid) {
+      resumeUuid(it.resumeUuid);
+    }
+  }
 
-  // An external (remote-controlled) Claude session being driven right now, found
-  // from its transcript. Shows its friendly name + session id; tap opens it in a
-  // harness PTY (via resume).
-  const remoteCard = (s) => {
-    const stub = s.uuid.slice(0, 8);
-    // Prefer the friendly name the session actually got (custom-title / ai-title);
-    // for a still-unnamed one (e.g. freshly opened), the folder reads better than a uuid.
-    const name = s.title && s.title !== stub ? s.title : s.project || basename(s.cwd) || stub;
+  // One session row, styled like the Claude Code app: avatar, name + time, a
+  // connection status with where it was started, then repo/branch + session id.
+  const sessionRow = (it) => {
+    const source = it.repo ? (it.branch ? `${it.repo} · ${it.branch}` : it.repo) : it.cwd ? basename(it.cwd) : '';
+    const sub = [source, it.sessionId ? `session ${it.sessionId.slice(0, 8)}` : ''].filter(Boolean).join('  ·  ');
+    const openable = canOpen(it);
     return (
-      <button
-        key={'r' + s.uuid}
-        className="sess"
-        onClick={s.cwdExists ? () => resumeUuid(s.uuid) : undefined}
-        disabled={!s.cwdExists}
-        title={s.cwdExists ? 'Open this session' : 'Original folder is gone'}
-      >
-        <span className="sess-main">
-          <span className="sess-title">{name}</span>
-          {s.cwd && <span className="sess-line">{s.cwd}</span>}
-          <span className="sess-line sess-meta">
-            session {stub}
-            {s.lastTs ? ` · ${timeAgo(s.lastTs)}` : ''}
+      <button key={it.key} className="cc-item" onClick={openable ? () => openItem(it) : undefined} disabled={!openable}>
+        <span className={'cc-avatar cc-' + it.origin}>{ORIGIN_ICON[it.origin] || '⌨️'}</span>
+        <span className="cc-body">
+          <span className="cc-line1">
+            <span className="cc-name">{it.name}</span>
+            <span className="cc-time">{shortAgo(it.ts)}</span>
           </span>
+          <span className="cc-status">
+            <span className={'cc-dot' + (it.connected ? ' on' : '')} />
+            <span className={'cc-conn' + (it.connected ? ' on' : '')}>{it.connected ? 'Connected' : 'Disconnected'}</span>
+            <span className="cc-sep">·</span>
+            <span className="cc-origin">{it.originLabel}</span>
+          </span>
+          {sub && <span className="cc-sub">{sub}</span>}
         </span>
-        <span className="pill ready">Active</span>
       </button>
     );
   };
-
-  const total = recent.harness.length + recent.remote.length;
 
   return (
     <div>
@@ -148,7 +143,7 @@ export default function Home({ onOpen, onHistory, notify }) {
         <button className={'tab' + (tab === 'start' ? ' on' : '')} onClick={() => setTab('start')}>Start</button>
         <button className={'tab' + (tab === 'sessions' ? ' on' : '')} onClick={() => setTab('sessions')}>
           Sessions
-          {total > 0 && <span className="tab-n">{total}</span>}
+          {sessions.length > 0 && <span className="tab-n">{sessions.length}</span>}
         </button>
       </div>
 
@@ -187,35 +182,29 @@ export default function Home({ onOpen, onHistory, notify }) {
       )}
 
       {tab === 'sessions' && (
-        total === 0 ? (
+        sessions.length === 0 ? (
           <div className="card">
             <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
               No active sessions. Start one from the Start tab, or drive Claude from another terminal and it'll appear
-              under Remote control. Past sessions live in 🕘 History.
+              here. Past sessions live in 🕘 History.
             </p>
           </div>
         ) : (
-          <>
-            {recent.harness.length > 0 && (
-              <div className="sess-group">
-                <div className="sess-group-head">
-                  <span className="sess-group-title">In the harness</span>
-                  <span className="sess-group-sub">Running on this PC</span>
-                </div>
-                <div className="stack">{recent.harness.map(harnessCard)}</div>
+          BUCKETS.map((b) => {
+            const rows = sessions.filter((s) => dayBucket(s.ts) === b);
+            if (rows.length === 0) return null;
+            return (
+              <div key={b} className="cc-group">
+                <div className="cc-group-head">{b}</div>
+                <div className="cc-list">{rows.map(sessionRow)}</div>
               </div>
-            )}
-            {recent.remote.length > 0 && (
-              <div className="sess-group">
-                <div className="sess-group-head">
-                  <span className="sess-group-title">Remote control</span>
-                  <span className="sess-group-sub">Driven from another terminal</span>
-                </div>
-                <div className="stack">{recent.remote.map(remoteCard)}</div>
-              </div>
-            )}
-          </>
+            );
+          })
         )
+      )}
+
+      {tab === 'sessions' && (
+        <button className="cc-fab" onClick={() => setTab('start')}>＋ New session</button>
       )}
 
       {picking && (
