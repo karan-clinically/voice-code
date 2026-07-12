@@ -16,13 +16,17 @@ import { getConfig } from '../../config.js';
 import {
   listSessions, getSession, createSession, killSession, renameSession,
   sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, setKind,
+  getPtyId, markState,
 } from '../../services/sessionManager.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
-import { executeCommand } from '../../services/claudeCode.js';
+import { executeCommand, awaitReply } from '../../services/claudeCode.js';
+import { detectPrompt } from '../../services/prompt.js';
+import { buildReplyResponse, recordUserInteraction } from '../../services/reply.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('sessions-route');
 const router = Router();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // Allowlisted raw key sequences clients may send (no arbitrary control chars).
@@ -144,6 +148,60 @@ router.post('/:id/key', (req, res) => {
   try {
     sendRawKey(req.params.id, seq);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Current interactive picker on screen (question + numbered options), or null.
+// Lets a client that arrives mid-prompt (e.g. one opened from terminal-typed input)
+// render the choices without having driven the command itself.
+router.get('/:id/prompt', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  try {
+    const screen = await readScreen(req.params.id, { full: false });
+    res.json({ prompt: detectPrompt(screen) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Answer an interactive picker by option number: move the cursor there (reading
+// its current position off the screen) and press Enter, then wait for Claude's
+// follow-up so the caller can show/speak it. Single-select pickers only — the
+// multi-question ones (tabs) are still answered in the terminal.
+router.post('/:id/select', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  const index = Number(req.body?.index) | 0;
+  const wait = req.body?.wait !== false;
+  try {
+    const prompt = detectPrompt(await readScreen(req.params.id, { full: false }));
+    if (!prompt) return res.status(409).json({ error: 'no interactive prompt on screen' });
+    const target = prompt.options.find((o) => o.n === index);
+    if (!target) return res.status(400).json({ error: `option ${index} not available` });
+
+    const delta = index - prompt.cursorN;
+    const step = delta > 0 ? KEY_SEQS.down : KEY_SEQS.up;
+    for (let i = 0; i < Math.abs(delta); i++) {
+      sendRawKey(req.params.id, step);
+      await sleep(70); // let the TUI redraw between moves
+    }
+
+    // Record what was picked so the chat log stays continuous, then submit.
+    const label = `▸ ${index}. ${target.label}`;
+    recordUserInteraction(session.id, label);
+    recordUserMessage(session.id, label);
+    markState(session.id, 'busy');
+    const sentAt = Date.now();
+    sendRawKey(req.params.id, KEY_SEQS.enter);
+
+    if (!wait) return res.json({ ok: true, selected: index });
+    const result = await awaitReply(session, getPtyId(session.id), sentAt, 120_000);
+    const payload = await buildReplyResponse(session, result);
+    res.json({ ok: true, selected: index, ...payload });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

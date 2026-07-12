@@ -50,6 +50,24 @@ export function isReadFullRequest(text) {
   return READ_FULL.has(t);
 }
 
+// When Claude is waiting on a numbered picker, map a spoken answer to an option
+// number — "option two", "number 3", "the second one", or a bare "two". Returns
+// null when nothing in [1..max] is named (so it isn't mistaken for a new question).
+const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+const ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
+export function parseOptionNumber(text, max) {
+  const t = (text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const ok = (n) => (n >= 1 && n <= max ? n : null);
+  let m = t.match(/\b(?:option|number|choice|answer|pick|select)\s+(\d{1,2})\b/);
+  if (m) return ok(+m[1]);
+  m = t.match(/\b(?:option|number|choice|answer|pick|select)\s+([a-z]+)\b/);
+  if (m && NUM_WORDS[m[1]] != null) return ok(NUM_WORDS[m[1]]);
+  for (const [w, n] of Object.entries(ORDINALS)) if (new RegExp(`\\b${w}\\b`).test(t)) return ok(n);
+  if (/^\d{1,2}$/.test(t)) return ok(+t); // a bare "2"
+  if (NUM_WORDS[t] != null) return ok(NUM_WORDS[t]); // a bare "two"
+  return null;
+}
+
 const SPEECH_RMS = 0.03; // start-of-speech threshold while listening
 const SILENCE_MS = 1200; // quiet needed to call the turn finished
 const MIN_SPEECH_MS = 350; // ignore coughs/clicks
@@ -64,16 +82,19 @@ const TICK_MS = 60;
 export class HandsFree {
   // onState('listening'|'thinking'|'speaking'|'idle') · onLevel(0..1 for the orb)
   // onUser(text) · onAssistant(text) · onError(msg)
-  constructor({ onState, onLevel, onUser, onAssistant, onError, transcribe, send, fullReplyUrl }) {
+  constructor({ onState, onLevel, onUser, onAssistant, onError, onPrompt, transcribe, send, select, fullReplyUrl }) {
     this.onState = onState || (() => {});
     this.onLevel = onLevel || (() => {});
     this.onUser = onUser || (() => {});
     this.onAssistant = onAssistant || (() => {});
     this.onError = onError || (() => {});
+    this.onPrompt = onPrompt || (() => {}); // (prompt|null) -> view renders option buttons
     this.transcribe = transcribe; // async (blob, ext) -> text
-    this.send = send; // async (text) -> { text, audioUrl }
+    this.send = send; // async (text) -> { text, audioUrl, prompt }
+    this.select = select; // async (index) -> { text, audioUrl, prompt } (answers a picker)
     this.fullReplyUrl = fullReplyUrl; // () -> url that speaks the last reply in full
     this.hasReply = false; // nothing to read out in full until Claude has answered
+    this.pendingPrompt = null; // the picker Claude is waiting on, if any
     this.on = false;
     this.state = 'idle';
   }
@@ -209,6 +230,21 @@ export class HandsFree {
       if (!this.on) return;
       this.onUser(said);
 
+      // Claude is waiting on a picker — a spoken option number answers it (single-
+      // select only; multi-question ones are answered in the terminal). Anything
+      // that isn't an option number leaves the picker up rather than typing into it.
+      if (this.pendingPrompt && !this.pendingPrompt.multi) {
+        const n = parseOptionNumber(said, this.pendingPrompt.options.length);
+        if (n != null) {
+          await this.chooseOption(n);
+          if (this.on) this.listen();
+          return;
+        }
+        this.onError('Say an option number, or tap one.');
+        if (this.on) this.listen();
+        return;
+      }
+
       // "read that in full" / "tell me more" — answer it here from the reply we
       // already have rather than bothering Claude for a fresh (and different) one.
       // Only once there IS a reply to read; otherwise it is just a normal prompt.
@@ -220,16 +256,40 @@ export class HandsFree {
 
       const reply = await this.send(said); // auto-sends — the point of this mode
       if (!this.on) return;
-      if (reply?.text) {
-        this.hasReply = true;
-        this.onAssistant(reply.text);
-      }
-      if (reply?.audioUrl) await this.speak(reply.audioUrl);
+      await this.applyReply(reply);
     } catch (e) {
       if (!this.on) return;
       this.onError(e.message);
     }
     if (this.on) this.listen();
+  }
+
+  // Show/speak a reply and surface any picker it ends on.
+  async applyReply(reply) {
+    if (reply?.text) {
+      this.hasReply = true;
+      this.onAssistant(reply.text);
+    }
+    this.pendingPrompt = reply?.prompt || null;
+    this.onPrompt(this.pendingPrompt);
+    if (reply?.audioUrl) await this.speak(reply.audioUrl);
+  }
+
+  // Answer the current picker (by voice number or a tapped button) and handle
+  // whatever Claude does next — which may be another picker.
+  async chooseOption(index) {
+    if (!this.select) return;
+    this.pendingPrompt = null;
+    this.onPrompt(null);
+    this.setState('thinking');
+    this.onLevel(0);
+    try {
+      const reply = await this.select(index);
+      if (!this.on) return;
+      await this.applyReply(reply);
+    } catch (e) {
+      if (this.on) this.onError(e.message);
+    }
   }
 
   // Play the reply through the SAME AudioContext the mic analyser uses (Web Audio),

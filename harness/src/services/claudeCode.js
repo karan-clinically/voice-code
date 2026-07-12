@@ -14,6 +14,7 @@ import * as terminal from './terminal.js';
 import * as sessions from './sessionManager.js';
 import { recordAssistantMessage } from './conversation.js';
 import { summarizeForSpeech } from './summarize.js';
+import { detectPrompt, promptToText } from './prompt.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('claude');
@@ -22,7 +23,10 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const POLL_MS = 500;
 const QUIET_MS = 1500; // PTY silent this long => probably done
 const MIN_ELAPSED_MS = 1500; // ignore the first moment (command echo)
-const WORKING_RE = /esc to interrupt|esc to cancel|thinking…|working…/i;
+// The working spinner ("esc to interrupt"). NOT "esc to cancel" — that's the
+// footer of an interactive picker, where Claude is waiting, not working; treating
+// it as "working" would hang detection until the timeout.
+const WORKING_RE = /esc to interrupt|thinking…|working…/i;
 
 // dbId -> pending completion entry
 const pending = new Map();
@@ -43,6 +47,14 @@ export async function executeCommand(session, text, { timeoutMs = DEFAULT_TIMEOU
     throw err;
   }
 
+  return awaitReply(session, ptyId, sentAt, timeoutMs, text);
+}
+
+// Wait for the in-flight turn to finish, then read the reply — or the interactive
+// picker Claude is now waiting on — off the session. Shared by executeCommand
+// (after typing text) and the picker-select route (after sending navigation keys),
+// which both need "wait for Claude, then read what's on screen".
+export async function awaitReply(session, ptyId, sentAt, timeoutMs = DEFAULT_TIMEOUT_MS, sentText = '') {
   let signal;
   try {
     signal = await waitForCompletion(session, ptyId, sentAt, timeoutMs);
@@ -51,10 +63,11 @@ export async function executeCommand(session, text, { timeoutMs = DEFAULT_TIMEOU
     throw err;
   }
 
-  const response = await extractResponse(session, ptyId, signal, text);
-  sessions.markState(session.id, 'response_ready');
-  log.info(`session db#${session.id}: response ready via ${signal.via} (${response.length} chars)`);
-  return { text: response, via: signal.via, stopReason: signal.stopReason || null };
+  const response = await extractResponse(session, ptyId, signal, sentText);
+  sessions.markState(session.id, response.prompt ? 'awaiting_input' : 'response_ready');
+  const kind = response.prompt ? 'interactive prompt' : `${response.text.length} chars`;
+  log.info(`session db#${session.id}: response ready via ${signal.via} (${kind})`);
+  return { text: response.text, prompt: response.prompt || null, via: signal.via, stopReason: signal.stopReason || null };
 }
 
 function waitForCompletion(session, ptyId, sentAt, timeoutMs) {
@@ -182,18 +195,32 @@ export function signalStop({ sessionId, cwd, lastAssistantMessage, stopReason, t
 }
 
 async function extractResponse(session, ptyId, signal, sentText) {
+  let screen = '';
+  try {
+    screen = await terminal.captureScreenFlushed(ptyId, { full: true });
+  } catch (err) {
+    log.warn(`screen capture failed for db#${session.id}: ${err.message}`);
+  }
+  // Claude sitting on an interactive picker — surface the question + options, not
+  // the raw hook text or scraped box-drawing chrome. The Stop hook doesn't fire
+  // while Claude waits here, so this is how voice/chat learn about the question.
+  const prompt = detectPrompt(screen);
+  if (prompt) return { text: promptToText(prompt), prompt };
   // Preferred: the exact text from the Stop hook payload.
   if (signal.via === 'hook' && signal.text && signal.text.trim()) {
-    return signal.text.trim();
+    return { text: signal.text.trim() };
   }
-  // Fallback: scrape the rendered screen.
-  try {
-    const screen = await terminal.captureScreenFlushed(ptyId, { full: true });
-    return scrapeResponse(screen, sentText);
-  } catch (err) {
-    log.warn(`screen scrape failed for db#${session.id}: ${err.message}`);
-    return '';
-  }
+  // Fallback: scrape the rendered screen. If answering a picker just returned to a
+  // bare screen (e.g. /model closing), the scrape catches the boot banner — don't
+  // record or speak that.
+  const scraped = scrapeResponse(screen, sentText);
+  return { text: looksLikeBanner(scraped) ? '' : scraped };
+}
+
+// The Claude Code welcome/boot banner (drawn at the top of a fresh screen), not a
+// real reply. Distinct enough that a genuine answer won't trip it.
+function looksLikeBanner(text) {
+  return /Tips for getting started|Welcome back .+!|Claude Code v\d+\.\d+/i.test(text || '');
 }
 
 // Heuristic extraction of Claude's response from the rendered TUI screen: take

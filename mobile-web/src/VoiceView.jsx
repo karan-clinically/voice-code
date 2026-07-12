@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { transcribe, commandText, mediaUrl, replyUrl } from './lib/api.js';
+import { transcribe, commandText, mediaUrl, replyUrl, selectPromptOption } from './lib/api.js';
 import { HandsFree } from './lib/handsfree.js';
 import { basename } from './components.jsx';
 
@@ -19,6 +19,7 @@ export default function VoiceView({ session, onBack, notify }) {
   const [level, setLevel] = useState(0);
   const [hasReply, setHasReply] = useState(false);
   const [turns, setTurns] = useState([]); // {role, text}
+  const [prompt, setPrompt] = useState(null); // interactive picker Claude is waiting on
   const hfRef = useRef(null);
   const logRef = useRef(null);
 
@@ -37,22 +38,30 @@ export default function VoiceView({ session, onBack, notify }) {
       hfRef.current = null;
       setState('idle');
       setLevel(0);
+      setPrompt(null);
       return;
     }
+    // Map a /command or /select response into the reply shape HandsFree expects.
+    const toReply = (d) => {
+      setHasReply(true);
+      return {
+        text: d.summary || d.responseText || '',
+        audioUrl: d.audioUrl ? mediaUrl(d.audioUrl) : null,
+        prompt: d.prompt || null,
+      };
+    };
     const hf = new HandsFree({
       onState: setState,
       onLevel: setLevel,
       onUser: (text) => push('user', text),
       onAssistant: (text) => push('assistant', text),
       onError: (m) => notify(m),
+      onPrompt: setPrompt,
       transcribe: (blob, ext) => transcribe(blob, ext),
-      send: async (text) => {
-        // Conversational cap: if a turn never signals completion, fail in ~2 min
-        // so the loop recovers, rather than hanging on the 10-minute default.
-        const d = await commandText(session.id, text, 120_000);
-        setHasReply(true);
-        return { text: d.summary || d.responseText || '', audioUrl: d.audioUrl ? mediaUrl(d.audioUrl) : null };
-      },
+      // Conversational cap: if a turn never signals completion, fail in ~2 min so
+      // the loop recovers, rather than hanging on the 10-minute default.
+      send: async (text) => toReply(await commandText(session.id, text, 120_000)),
+      select: async (index) => toReply(await selectPromptOption(session.id, index)),
       fullReplyUrl: () => replyUrl(session.id, 'full'),
     });
     hfRef.current = hf;
@@ -88,6 +97,26 @@ export default function VoiceView({ session, onBack, notify }) {
         <div className={'orb ' + state} style={{ transform: `scale(${scale.toFixed(3)})` }} />
         <div className="voice-state">{LABEL[state]}</div>
       </div>
+
+      {prompt && (
+        <div className="voice-prompt">
+          {prompt.multi ? (
+            <p className="voice-hint">Claude is asking a multi-part question — open the Terminal view to answer it.</p>
+          ) : (
+            <>
+              <div className="voice-prompt-hint">Tap an option, or say its number</div>
+              <div className="voice-prompt-opts">
+                {prompt.options.map((o) => (
+                  <button key={o.n} className="voice-opt" onClick={() => hfRef.current?.chooseOption(o.n)} disabled={!live}>
+                    <span className="voice-opt-n">{o.n}</span>
+                    <span className="voice-opt-label">{o.label}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {hasReply && (
         <button

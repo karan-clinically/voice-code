@@ -517,3 +517,55 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
 .voice-full:disabled {
   opacity: 0.45;
 }
+
+/* Interactive picker — tappable options in voice & chat views. Number badge +
+   label, full-width rows, subtle full border (no coloured edge rails). */
+.voice-prompt, .chat-prompt {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+.chat-prompt {
+  padding: 10px 12px 4px;
+  border-top: 1px solid var(--border);
+}
+.voice-prompt-hint, .chat-prompt-hint {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.voice-prompt-opts { display: flex; flex-direction: column; gap: 8px; }
+.voice-opt, .chat-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  min-width: 0;
+}
+.voice-opt:disabled, .chat-opt:disabled { opacity: 0.5; }
+.voice-opt-n {
+  flex: 0 0 auto;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-weight: 700; font-size: 13px;
+}
+.voice-opt-label {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 15px;
+}

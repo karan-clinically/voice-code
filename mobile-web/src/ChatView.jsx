@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { sessionMessages, sendChat } from './lib/api.js';
+import { sessionMessages, sendChat, sessionPrompt, selectPromptOption } from './lib/api.js';
 import ChatComposer from './ChatComposer.jsx';
 
 // Claude-app-style chat over a live session (phone). Renders the harness
@@ -10,6 +10,7 @@ import ChatComposer from './ChatComposer.jsx';
 export default function ChatView({ session, notify }) {
   const [messages, setMessages] = useState([]);
   const [working, setWorking] = useState(false);
+  const [prompt, setPrompt] = useState(null); // interactive picker Claude is waiting on
   const lastId = useRef(0);
   const scrollRef = useRef(null);
   const pinned = useRef(true);
@@ -21,6 +22,12 @@ export default function ChatView({ session, notify }) {
       // indicator when the assistant's reply lands.
       if (state !== undefined) setWorking(state === 'busy');
       else if (fresh.some((m) => m.role === 'assistant')) setWorking(false);
+      // Claude parked on an interactive picker → fetch its options to show buttons.
+      if (state === 'awaiting_input') {
+        try { setPrompt((await sessionPrompt(session.id)).prompt); } catch { /* transient */ }
+      } else {
+        setPrompt(null);
+      }
       if (fresh.length) {
         lastId.current = last;
         setMessages((prev) => {
@@ -65,6 +72,18 @@ export default function ChatView({ session, notify }) {
     }
   }
 
+  async function choose(index) {
+    setPrompt(null);
+    setWorking(true);
+    pinned.current = true;
+    try {
+      await selectPromptOption(session.id, index);
+    } catch (e) {
+      notify(e.message);
+    }
+    poll();
+  }
+
   const lastAssistantText = [...messages].reverse().find((m) => m.role === 'assistant')?.text || '';
 
   return (
@@ -74,7 +93,7 @@ export default function ChatView({ session, notify }) {
           <p className="chat-empty">
             No messages yet — type below to talk to this session. Replies appear here formatted.
             <br />
-            <span className="muted">Interactive prompts still need the Terminal view.</span>
+            <span className="muted">When Claude asks a multiple-choice question, tap an option below.</span>
           </p>
         ) : (
           messages.map((m) => <Bubble key={m.id} role={m.role} text={m.text} />)
@@ -88,6 +107,23 @@ export default function ChatView({ session, notify }) {
           </div>
         )}
       </div>
+      {prompt && (
+        <div className="chat-prompt">
+          {prompt.multi ? (
+            <p className="muted">Claude is asking a multi-part question — open the Terminal view to answer it.</p>
+          ) : (
+            <>
+              <div className="chat-prompt-hint">Tap an option to answer</div>
+              {prompt.options.map((o) => (
+                <button key={o.n} className="chat-opt" onClick={() => choose(o.n)} disabled={working}>
+                  <span className="voice-opt-n">{o.n}</span>
+                  <span className="voice-opt-label">{o.label}</span>
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+      )}
       <ChatComposer session={session} onSubmit={submit} lastAssistantText={lastAssistantText} notify={notify} />
     </>
   );

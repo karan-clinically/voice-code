@@ -4,8 +4,8 @@ import { MicButton, FolderPicker, SttModeToggle, TtsProviderToggle, basename } f
 
 // Raw session states (idle | busy | response_ready) shown as friendly words, and
 // mapped to the existing tinted-pill variants.
-const STATE_LABEL = { idle: 'Idle', busy: 'Working', response_ready: 'Ready' };
-const STATE_PILL = { busy: 'busy', response_ready: 'ready' };
+const STATE_LABEL = { idle: 'Idle', busy: 'Working', response_ready: 'Ready', awaiting_input: 'Waiting' };
+const STATE_PILL = { busy: 'busy', response_ready: 'ready', awaiting_input: 'ready' };
 function friendlyState(state) {
   return (
     STATE_LABEL[state] ||

@@ -1,0 +1,54 @@
+// Turn a completed turn (executeCommand / awaitReply result) into the client
+// payload: record the interaction, summarize for speech, hand back a lazy TTS url,
+// and kick off desktop playback. Shared by POST /api/command (text turns) and the
+// picker-select route (answering an interactive prompt), so both paths speak and
+// record identically.
+
+import db from '../db.js';
+import { getConfig } from '../config.js';
+import { summarizeForSpeech } from './summarize.js';
+import { isConfigured as ttsConfigured } from './tts/index.js';
+import { ensureAudio } from './ttsCache.js';
+import { playLocal } from './audio.js';
+import { broadcastResponse } from '../server/ws.js';
+import { makeLogger } from '../util/logger.js';
+
+const log = makeLogger('reply');
+
+const insertInteraction = db.prepare(
+  'INSERT INTO interactions (session_id, direction, text, summary, audio_path, tts_chars) VALUES (?, ?, ?, ?, ?, ?)'
+);
+
+export function recordUserInteraction(sessionId, text) {
+  insertInteraction.run(sessionId, 'user', text, null, null, null);
+}
+
+export async function buildReplyResponse(session, result) {
+  const summary = await summarizeForSpeech(result.text);
+
+  // Recorded with no audio yet — synthesis is the slowest step, so the client is
+  // handed /api/tts/<id> immediately and the first listener streams the mp3.
+  const claudeRow = insertInteraction.run(session.id, 'claude', result.text, summary, null, null);
+  const interactionId = Number(claudeRow.lastInsertRowid);
+
+  const speakable = !!summary && ttsConfigured();
+  const audioUrl = speakable ? `/api/tts/${interactionId}` : null;
+  broadcastResponse({ sessionId: session.id, interactionId, summary, audioUrl });
+
+  const target = getConfig('tts_playback_target', 'desktop');
+  if (speakable && (target === 'desktop' || target === 'both')) {
+    ensureAudio(interactionId)
+      .then((a) => a.path && playLocal(a.path))
+      .catch((err) => log.warn(`local playback failed: ${err.message}`));
+  }
+
+  return {
+    responseText: result.text,
+    summary,
+    audioUrl,
+    interactionId,
+    via: result.via,
+    stopReason: result.stopReason,
+    prompt: result.prompt || null,
+  };
+}

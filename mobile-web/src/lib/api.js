@@ -93,6 +93,11 @@ export const sendChat = (id, text) => jpost(`/api/sessions/${id}/chat`, { text }
 // --- chat composer controls ---
 export const sessionMode = (id) => jget(`/api/sessions/${id}/mode`);
 export const sessionKey = (id, key) => jpost(`/api/sessions/${id}/key`, { key });
+
+// --- interactive picker (question + numbered options Claude is waiting on) ---
+export const sessionPrompt = (id) => jget(`/api/sessions/${id}/prompt`);
+// Answer option `index`; resolves with Claude's follow-up reply ({responseText, audioUrl, prompt}).
+export const selectPromptOption = (id, index) => jpost(`/api/sessions/${id}/select`, { index });
 export const attachFile = (id, file) => {
   const fd = new FormData();
   fd.append('file', file, file.name || 'upload');
