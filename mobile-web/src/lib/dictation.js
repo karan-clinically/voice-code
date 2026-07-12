@@ -49,6 +49,21 @@ export function useDictation({ text, setText, notify }) {
     []
   );
 
+  // If the box is cleared while it held a dictation result (e.g. the caller Sent
+  // the message), stop and reset so a late partial/final/tidy can't refill it.
+  // Guarded on wroteRef so it never aborts a mic that just opened (box still empty).
+  useEffect(() => {
+    if (text !== '' || wroteRef.current == null) return;
+    streamRef.current?.abort();
+    streamRef.current = null;
+    recRef.current?.stop();
+    recRef.current = null;
+    wroteRef.current = null;
+    baseRef.current = '';
+    setRecording(false);
+    setTidying(false);
+  }, [text]);
+
   const toggle = useCallback(async () => {
     if (streamRef.current) {
       const s = streamRef.current;
