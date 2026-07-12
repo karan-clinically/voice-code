@@ -19,7 +19,8 @@ import {
   getPtyId, markState,
 } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
-import { recentExternalSessions } from '../../services/archiveIndex.js';
+import { getArchiveMeta } from '../../services/archiveIndex.js';
+import { liveClaudeSessions } from '../../services/claudeSessions.js';
 import { getRemoteSlug } from '../../services/terminal.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
@@ -90,21 +91,26 @@ function repoSlug(cwd) {
 
 const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 
-// Active sessions for the phone's Sessions tab, styled like the Claude Code app:
-// one recency-sorted list (the client buckets it by day) of currently-connected
-// sessions. Each carries the friendly name, connection state, and where it was
-// started — 'Phone' / 'This PC' for harness-spawned PTYs (via the origin column)
-// and 'Remote control' for Claude sessions driven from another terminal (found in
-// the transcript archive by recent file activity). Ended sessions live in History.
-// Registered before '/:id' so Express doesn't treat "recent" as an id.
+// Connected + active sessions for the phone's Sessions tab, styled like the
+// Claude Code app: one list (the client buckets it by day) of every session whose
+// process is live right now — no time-window filter. Two sources:
+//   • harness-spawned PTYs that are alive → origin 'Phone' / 'This PC'.
+//   • live Claude sessions from ~/.claude/sessions/*.json (other terminals driven
+//     from claude.ai remote control) → origin 'Remote control'.
+// Each row carries a friendly name, whether it's Working (busy) or just Connected,
+// and repo/branch + session id. Registered before '/:id'.
 router.get('/recent', (req, res) => {
-  const harness = listSessions()
+  const harnessRows = listSessions();
+  const ownedUuids = new Set(harnessRows.filter((s) => s.claude_session_id).map((s) => s.claude_session_id));
+
+  const harness = harnessRows
     .filter((s) => s.alive)
     .map((s) => ({
       key: 'h' + s.id,
       kind: 'harness',
       name: s.label || baseName(s.cwd) || `Session ${s.id}`,
       connected: true,
+      active: s.state === 'busy',
       origin: s.origin === 'remote' ? 'phone' : 'pc',
       originLabel: s.origin === 'remote' ? 'Phone' : 'This PC',
       shell: s.kind === 'shell',
@@ -117,30 +123,35 @@ router.get('/recent', (req, res) => {
       alive: true,
     }));
 
-  const remote = recentExternalSessions({ sinceMs: Date.now() - 20 * 60_000 })
-    .filter((s) => s.active)
-    .map((s) => {
-      const stub = s.uuid.slice(0, 8);
+  const remote = liveClaudeSessions()
+    .filter((ls) => !ownedUuids.has(ls.sessionId))
+    .map((ls) => {
+      const meta = getArchiveMeta(ls.sessionId); // friendly title/repo, or null if unindexed
+      const stub = ls.sessionId.slice(0, 8);
+      const title = meta && meta.title && meta.title !== stub ? meta.title : null;
+      const cwd = ls.cwd || (meta && meta.cwd) || null;
       return {
-        key: 'r' + s.uuid,
+        key: 'r' + ls.sessionId,
         kind: 'external',
-        name: s.title && s.title !== stub ? s.title : s.project || baseName(s.cwd) || stub,
+        name: title || ls.name || (meta && meta.project) || baseName(cwd) || stub,
         connected: true,
+        active: ls.status === 'busy',
         origin: 'terminal',
         originLabel: 'Remote control',
-        repo: repoSlug(s.cwd) || null,
-        branch: s.gitBranch || null,
-        cwd: s.cwd || null,
-        sessionId: s.uuid,
-        ts: s.lastTs,
-        resumeUuid: s.cwdExists ? s.uuid : null,
-        cwdExists: s.cwdExists,
+        repo: repoSlug(cwd) || null,
+        branch: (meta && meta.gitBranch) || null,
+        cwd,
+        sessionId: ls.sessionId,
+        ts: ls.updatedAt ? new Date(ls.updatedAt).toISOString() : (meta && meta.lastTs) || null,
+        resumeUuid: (meta ? meta.cwdExists : true) ? ls.sessionId : null,
+        cwdExists: meta ? meta.cwdExists : true,
       };
     });
 
-  const sessions = [...harness, ...remote]
-    .filter((x) => x.ts)
-    .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+  // Active (busy) first, then most-recently-active.
+  const sessions = [...harness, ...remote].sort(
+    (a, b) => Number(b.active) - Number(a.active) || Date.parse(b.ts || 0) - Date.parse(a.ts || 0)
+  );
   res.json({ sessions });
 });
 

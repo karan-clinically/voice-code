@@ -99,8 +99,10 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 .cc-status { display: flex; align-items: center; gap: 6px; font-size: 13.5px; min-width: 0; }
 .cc-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--muted-2); }
 .cc-dot.on { background: var(--success); }
+.cc-dot.busy { background: #d97706; animation: pulse 1.1s infinite; }
 .cc-conn { color: var(--muted); }
 .cc-conn.on { color: var(--success); font-weight: 500; }
+.cc-conn.busy { color: #b45309; font-weight: 600; }
 .cc-sep { color: var(--muted-2); }
 .cc-origin { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-sub { font-size: 12.5px; color: var(--muted); font-family: var(--mono);

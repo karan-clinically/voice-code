@@ -113,8 +113,10 @@ export default function Home({ onOpen, onHistory, notify }) {
             <span className="cc-time">{shortAgo(it.ts)}</span>
           </span>
           <span className="cc-status">
-            <span className={'cc-dot' + (it.connected ? ' on' : '')} />
-            <span className={'cc-conn' + (it.connected ? ' on' : '')}>{it.connected ? 'Connected' : 'Disconnected'}</span>
+            <span className={'cc-dot ' + (it.active ? 'busy' : it.connected ? 'on' : '')} />
+            <span className={'cc-conn ' + (it.active ? 'busy' : it.connected ? 'on' : '')}>
+              {it.active ? 'Working' : it.connected ? 'Connected' : 'Disconnected'}
+            </span>
             <span className="cc-sep">·</span>
             <span className="cc-origin">{it.originLabel}</span>
           </span>
@@ -185,8 +187,8 @@ export default function Home({ onOpen, onHistory, notify }) {
         sessions.length === 0 ? (
           <div className="card">
             <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
-              No active sessions. Start one from the Start tab, or drive Claude from another terminal and it'll appear
-              here. Past sessions live in 🕘 History.
+              No connected sessions. Start one from the Start tab, or run Claude in any terminal and it'll appear here.
+              Past sessions live in 🕘 History.
             </p>
           </div>
         ) : (
