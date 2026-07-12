@@ -367,6 +367,16 @@ button.ghost:hover { background: var(--surface-2); }
 .pm-item-text { font-size: 15px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-item-del { flex: 0 0 auto; align-self: center; background: transparent; border: none; box-shadow: none; color: var(--muted); font-size: 18px; padding: 10px 14px; }
 
+/* Slash-command picker (phone) */
+.cmd-search { flex: 0 0 auto; }
+.cmd-group { display: flex; flex-direction: column; gap: 8px; }
+.cmd-group-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 2px 0; }
+.cmd-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; padding: 12px 14px; min-width: 0;
+}
+.cmd-name { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--text); }
+.cmd-desc { font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 code { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--border);

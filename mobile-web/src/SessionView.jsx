@@ -4,6 +4,8 @@ import { playUrl } from './lib/audio.js';
 import { DictationMic, Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
+import SlashCommands from './SlashCommands.jsx';
+import { normalizeSpokenSlash } from './lib/slashCommands.js';
 
 // Full-screen Claude session — terminal is the main view. Voice dictates into the
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
@@ -15,6 +17,7 @@ export default function SessionView({ session, onBack, notify }) {
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
   const [voice, setVoice] = useState(false); // hands-free overlay
   const [showKeys, setShowKeys] = useState(false); // raw-key popover
+  const [showCmds, setShowCmds] = useState(false); // slash-command picker
   const title = 'Claude · ' + (session.label || basename(session.cwd));
 
   async function runResult(promise) {
@@ -29,7 +32,9 @@ export default function SessionView({ session, onBack, notify }) {
     }
   }
   function sendText(override) {
-    const t = (typeof override === 'string' ? override : text).trim();
+    // Voice can't speak "/", so a dictated (or typed) "slash compact" / "forward
+    // slash compact" becomes "/compact" — but only when it names a real command.
+    const t = normalizeSpokenSlash((typeof override === 'string' ? override : text).trim());
     if (!t) return;
     setText('');
     // Slash commands drive Claude Code's own TUI menu. The prompt pipeline
@@ -60,6 +65,15 @@ export default function SessionView({ session, onBack, notify }) {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'in', d: seq }));
     else notify('Key channel not ready — try again');
   };
+
+  // Picker: drop the chosen command into the box for review. 'args' commands get a
+  // trailing space (cursor ready for arguments); 'menu' ones open a selector after
+  // Send — the ⋯ keys then navigate it. Everything reaches the pty via Send.
+  function pickCommand(c) {
+    setShowCmds(false);
+    setText(c.bucket === 'args' ? c.cmd + ' ' : c.cmd);
+    setTimeout(() => { const ta = taRef.current; if (ta) { ta.focus(); const n = ta.value.length; ta.setSelectionRange(n, n); } }, 0);
+  }
 
   // Auto-grow the command box (like the chat composer).
   useEffect(() => {
@@ -118,6 +132,7 @@ export default function SessionView({ session, onBack, notify }) {
             />
             <div className="composer-bar">
               <DictationMic className="cbtn" text={text} setText={setText} notify={notify} />
+              <button type="button" className="cbtn" onClick={() => setShowCmds(true)} aria-label="Slash commands">/</button>
               <div className="composer-spacer" />
               <div className="sv-keymenu">
                 <button type="button" className="cbtn" onClick={() => setShowKeys((v) => !v)} aria-label="Keys">⋯</button>
@@ -142,6 +157,7 @@ export default function SessionView({ session, onBack, notify }) {
             </div>
           </div>
           <div className={stateCls}>{state}</div>
+          {showCmds && <SlashCommands onPick={pickCommand} onClose={() => setShowCmds(false)} />}
         </>
       )}
     </div>
