@@ -10,7 +10,7 @@ import VoiceView from './VoiceView.jsx';
 // code is retained in lib/audio.js but not surfaced here.
 export default function SessionView({ session, onBack, notify }) {
   const [text, setText] = useState('');
-  const [expanded, setExpanded] = useState(false);
+  const taRef = useRef(null);
   const [state, setState] = useState(session.state || 'idle');
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
   const [voice, setVoice] = useState(false); // hands-free overlay
@@ -53,6 +53,14 @@ export default function SessionView({ session, onBack, notify }) {
     else notify('Key channel not ready — try again');
   };
 
+  // Auto-grow the command box (like the chat composer).
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+  }, [text, mode]);
+
   const stateCls = 'sv-state' + (state === 'working…' ? ' busy' : state === 'ready' ? ' ready' : '');
 
   return (
@@ -74,10 +82,10 @@ export default function SessionView({ session, onBack, notify }) {
       ) : (
         <>
           <Terminal sessionId={session.id} className="sv-term" />
-          <div className="sv-bar">
-            <DictationMic className="micbtn" text={text} setText={setText} notify={notify} />
+          <div className="composer">
             <textarea
-              className={'sv-input' + (expanded ? ' expanded' : '')}
+              ref={taRef}
+              className="composer-input"
               rows={1}
               enterKeyHint="send"
               placeholder="Type a command…"
@@ -89,8 +97,6 @@ export default function SessionView({ session, onBack, notify }) {
                 if (/\n$/.test(v)) sendText(v.replace(/\n+$/, ''));
                 else setText(v);
               }}
-              onFocus={() => setExpanded(true)}
-              onBlur={() => !text.trim() && setExpanded(false)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
@@ -98,26 +104,30 @@ export default function SessionView({ session, onBack, notify }) {
                 }
               }}
             />
-            <div className="sv-keymenu">
-              <button type="button" className="sv-keymenu-btn" onClick={() => setShowKeys((v) => !v)} aria-label="Keys">⋯</button>
-              {showKeys && (
-                <>
-                  <div className="sv-keypop-backdrop" onClick={() => setShowKeys(false)} />
-                  <div className="sv-keypop">
-                    <div className="sv-keypop-title">Send a key</div>
-                    <button onClick={() => sendRaw('\r')}>⏎&nbsp;&nbsp;Enter</button>
-                    <button onClick={() => sendRaw('\x1b')}>⎋&nbsp;&nbsp;Esc</button>
-                    <button onClick={() => sendRaw('\t')}>⇥&nbsp;&nbsp;Tab</button>
-                    <button onClick={() => sendRaw(' ')}>␣&nbsp;&nbsp;Space</button>
-                    <button onClick={() => sendRaw('\x1b[A')}>↑&nbsp;&nbsp;Up</button>
-                    <button onClick={() => sendRaw('\x1b[B')}>↓&nbsp;&nbsp;Down</button>
-                    <button onClick={() => sendRaw('\x1b[D')}>←&nbsp;&nbsp;Left</button>
-                    <button onClick={() => sendRaw('\x1b[C')}>→&nbsp;&nbsp;Right</button>
-                  </div>
-                </>
-              )}
+            <div className="composer-bar">
+              <DictationMic className="cbtn" text={text} setText={setText} notify={notify} />
+              <div className="composer-spacer" />
+              <div className="sv-keymenu">
+                <button type="button" className="cbtn" onClick={() => setShowKeys((v) => !v)} aria-label="Keys">⋯</button>
+                {showKeys && (
+                  <>
+                    <div className="sv-keypop-backdrop" onClick={() => setShowKeys(false)} />
+                    <div className="sv-keypop">
+                      <div className="sv-keypop-title">Send a key</div>
+                      <button onClick={() => sendRaw('\r')}>⏎&nbsp;&nbsp;Enter</button>
+                      <button onClick={() => sendRaw('\x1b')}>⎋&nbsp;&nbsp;Esc</button>
+                      <button onClick={() => sendRaw('\t')}>⇥&nbsp;&nbsp;Tab</button>
+                      <button onClick={() => sendRaw(' ')}>␣&nbsp;&nbsp;Space</button>
+                      <button onClick={() => sendRaw('\x1b[A')}>↑&nbsp;&nbsp;Up</button>
+                      <button onClick={() => sendRaw('\x1b[B')}>↓&nbsp;&nbsp;Down</button>
+                      <button onClick={() => sendRaw('\x1b[D')}>←&nbsp;&nbsp;Left</button>
+                      <button onClick={() => sendRaw('\x1b[C')}>→&nbsp;&nbsp;Right</button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button className="composer-send" onClick={() => sendText()}>Send</button>
             </div>
-            <button className="primary sv-send" onClick={sendText}>Send</button>
           </div>
           <div className={stateCls}>{state}</div>
         </>

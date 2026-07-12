@@ -175,6 +175,12 @@ button.ghost:hover { background: var(--surface-2); }
 .sv-title { font-size: 16px; font-weight: 600; color: var(--text-2); flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sv-term { flex: 1 1 auto; min-height: 0; min-width: 0; }
+/* terminal composer Send — a labelled pill in the one-container control row */
+.composer-send {
+  flex: 0 0 auto; height: 38px; padding: 0 16px; font-weight: 600; border-radius: 10px;
+  background: var(--accent); color: var(--accent-fg); border: 1px solid var(--accent); box-shadow: none;
+}
+
 /* "⋯" key menu next to Send: opens an anchored, scrollable popover of raw keys for
    answering the TUI's interactive prompts (Enter/Esc/Tab/arrows/Space). */
 .sv-keymenu { position: relative; flex: 0 0 auto; }
