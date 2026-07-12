@@ -83,8 +83,8 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
     }
   }
 
-  function send() {
-    const t = text.trim();
+  function send(override) {
+    const t = (typeof override === 'string' ? override : text).trim();
     if (!t) return;
     setText('');
     onSubmit(t);
@@ -96,9 +96,15 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
         ref={taRef}
         className="composer-input"
         rows={1}
+        enterKeyHint="send"
         placeholder="Message this session…"
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          const v = e.target.value;
+          // Phone keyboard Enter inserts a newline — treat a trailing one as Send.
+          if (/\n$/.test(v)) send(v.replace(/\n+$/, ''));
+          else setText(v);
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();

@@ -27,8 +27,8 @@ export default function SessionView({ session, onBack, notify }) {
       notify(e.message);
     }
   }
-  function sendText() {
-    const t = text.trim();
+  function sendText(override) {
+    const t = (typeof override === 'string' ? override : text).trim();
     if (!t) return;
     setText('');
     setExpanded(false);
@@ -85,9 +85,16 @@ export default function SessionView({ session, onBack, notify }) {
             <textarea
               className={'sv-input' + (expanded ? ' expanded' : '')}
               rows={1}
+              enterKeyHint="send"
               placeholder="Type a command…"
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                // The phone keyboard's Enter inserts a newline (and often skips
+                // keydown) — treat a trailing newline as Send.
+                if (/\n$/.test(v)) sendText(v.replace(/\n+$/, ''));
+                else setText(v);
+              }}
               onFocus={() => setExpanded(true)}
               onBlur={() => !text.trim() && setExpanded(false)}
               onKeyDown={(e) => {
