@@ -42,14 +42,17 @@ startReconciler();
 // completes.
 startIndexer();
 
-// Self-heal the Tailscale serve mapping (something on this machine keeps
+// Self-heal the Tailscale serve/funnel mapping (something on this machine keeps
 // repointing the root path). Only keeps the loop if the first re-pin succeeds
-// (i.e. Tailscale is present). Disable with tailscale_serve=off.
+// (i.e. Tailscale is present). Disable with tailscale_serve=off. tunnel_mode
+// 'funnel' publishes to the PUBLIC internet — auth.js gates that traffic behind
+// the pairing token, unlike tailnet serve traffic which stays tokenless.
 if (getConfig('tailscale_serve', 'on') !== 'off') {
-  ensureServe(PORT).then((ok) => {
+  const mode = getConfig('tunnel_mode', 'serve');
+  ensureServe(PORT, mode).then((ok) => {
     if (!ok) return;
-    log.info('tailscale serve self-heal enabled (re-pin every 60s)');
-    const timer = setInterval(() => ensureServe(PORT).catch(() => {}), 60_000);
+    log.info(`tailscale ${mode} self-heal enabled (re-pin every 60s)`);
+    const timer = setInterval(() => ensureServe(PORT, mode).catch(() => {}), 60_000);
     timer.unref?.();
   });
 }

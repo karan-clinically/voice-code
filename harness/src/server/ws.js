@@ -7,8 +7,7 @@
 //   {type:'log', level, message}               for the desktop LiveLog
 
 import { WebSocketServer } from 'ws';
-import { getConfig } from '../config.js';
-import { isLocalhost } from './auth.js';
+import { isLocalhost, isTailnetPeer, hasValidToken } from './auth.js';
 import { sessionEvents, listSessions } from '../services/sessionManager.js';
 import { events as claudeEvents } from '../services/claudeCode.js';
 import { createTermWss } from './wsTerm.js';
@@ -65,16 +64,10 @@ export function attachWs(server) {
   log.info('websocket server attached at /ws');
 }
 
+// Same trust tiers as the HTTP side (auth.js): true localhost, a tailnet peer
+// proxied by tailscaled, or the pairing token (?token= — funnel clients).
 function authorizeWs(req) {
-  if (isLocalhost(req)) return true;
-  const token = getConfig('pairing_token');
-  let q = null;
-  try {
-    q = new URL(req.url, 'http://localhost').searchParams.get('token');
-  } catch {
-    q = null;
-  }
-  return !!(token && q && q === token);
+  return isLocalhost(req) || isTailnetPeer(req) || hasValidToken(req);
 }
 
 export function broadcastResponse({ sessionId, interactionId, summary, audioUrl }) {
