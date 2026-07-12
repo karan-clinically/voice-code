@@ -38,6 +38,10 @@ export const jpost = async (p, b) =>
 export const jform = async (p, fd) => parse(await fetch(base + p, { method: 'POST', headers: H, body: fd }));
 export const jdelete = async (p) => parse(await fetch(base + p, { method: 'DELETE', headers: H }));
 export const mediaUrl = (u) => base + u + (authQS ? (u.includes('?') ? '&' : '?') + authQS : '');
+// Raw terminal WebSocket — lets the phone send raw keys (Enter, arrows, Esc,
+// Space) to answer the TUI's interactive prompts, like the desktop terminal does.
+export const termWsUrl = (id) =>
+  base.replace(/^http/, 'ws') + `/ws/term?session=${id}` + (authQS ? '&' + authQS : '');
 
 export const listSessions = () => jget('/api/sessions');
 export const createSession = (body) => jpost('/api/sessions', body);
