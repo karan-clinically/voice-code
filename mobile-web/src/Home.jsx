@@ -2,6 +2,17 @@ import React, { useEffect, useState } from 'react';
 import { listSessions, createSession, transcribe } from './lib/api.js';
 import { MicButton, FolderPicker, SttModeToggle, TtsProviderToggle, basename } from './components.jsx';
 
+// Raw session states (idle | busy | response_ready) shown as friendly words, and
+// mapped to the existing tinted-pill variants.
+const STATE_LABEL = { idle: 'Idle', busy: 'Working', response_ready: 'Ready' };
+const STATE_PILL = { busy: 'busy', response_ready: 'ready' };
+function friendlyState(state) {
+  return (
+    STATE_LABEL[state] ||
+    String(state || 'idle').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
 export default function Home({ onOpen, onHistory, notify }) {
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
   const [sessions, setSessions] = useState([]);
@@ -105,10 +116,17 @@ export default function Home({ onOpen, onHistory, notify }) {
           <h2>Resume a session</h2>
           {sessions.map((s) => (
             <button key={s.id} className="sess" onClick={() => onOpen(s)}>
-              <span>
-                <strong>{s.label || basename(s.cwd)}</strong> <span className="muted">· {s.kind || 'claude'}</span>
+              <span className="sess-main">
+                <span className="sess-title">{s.label || basename(s.cwd)}</span>
+                {s.cwd && <span className="sess-line">{s.cwd}</span>}
+                {s.git_repo && (
+                  <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>
+                )}
+                <span className="sess-line sess-meta">{s.kind === 'shell' ? 'Shell' : 'Claude'}</span>
               </span>
-              <span className="pill">{s.state}</span>
+              <span className={'pill' + (STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>
+                {friendlyState(s.state)}
+              </span>
             </button>
           ))}
         </div>

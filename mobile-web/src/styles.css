@@ -114,12 +114,18 @@ button.ghost:hover { background: var(--surface-2); }
 /* session cards grid */
 .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .sess {
-  display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left;
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; width: 100%; text-align: left;
   padding: 15px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);
   background: var(--surface); box-shadow: var(--shadow-sm); color: var(--text);
 }
 .sess:hover { border-color: var(--border-strong); background: var(--surface); }
 .sess strong { font-weight: 600; font-size: 16px; }
+/* stacked details: title, then folder / git / kind as ellipsised subtext */
+.sess-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.sess-title { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.sess-line { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.sess-meta { color: var(--muted-2); font-size: 12px; }
+.sess .pill { flex: 0 0 auto; margin-top: 1px; }
 
 /* terminal screen (dark) — renders at a readable, user-adjustable font; wide lines
    scroll inside this box (overflow:auto) so the page never scrolls horizontally. */
