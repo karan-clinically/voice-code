@@ -3,6 +3,7 @@ import Home from './Home.jsx';
 import SessionView from './SessionView.jsx';
 import ShellView from './ShellView.jsx';
 import History from './History.jsx';
+import PlaybackControls from './PlaybackControls.jsx';
 
 export default function App() {
   const [route, setRoute] = useState('home'); // home | shell | claude | history
@@ -43,6 +44,7 @@ export default function App() {
         />
       )}
       {route === 'claude' && <SessionView session={session} onBack={goHome} notify={notify} />}
+      <PlaybackControls />
     </>
   );
 }

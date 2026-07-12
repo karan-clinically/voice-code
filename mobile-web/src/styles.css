@@ -518,6 +518,38 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
   opacity: 0.45;
 }
 
+/* Floating Pause/Skip control — appears on any screen while a reply is playing.
+   Sits below the header (z above the voice overlay, below the error banner). */
+.playbar {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 56px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 16px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  max-width: calc(100vw - 24px);
+}
+.playbar-label { font-size: 13px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.playbar-btn {
+  padding: 7px 13px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: none;
+  white-space: nowrap;
+}
+.playbar-btn:hover { background: var(--surface); }
+
 /* Interactive picker — tappable options in voice & chat views. Number badge +
    label, full-width rows, subtle full border (no coloured edge rails). */
 .voice-prompt, .chat-prompt {

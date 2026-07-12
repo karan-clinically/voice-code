@@ -8,12 +8,56 @@ const SILENT =
 let player = null;
 let unlocked = false;
 
+// --- global playback control ---------------------------------------------------
+// One reply plays at a time, wherever it was started (a command reply, a chat
+// replay, or a hands-free turn). Whatever is playing registers a small handle here
+// so any screen's pause/skip control can drive it without knowing the engine
+// (HTMLAudio element vs the hands-free Web Audio context).
+let active = null; // { pause, resume, stop, isPaused }
+const playbackListeners = new Set();
+
+export function playbackState() {
+  return { playing: !!active, paused: !!(active && active.isPaused()) };
+}
+export function subscribePlayback(fn) {
+  playbackListeners.add(fn);
+  fn(playbackState());
+  return () => playbackListeners.delete(fn);
+}
+function notifyPlayback() {
+  const st = playbackState();
+  for (const fn of playbackListeners) fn(st);
+}
+export function setActivePlayback(handle) {
+  active = handle;
+  notifyPlayback();
+}
+export function clearActivePlayback(handle) {
+  if (!handle || active === handle) {
+    active = null;
+    notifyPlayback();
+  }
+}
+export function pausePlayback() {
+  if (active) { active.pause(); notifyPlayback(); }
+}
+export function resumePlayback() {
+  if (active) { active.resume(); notifyPlayback(); }
+}
+export function skipPlayback() {
+  if (active) active.stop(); // stop() clears the handle + notifies via its own path
+}
+
 export function initAudio() {
   if (player) return;
   player = document.createElement('audio');
   player.setAttribute('playsinline', '');
   player.style.display = 'none';
   document.body.appendChild(player);
+  // Keep the playback control's play/pause label in sync with what the element is
+  // actually doing (play() resolves after setActivePlayback, so the first state is
+  // otherwise stale).
+  for (const ev of ['play', 'playing', 'pause']) player.addEventListener(ev, notifyPlayback);
   const unlock = () => {
     if (unlocked) return;
     unlocked = true;
@@ -33,12 +77,21 @@ export function playUrl(u) {
   return new Promise((resolve) => {
     try {
       player.src = u;
-      player.onended = () => {
+      const finish = () => {
         player.onended = null;
+        clearActivePlayback(handle);
         resolve();
       };
+      const handle = {
+        pause: () => player.pause(),
+        resume: () => { const p = player.play(); if (p && p.catch) p.catch(() => {}); },
+        stop: () => { player.pause(); finish(); },
+        isPaused: () => player.paused,
+      };
+      player.onended = finish;
+      setActivePlayback(handle);
       const p = player.play();
-      if (p && p.catch) p.catch(() => resolve());
+      if (p && p.catch) p.catch(finish);
     } catch {
       resolve();
     }

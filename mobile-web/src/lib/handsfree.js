@@ -18,7 +18,7 @@
 // starts — otherwise the reply's own first syllable interrupts itself. Browser
 // echo cancellation does most of the work; these are the belt and braces.
 
-import { pickMime, playUrl, stopAudio } from './audio.js';
+import { pickMime, playUrl, stopAudio, setActivePlayback, clearActivePlayback } from './audio.js';
 
 // Spoken replies are summarized by default. These phrases mean "read out the
 // reply you just summarized" — they are answered locally from the text the
@@ -321,11 +321,22 @@ export class HandsFree {
         return resolve();
       }
       this.playNode = src;
+      // Register with the global playback control so a Pause/Skip button can drive
+      // it. Pause suspends the shared AudioContext (freezing this source); skip
+      // resumes first so stop() reliably fires 'ended'.
+      const handle = {
+        pause: () => { ctx.suspend().catch(() => {}); },
+        resume: () => { ctx.resume().catch(() => {}); },
+        stop: () => { ctx.resume().catch(() => {}); try { src.stop(); } catch { /* already stopped */ } },
+        isPaused: () => ctx.state === 'suspended',
+      };
       src.onended = () => {
         if (this.playNode === src) this.playNode = null;
+        clearActivePlayback(handle);
         resolve();
       };
-      try { src.start(); } catch { resolve(); }
+      setActivePlayback(handle);
+      try { src.start(); } catch { clearActivePlayback(handle); resolve(); }
     });
   }
 
@@ -337,6 +348,7 @@ export class HandsFree {
       this.playNode = null;
     }
     stopAudio();
+    clearActivePlayback(); // hide the global control even if 'ended' didn't fire
   }
 
   // Play the reply, watching for barge-in the whole time.
