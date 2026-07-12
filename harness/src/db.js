@@ -79,6 +79,16 @@ function migrate(db) {
     /* column already exists */
   }
 
+  // Additive migration: where the session was started from — 'harness' (the
+  // desktop app on the PC, a localhost request) or 'remote' (the phone over
+  // Tailscale, a bearer-token request). Lets the Sessions tab group by origin.
+  // Rows predating this column default to 'harness'.
+  try {
+    db.exec("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'harness'");
+  } catch {
+    /* column already exists */
+  }
+
   // Additive migration: characters billed for this interaction's TTS, so voice
   // spend is visible per provider later. NULL for user rows / when TTS was off.
   try {

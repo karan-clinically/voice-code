@@ -18,6 +18,7 @@ import {
   sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, setKind,
   getPtyId, markState,
 } from '../../services/sessionManager.js';
+import { isLocalhost } from '../auth.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt } from '../../services/prompt.js';
@@ -80,7 +81,10 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: `folder not found: ${cwd}` });
     }
     const label = req.body?.label || null;
-    const session = await createSession({ cwd, label, kind });
+    // A localhost request is the desktop app on the PC (in the harness); anything
+    // else reached us over Tailscale with a bearer token (remote control).
+    const origin = isLocalhost(req) ? 'harness' : 'remote';
+    const session = await createSession({ cwd, label, kind, origin });
     res.status(201).json(session);
   } catch (err) {
     log.error(`create session error: ${err.message}`);

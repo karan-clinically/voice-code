@@ -16,6 +16,7 @@ import {
   searchArchive, getArchivePrompts, getArchiveMeta, listProjects, reindex,
 } from '../../services/archiveIndex.js';
 import { createSession } from '../../services/sessionManager.js';
+import { isLocalhost } from '../auth.js';
 import { backfillFromTranscript } from '../../services/conversation.js';
 import { makeLogger } from '../../util/logger.js';
 
@@ -73,6 +74,7 @@ router.post('/:uuid/resume', async (req, res) => {
       label: meta.title,
       kind: 'claude',
       resumeId: meta.uuid,
+      origin: isLocalhost(req) ? 'harness' : 'remote',
     });
     // Seed the Chat view with the prior conversation from the on-disk transcript
     // (best-effort; the live session itself won't rewrite it).

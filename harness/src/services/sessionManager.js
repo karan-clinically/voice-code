@@ -28,8 +28,8 @@ const tokenByDb = new Map(); // dbId -> CVH_SESSION_ID token
 const dbByToken = new Map(); // token -> dbId
 
 const insertSession = db.prepare(`
-  INSERT INTO sessions (tmux_session, tmux_pane, label, cwd, git_repo, git_branch, state, last_seen_at, kind)
-  VALUES (@tmux_session, @tmux_pane, @label, @cwd, @git_repo, @git_branch, @state, @last_seen_at, @kind)
+  INSERT INTO sessions (tmux_session, tmux_pane, label, cwd, git_repo, git_branch, state, last_seen_at, kind, origin)
+  VALUES (@tmux_session, @tmux_pane, @label, @cwd, @git_repo, @git_branch, @state, @last_seen_at, @kind, @origin)
 `);
 const updState = db.prepare('UPDATE sessions SET state = ?, last_seen_at = ? WHERE id = ?');
 const touchSeen = db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?');
@@ -68,7 +68,7 @@ function decorate(row) {
 // original directory or Claude reports "No conversation found". The correlation
 // token is injected as CVH_SESSION_ID so a Stop hook can map back to this session
 // (primary matching is by cwd).
-export async function createSession({ cwd, label = null, kind = 'claude', resumeId = null } = {}) {
+export async function createSession({ cwd, label = null, kind = 'claude', resumeId = null, origin = 'harness' } = {}) {
   const token = randomUUID();
   const isShell = kind === 'shell';
   const claudeArgs = resumeId ? ['--resume', resumeId] : [];
@@ -91,6 +91,7 @@ export async function createSession({ cwd, label = null, kind = 'claude', resume
     state: 'idle',
     last_seen_at: now,
     kind,
+    origin: origin === 'remote' ? 'remote' : 'harness',
   });
   const dbId = Number(info.lastInsertRowid);
   dbIdByPty.set(view.id, dbId);

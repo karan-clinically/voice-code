@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { listSessions, createSession, transcribe, usageSummary } from './lib/api.js';
-import { MicButton, FolderPicker, SttModeToggle, TtsProviderToggle, basename } from './components.jsx';
+import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
+import SettingsModal from './SettingsModal.jsx';
 
 // Raw session states (idle | busy | response_ready) shown as friendly words, and
 // mapped to the existing tinted-pill variants.
@@ -14,12 +15,22 @@ function friendlyState(state) {
   );
 }
 
+// Active sessions split by where they were started: 'harness' (the desktop app on
+// the PC) vs 'remote' (this phone, over Tailscale). Rows predating the origin
+// column default to harness.
+const ORIGIN_GROUPS = [
+  { key: 'harness', title: 'In the harness', sub: 'Started on the PC' },
+  { key: 'remote', title: 'Remote control', sub: 'Started from a phone' },
+];
+
 export default function Home({ onOpen, onHistory, notify }) {
+  const [tab, setTab] = useState('start'); // start | sessions
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
   const [sessions, setSessions] = useState([]);
   const [picking, setPicking] = useState(false);
   const [spend, setSpend] = useState(null); // estimated total USD, for the header tally
   const [showSpend, setShowSpend] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     let stop = false;
@@ -57,9 +68,26 @@ export default function Home({ onOpen, onHistory, notify }) {
     }
   }
 
+  const sessionCard = (s) => (
+    <button key={s.id} className="sess" onClick={() => onOpen(s)}>
+      <span className="sess-main">
+        <span className="sess-title">{s.label || basename(s.cwd)}</span>
+        {s.cwd && <span className="sess-line">{s.cwd}</span>}
+        {s.git_repo && (
+          <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>
+        )}
+        <span className="sess-line sess-meta">{s.kind === 'shell' ? 'Shell' : 'Claude'}</span>
+      </span>
+      <span className={'pill' + (STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>
+        {friendlyState(s.state)}
+      </span>
+    </button>
+  );
+
   return (
     <div>
       <header className="topbar">
+        <button className="ghost hamburger" onClick={() => setShowSettings(true)} title="Settings">☰</button>
         <h1>Voice Harness</h1>
         <div className="spacer" />
         <button className="ghost spend-btn" onClick={() => setShowSpend(true)} title="Estimated API spend">
@@ -69,79 +97,72 @@ export default function Home({ onOpen, onHistory, notify }) {
       </header>
 
       {showSpend && <SpendModal onClose={() => setShowSpend(false)} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} notify={notify} />}
 
-      <div className="card stack">
-        <div className="row" style={{ alignItems: 'center' }}>
-          <div style={{ flex: 1 }}>
-            <strong>Dictation</strong>
-            <div className="muted">
-              Batch transcribes when you stop; Live shows words as you speak. Either way the text lands in the box —
-              nothing sends until you tap Send.
+      <div className="tabstrip">
+        <button className={'tab' + (tab === 'start' ? ' on' : '')} onClick={() => setTab('start')}>Start</button>
+        <button className={'tab' + (tab === 'sessions' ? ' on' : '')} onClick={() => setTab('sessions')}>
+          Sessions
+          {sessions.length > 0 && <span className="tab-n">{sessions.length}</span>}
+        </button>
+      </div>
+
+      {tab === 'start' && (
+        <>
+          <div className="card stack">
+            <h2>Start Claude in a folder</h2>
+            <div className="row">
+              <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\AI\voice harness" style={{ flex: 1 }} />
+              <MicButton
+                className="micbtn"
+                onBlob={async (blob, ext) => {
+                  try {
+                    // No cleanup here — this is a folder path, not an instruction; the
+                    // dictation rewrite would happily mangle it.
+                    setPath(await transcribe(blob, ext, { cleanup: false }));
+                  } catch (e) {
+                    notify(e.message);
+                  }
+                }}
+                notify={notify}
+              />
+            </div>
+            <div className="row">
+              <button style={{ flex: 1 }} onClick={() => setPicking(true)}>📁 Browse…</button>
+              <button className="primary" style={{ flex: 1 }} onClick={startClaude}>Start Claude here</button>
             </div>
           </div>
-          <SttModeToggle notify={notify} />
-        </div>
-        <div className="row" style={{ alignItems: 'center' }}>
-          <div style={{ flex: 1 }}>
-            <strong>Voice provider</strong>
-            <div className="muted">
-              Runs both halves — listening and speaking — on one vendor, so it's a single key and credit pool. Deepgram
-              is fast and clear; ElevenLabs is more expressive.
-            </div>
+
+          <div className="card stack">
+            <h2>Start a shell to navigate</h2>
+            <p className="muted">Opens PowerShell in your projects base. cd/ls to the right folder, hear where you are, then Launch Claude.</p>
+            <button onClick={startShell}>Start shell</button>
           </div>
-          <TtsProviderToggle notify={notify} />
-        </div>
-      </div>
+        </>
+      )}
 
-      <div className="card stack">
-        <h2>Start Claude in a folder</h2>
-        <div className="row">
-          <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\AI\voice harness" style={{ flex: 1 }} />
-          <MicButton
-            className="micbtn"
-            onBlob={async (blob, ext) => {
-              try {
-                // No cleanup here — this is a folder path, not an instruction; the
-                // dictation rewrite would happily mangle it.
-                setPath(await transcribe(blob, ext, { cleanup: false }));
-              } catch (e) {
-                notify(e.message);
-              }
-            }}
-            notify={notify}
-          />
-        </div>
-        <div className="row">
-          <button style={{ flex: 1 }} onClick={() => setPicking(true)}>📁 Browse…</button>
-          <button className="primary" style={{ flex: 1 }} onClick={startClaude}>Start Claude here</button>
-        </div>
-      </div>
-
-      <div className="card stack">
-        <h2>Start a shell to navigate</h2>
-        <p className="muted">Opens PowerShell in your projects base. cd/ls to the right folder, hear where you are, then Launch Claude.</p>
-        <button onClick={startShell}>Start shell</button>
-      </div>
-
-      {sessions.length > 0 && (
-        <div className="card stack">
-          <h2>Resume a session</h2>
-          {sessions.map((s) => (
-            <button key={s.id} className="sess" onClick={() => onOpen(s)}>
-              <span className="sess-main">
-                <span className="sess-title">{s.label || basename(s.cwd)}</span>
-                {s.cwd && <span className="sess-line">{s.cwd}</span>}
-                {s.git_repo && (
-                  <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>
-                )}
-                <span className="sess-line sess-meta">{s.kind === 'shell' ? 'Shell' : 'Claude'}</span>
-              </span>
-              <span className={'pill' + (STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>
-                {friendlyState(s.state)}
-              </span>
-            </button>
-          ))}
-        </div>
+      {tab === 'sessions' && (
+        sessions.length === 0 ? (
+          <div className="card">
+            <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
+              No active sessions. Start one from the Start tab.
+            </p>
+          </div>
+        ) : (
+          ORIGIN_GROUPS.map((g) => {
+            const rows = sessions.filter((s) => (s.origin || 'harness') === g.key);
+            if (rows.length === 0) return null;
+            return (
+              <div key={g.key} className="sess-group">
+                <div className="sess-group-head">
+                  <span className="sess-group-title">{g.title}</span>
+                  <span className="sess-group-sub">{g.sub}</span>
+                </div>
+                <div className="stack">{rows.map(sessionCard)}</div>
+              </div>
+            );
+          })
+        )
       )}
 
       {picking && (
