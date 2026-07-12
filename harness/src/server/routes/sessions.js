@@ -19,7 +19,7 @@ import {
   getPtyId, markState,
 } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
-import { getArchiveMeta } from '../../services/archiveIndex.js';
+import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
 import { bridgeSuffixMap } from '../../services/claudeSessions.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { getRemoteSlug } from '../../services/terminal.js';
@@ -112,8 +112,18 @@ function collapseGhosts(rows) {
       continue;
     }
     const resolved = group.filter((r) => r.sessionId);
-    if (resolved.length) out.push(...resolved);
-    else out.push(group.reduce((a, b) => (Date.parse(b.ts || 0) > Date.parse(a.ts || 0) ? b : a)));
+    if (resolved.length) {
+      // Several ghosts can resolve to the SAME local transcript (title fallback) —
+      // keep one row per transcript, the freshest.
+      const byUuid = new Map();
+      for (const r of resolved) {
+        const prev = byUuid.get(r.sessionId);
+        if (!prev || Date.parse(r.ts || 0) > Date.parse(prev.ts || 0)) byUuid.set(r.sessionId, r);
+      }
+      out.push(...byUuid.values());
+    } else {
+      out.push(group.reduce((a, b) => (Date.parse(b.ts || 0) > Date.parse(a.ts || 0) ? b : a)));
+    }
   }
   return out;
 }
@@ -133,8 +143,15 @@ router.get('/recent', (req, res) => {
   // right now isn't "recent", it's history (resumable there instead).
   const remote = collapseGhosts(codeSessions().filter((s) => s.connected).map((s) => {
     const local = bridges.get(s.suffix) || null;
-    const uuid = local?.sessionId || null;
-    const meta = uuid ? getArchiveMeta(uuid) : null;
+    let uuid = local?.sessionId || null;
+    let meta = uuid ? getArchiveMeta(uuid) : null;
+    // The pid registry only maps each terminal's CURRENT session; recover older
+    // ones by title against the local transcript archive so they stay openable.
+    // Cloud sessions are excluded — they have no local transcript at all.
+    if (!uuid && s.envKind !== 'anthropic_cloud' && s.title) {
+      meta = findArchiveByTitle(s.title);
+      uuid = meta?.uuid || null;
+    }
     const cwd = local?.cwd || meta?.cwd || null;
     return {
       key: 'c' + s.id,

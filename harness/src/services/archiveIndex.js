@@ -308,6 +308,20 @@ export function recentExternalSessions({ sinceMs, activeWindowMs = 10 * 60_000, 
 }
 
 const selOneArchive = db.prepare('SELECT * FROM archive_sessions WHERE uuid = ?');
+const selByTitle = db.prepare(
+  'SELECT * FROM archive_sessions WHERE title = ? COLLATE NOCASE ORDER BY last_ts DESC LIMIT 1'
+);
+
+// Newest transcript whose title matches exactly. Fallback resolver for remote-
+// control sessions the pid registry can't map (it only records each terminal's
+// CURRENT session, so older conversations lose their local link) — the app's
+// server-side title and the transcript's custom/ai title track each other.
+export function findArchiveByTitle(title) {
+  const t = String(title || '').trim();
+  if (!t) return null;
+  const row = selByTitle.get(t);
+  return row ? shape(row, null, liveSet().has(row.uuid)) : null;
+}
 
 export function getArchiveMeta(uuid) {
   const row = selOneArchive.get(uuid);
