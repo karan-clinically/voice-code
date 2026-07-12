@@ -69,22 +69,18 @@ router.get('/', (req, res) => {
   res.json({ sessions: listSessions() });
 });
 
-// Recent sessions for the phone's Sessions tab, in two groups:
-//   harness — sessions this harness spawned that are live or ended in the last 48h.
+// Currently-active sessions for the phone's Sessions tab, in two groups:
+//   harness — sessions this harness spawned that are live right now.
 //   remote  — Claude Code sessions started in another terminal (driven from
-//             claude.ai remote control), discovered from the transcript archive by
-//             recent file activity and keyed by their session id (uuid).
+//             claude.ai remote control) that are being driven right now, found in
+//             the transcript archive by very recent file activity and keyed by
+//             their session id (uuid).
+// Ended sessions deliberately aren't here — they live in History (resume there).
 // Registered before '/:id' so Express doesn't treat "recent" as an id.
 router.get('/recent', (req, res) => {
-  const cutoff = Date.now() - 48 * 3600 * 1000;
-  const all = listSessions();
-  const live = all.filter((s) => s.alive); // listSessions is already id-desc (recent first)
-  const ended = all
-    .filter((s) => !s.alive && s.last_seen_at && Date.parse(s.last_seen_at) >= cutoff)
-    .sort((a, b) => Date.parse(b.last_seen_at) - Date.parse(a.last_seen_at))
-    .slice(0, 15);
-  const remote = recentExternalSessions({ sinceMs: cutoff });
-  res.json({ harness: [...live, ...ended], remote });
+  const harness = listSessions().filter((s) => s.alive); // id-desc (recent first)
+  const remote = recentExternalSessions({ sinceMs: Date.now() - 20 * 60_000 }).filter((s) => s.active);
+  res.json({ harness, remote });
 });
 
 router.post('/', async (req, res) => {

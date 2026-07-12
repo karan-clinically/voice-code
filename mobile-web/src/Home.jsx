@@ -85,50 +85,47 @@ export default function Home({ onOpen, onHistory, notify }) {
     }
   }
 
-  // A harness-spawned session: tap opens it if live, or resumes it (via its Claude
-  // session id) if it ended recently.
-  const harnessCard = (s) => {
-    const canResume = !!s.claude_session_id;
-    const onClick = s.alive ? () => onOpen(s) : canResume ? () => resumeUuid(s.claude_session_id) : undefined;
+  // A live harness-spawned session: tap opens it.
+  const harnessCard = (s) => (
+    <button key={'h' + s.id} className="sess" onClick={() => onOpen(s)}>
+      <span className="sess-main">
+        <span className="sess-title">{s.label || basename(s.cwd) || `Session ${s.id}`}</span>
+        {s.cwd && <span className="sess-line">{s.cwd}</span>}
+        {s.git_repo && <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>}
+        <span className="sess-line sess-meta">{s.kind === 'shell' ? 'Shell' : 'Claude'}</span>
+      </span>
+      <span className={'pill' + (STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>{friendlyState(s.state)}</span>
+    </button>
+  );
+
+  // An external (remote-controlled) Claude session being driven right now, found
+  // from its transcript. Shows its friendly name + session id; tap opens it in a
+  // harness PTY (via resume).
+  const remoteCard = (s) => {
+    const stub = s.uuid.slice(0, 8);
+    // Prefer the friendly name the session actually got (custom-title / ai-title);
+    // for a still-unnamed one (e.g. freshly opened), the folder reads better than a uuid.
+    const name = s.title && s.title !== stub ? s.title : s.project || basename(s.cwd) || stub;
     return (
-      <button key={'h' + s.id} className="sess" onClick={onClick} disabled={!onClick}>
+      <button
+        key={'r' + s.uuid}
+        className="sess"
+        onClick={s.cwdExists ? () => resumeUuid(s.uuid) : undefined}
+        disabled={!s.cwdExists}
+        title={s.cwdExists ? 'Open this session' : 'Original folder is gone'}
+      >
         <span className="sess-main">
-          <span className="sess-title">{s.label || basename(s.cwd) || `Session ${s.id}`}</span>
+          <span className="sess-title">{name}</span>
           {s.cwd && <span className="sess-line">{s.cwd}</span>}
-          {s.git_repo && <span className="sess-line">{s.git_repo}{s.git_branch ? ` · ${s.git_branch}` : ''}</span>}
           <span className="sess-line sess-meta">
-            {s.kind === 'shell' ? 'Shell' : 'Claude'}
-            {!s.alive && ` · ended ${timeAgo(s.last_seen_at)}`}
+            session {stub}
+            {s.lastTs ? ` · ${timeAgo(s.lastTs)}` : ''}
           </span>
         </span>
-        <span className={'pill' + (s.alive && STATE_PILL[s.state] ? ' ' + STATE_PILL[s.state] : '')}>
-          {s.alive ? friendlyState(s.state) : canResume ? 'Resume' : 'Ended'}
-        </span>
+        <span className="pill ready">Active</span>
       </button>
     );
   };
-
-  // An external (remote-controlled) Claude session, discovered from its transcript.
-  // Shows the session id and resumes into a harness PTY when tapped.
-  const remoteCard = (s) => (
-    <button
-      key={'r' + s.uuid}
-      className="sess"
-      onClick={s.cwdExists ? () => resumeUuid(s.uuid) : undefined}
-      disabled={!s.cwdExists}
-      title={s.cwdExists ? 'Resume this session' : 'Original folder is gone'}
-    >
-      <span className="sess-main">
-        <span className="sess-title">{s.title || basename(s.cwd) || s.uuid.slice(0, 8)}</span>
-        {s.cwd && <span className="sess-line">{s.cwd}</span>}
-        <span className="sess-line sess-meta">
-          session {s.uuid.slice(0, 8)}
-          {s.lastTs ? ` · ${timeAgo(s.lastTs)}` : ''}
-        </span>
-      </span>
-      <span className={'pill' + (s.active ? ' ready' : '')}>{s.active ? 'Active' : 'Resume'}</span>
-    </button>
-  );
 
   const total = recent.harness.length + recent.remote.length;
 
@@ -193,8 +190,8 @@ export default function Home({ onOpen, onHistory, notify }) {
         total === 0 ? (
           <div className="card">
             <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
-              No recent sessions. Start one from the Start tab — or run Claude in any terminal and it'll appear under
-              Remote control.
+              No active sessions. Start one from the Start tab, or drive Claude from another terminal and it'll appear
+              under Remote control. Past sessions live in 🕘 History.
             </p>
           </div>
         ) : (
@@ -203,7 +200,7 @@ export default function Home({ onOpen, onHistory, notify }) {
               <div className="sess-group">
                 <div className="sess-group-head">
                   <span className="sess-group-title">In the harness</span>
-                  <span className="sess-group-sub">Started on this PC · live + recently ended</span>
+                  <span className="sess-group-sub">Running on this PC</span>
                 </div>
                 <div className="stack">{recent.harness.map(harnessCard)}</div>
               </div>
@@ -212,7 +209,7 @@ export default function Home({ onOpen, onHistory, notify }) {
               <div className="sess-group">
                 <div className="sess-group-head">
                   <span className="sess-group-title">Remote control</span>
-                  <span className="sess-group-sub">Started in another terminal</span>
+                  <span className="sess-group-sub">Driven from another terminal</span>
                 </div>
                 <div className="stack">{recent.remote.map(remoteCard)}</div>
               </div>

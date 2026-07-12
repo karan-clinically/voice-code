@@ -59,7 +59,7 @@ const writeOne = db.transaction((meta, prompts, responses) => {
 function parseTranscript(filePath, uuid, projectDir) {
   return new Promise((resolve, reject) => {
     const acc = {
-      cwd: null, gitBranch: null, title: null, firstPrompt: null,
+      cwd: null, gitBranch: null, aiTitle: null, customTitle: null, firstPrompt: null,
       firstTs: null, lastTs: null, msgCount: 0, userCount: 0,
       skills: new Set(), mcp: new Set(),
     };
@@ -81,7 +81,12 @@ function parseTranscript(filePath, uuid, projectDir) {
       }
       if (o.cwd) acc.cwd = o.cwd;           // constant per session; last wins is fine
       if (o.gitBranch) acc.gitBranch = o.gitBranch;
-      if (o.type === 'ai-title' && o.aiTitle) acc.title = o.aiTitle; // last wins = freshest
+      // The friendly name a session actually shows: a user-set custom-title wins,
+      // else Claude's generated ai-title. Both appear as their own line types;
+      // last-wins keeps the freshest. (Older code only read ai-title, so
+      // user-named sessions fell back to the uuid.)
+      if (o.type === 'ai-title' && o.aiTitle) acc.aiTitle = o.aiTitle;
+      if (o.type === 'custom-title' && o.customTitle) acc.customTitle = o.customTitle;
 
       if (o.type === 'user' && o.message && o.message.role === 'user' && !o.toolUseResult) {
         const t = cleanPrompt(extractText(o.message.content)); // drop caveat/command noise
@@ -119,7 +124,7 @@ function parseTranscript(filePath, uuid, projectDir) {
         project_name: acc.cwd ? basename(acc.cwd) : projectDir,
         cwd: acc.cwd,
         git_branch: acc.gitBranch,
-        title: acc.title || titleFallback,
+        title: acc.customTitle || acc.aiTitle || titleFallback,
         first_prompt_snippet: snippet,
         first_ts: acc.firstTs,
         last_ts: acc.lastTs,
@@ -286,7 +291,7 @@ export function searchArchive({ q = '', project = '', limit = 60 } = {}) {
 // Excludes any uuid the harness owns (shown in the harness group instead).
 // `active` = the transcript was touched within activeWindowMs (a good proxy for
 // "being driven right now"); recency comes from file_mtime, refreshed by reindex.
-export function recentExternalSessions({ sinceMs, activeWindowMs = 6 * 60_000, limit = 40 } = {}) {
+export function recentExternalSessions({ sinceMs, activeWindowMs = 10 * 60_000, limit = 40 } = {}) {
   const owned = new Set(ownedClaudeIds.all().map((r) => r.claude_session_id));
   const lim = Math.min(Math.max(Number(limit) || 40, 1), 200);
   const now = Date.now();
