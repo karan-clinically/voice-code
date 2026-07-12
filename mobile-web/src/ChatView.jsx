@@ -9,16 +9,28 @@ import ChatComposer from './ChatComposer.jsx';
 // Pearls theme — white rounded bubbles, green accent, no coloured rails.
 export default function ChatView({ session, notify }) {
   const [messages, setMessages] = useState([]);
+  const [working, setWorking] = useState(false);
   const lastId = useRef(0);
   const scrollRef = useRef(null);
   const pinned = useRef(true);
 
   const poll = useCallback(async () => {
     try {
-      const { messages: fresh, lastId: last } = await sessionMessages(session.id, lastId.current);
+      const { messages: fresh, lastId: last, state } = await sessionMessages(session.id, lastId.current);
+      // Prefer the server's busy state (once deployed); until then, clear the
+      // indicator when the assistant's reply lands.
+      if (state !== undefined) setWorking(state === 'busy');
+      else if (fresh.some((m) => m.role === 'assistant')) setWorking(false);
       if (fresh.length) {
         lastId.current = last;
-        setMessages((prev) => [...prev, ...fresh]);
+        setMessages((prev) => {
+          // Drop the optimistic local copies of any user turns the server now returns.
+          let base = prev;
+          for (const f of fresh) {
+            if (f.role === 'user') base = base.filter((m) => !(String(m.id).startsWith('local-') && m.text === f.text));
+          }
+          return [...base, ...fresh];
+        });
       }
     } catch {
       /* transient */
@@ -34,7 +46,7 @@ export default function ChatView({ session, notify }) {
   useEffect(() => {
     const el = scrollRef.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, working]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -43,10 +55,12 @@ export default function ChatView({ session, notify }) {
 
   async function submit(t) {
     setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', text: t }]);
+    setWorking(true); // immediate feedback; the poll keeps it in sync
     pinned.current = true;
     try {
       await sendChat(session.id, t);
     } catch (e) {
+      setWorking(false);
       notify(e.message);
     }
   }
@@ -64,6 +78,14 @@ export default function ChatView({ session, notify }) {
           </p>
         ) : (
           messages.map((m) => <Bubble key={m.id} role={m.role} text={m.text} />)
+        )}
+        {working && (
+          <div className="chat-msg assistant">
+            <div className="chat-bubble chat-working">
+              <span className="cw-dot" /><span className="cw-dot" /><span className="cw-dot" />
+              <span className="cw-label">Claude is working…</span>
+            </div>
+          </div>
         )}
       </div>
       <ChatComposer session={session} onSubmit={submit} lastAssistantText={lastAssistantText} notify={notify} />

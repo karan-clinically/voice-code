@@ -102,7 +102,8 @@ router.get('/:id/messages', (req, res) => {
   const after = Number(req.query.after) || 0;
   const messages = getMessages(req.params.id, after);
   const lastId = messages.length ? messages[messages.length - 1].id : after;
-  res.json({ messages, lastId });
+  // `state` lets the chat show a "working…" indicator while Claude is busy.
+  res.json({ messages, lastId, state: session.state });
 });
 
 // Chat-view send: record the user turn and run it through the completion pipeline
