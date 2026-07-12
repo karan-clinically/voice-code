@@ -146,6 +146,21 @@ function migrate(db) {
       created_at  TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  // Per-call usage ledger for the spend tally. Records raw units (characters,
+  // audio seconds, tokens) per provider call; the dollar cost is computed at read
+  // time from adjustable rates, so re-pricing never rewrites history.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS api_usage (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider    TEXT NOT NULL,   -- deepgram | elevenlabs | openai
+      service     TEXT NOT NULL,   -- tts | stt | llm
+      unit_type   TEXT NOT NULL,   -- deepgram_tts_char | deepgram_stt_sec | openai_in_token | ...
+      units       REAL NOT NULL,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
+  `);
 }
 
 export default db;

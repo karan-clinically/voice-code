@@ -92,6 +92,9 @@ export const resumeArchive = (uuid) => jpost(`/api/archive/${encodeURIComponent(
 export const sessionMessages = (id, after = 0) => jget(`/api/sessions/${id}/messages?after=${after}`);
 export const sendChat = (id, text) => jpost(`/api/sessions/${id}/chat`, { text });
 
+// --- spend tally: estimated API cost across providers ---
+export const usageSummary = () => jget('/api/usage/summary');
+
 // --- chat composer controls ---
 export const sessionMode = (id) => jget(`/api/sessions/${id}/mode`);
 export const sessionKey = (id, key) => jpost(`/api/sessions/${id}/key`, { key });

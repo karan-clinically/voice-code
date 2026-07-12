@@ -17,6 +17,7 @@ import { SpeakV1Model } from '@deepgram/sdk';
 import { AUDIO_DIR } from '../../../db.js';
 import { getConfig } from '../../../config.js';
 import { deepgramClient, deepgramKey } from '../../deepgramClient.js';
+import { recordUsage } from '../../usage.js';
 import { makeLogger } from '../../../util/logger.js';
 
 const log = makeLogger('tts:deepgram');
@@ -66,6 +67,7 @@ export async function synthesize(text, { voiceId } = {}) {
   const buf = Buffer.from(await res.arrayBuffer());
   await writeFile(path, buf);
   log.info(`synthesized ${text.length} chars via ${voice} -> ${filename} (${buf.length}B)`);
+  recordUsage('deepgram', 'tts', 'deepgram_tts_char', text.length);
   return { id, path, filename, voiceId: voice, chars: text.length };
 }
 
@@ -80,6 +82,7 @@ export async function synthesizeStream(text, { voiceId } = {}) {
   if (!voice) throw new Error('no Deepgram voice selected');
 
   const res = await deepgramClient().speak.v1.audio.generate({ text, model: voice, encoding: 'mp3' });
+  recordUsage('deepgram', 'tts', 'deepgram_tts_char', text.length);
   return { stream: res.stream(), voiceId: voice };
 }
 

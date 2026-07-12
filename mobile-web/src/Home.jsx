@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { listSessions, createSession, transcribe } from './lib/api.js';
+import { listSessions, createSession, transcribe, usageSummary } from './lib/api.js';
 import { MicButton, FolderPicker, SttModeToggle, TtsProviderToggle, basename } from './components.jsx';
+import SpendModal, { fmtUsd } from './SpendModal.jsx';
 
 // Raw session states (idle | busy | response_ready) shown as friendly words, and
 // mapped to the existing tinted-pill variants.
@@ -17,13 +18,19 @@ export default function Home({ onOpen, onHistory, notify }) {
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
   const [sessions, setSessions] = useState([]);
   const [picking, setPicking] = useState(false);
+  const [spend, setSpend] = useState(null); // estimated total USD, for the header tally
+  const [showSpend, setShowSpend] = useState(false);
 
   useEffect(() => {
     let stop = false;
-    const refresh = () =>
+    const refresh = () => {
       listSessions()
         .then((d) => !stop && setSessions(d.sessions.filter((s) => s.alive)))
         .catch(() => {});
+      usageSummary()
+        .then((d) => !stop && setSpend(d.totalUsd))
+        .catch(() => {});
+    };
     refresh();
     const t = setInterval(refresh, 5000);
     return () => {
@@ -55,8 +62,13 @@ export default function Home({ onOpen, onHistory, notify }) {
       <header className="topbar">
         <h1>Voice Harness</h1>
         <div className="spacer" />
+        <button className="ghost spend-btn" onClick={() => setShowSpend(true)} title="Estimated API spend">
+          💲{spend != null ? ` ${fmtUsd(spend)}` : ''}
+        </button>
         <button className="ghost" onClick={onHistory} title="Search & resume past sessions">🕘 History</button>
       </header>
+
+      {showSpend && <SpendModal onClose={() => setShowSpend(false)} />}
 
       <div className="card stack">
         <div className="row" style={{ alignItems: 'center' }}>

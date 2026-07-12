@@ -3,6 +3,7 @@
 // (gpt-4o-mini). Fail-open: any error returns the raw text unchanged.
 
 import { getConfig } from '../config.js';
+import { recordUsage } from './usage.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('refine');
@@ -43,6 +44,10 @@ export async function refineTranscript(text, { model } = {}) {
       return clean;
     }
     const d = await r.json();
+    if (d.usage) {
+      recordUsage('openai', 'llm', 'openai_in_token', d.usage.prompt_tokens);
+      recordUsage('openai', 'llm', 'openai_out_token', d.usage.completion_tokens);
+    }
     const out = d.choices?.[0]?.message?.content?.trim();
     if (out) log.info(`cleaned ${clean.length} -> ${out.length} chars via ${m}`);
     return out || clean;

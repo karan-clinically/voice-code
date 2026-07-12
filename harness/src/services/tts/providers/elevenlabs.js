@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AUDIO_DIR } from '../../../db.js';
 import { getConfig } from '../../../config.js';
+import { recordUsage } from '../../usage.js';
 import { makeLogger } from '../../../util/logger.js';
 
 const log = makeLogger('tts:elevenlabs');
@@ -64,6 +65,7 @@ export async function synthesize(text, { voiceId, modelId, outputFormat } = {}) 
   const buf = Buffer.from(await resp.arrayBuffer());
   await writeFile(path, buf);
   log.info(`synthesized ${text.length} chars via ${model} -> ${filename} (${buf.length}B)`);
+  recordUsage('elevenlabs', 'tts', 'elevenlabs_tts_char', text.length);
   return { id, path, filename, voiceId: voice, chars: text.length };
 }
 
@@ -90,6 +92,7 @@ export async function synthesizeStream(text, { voiceId, modelId, outputFormat } 
     log.error(`TTS stream HTTP ${resp.status}: ${body.slice(0, 200)}`);
     throw new Error(`TTS failed (HTTP ${resp.status})`);
   }
+  recordUsage('elevenlabs', 'tts', 'elevenlabs_tts_char', text.length);
   return { stream: resp.body, voiceId: voice };
 }
 

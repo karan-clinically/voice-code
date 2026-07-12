@@ -14,6 +14,7 @@
 // condense-by-truncation so speech never breaks outright.
 
 import { getConfig } from '../config.js';
+import { recordUsage } from './usage.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('summarize');
@@ -90,6 +91,10 @@ export async function summarizeForSpeech(text, { model } = {}) {
       return condense(plain, SPEAK_VERBATIM_MAX);
     }
     const d = await r.json();
+    if (d.usage) {
+      recordUsage('openai', 'llm', 'openai_in_token', d.usage.prompt_tokens);
+      recordUsage('openai', 'llm', 'openai_out_token', d.usage.completion_tokens);
+    }
     const out = d.choices?.[0]?.message?.content?.trim();
     if (!out) return condense(plain, SPEAK_VERBATIM_MAX);
     log.info(`spoken summary: ${plain.length} -> ${out.length} chars via ${m}`);

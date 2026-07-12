@@ -18,6 +18,7 @@
 import WebSocket from 'ws';
 import { getConfig } from '../../../config.js';
 import { deepgramClient as client, deepgramKey } from '../../deepgramClient.js';
+import { recordUsage } from '../../usage.js';
 import { makeLogger } from '../../../util/logger.js';
 
 const log = makeLogger('stt:deepgram');
@@ -25,6 +26,7 @@ const WS_URL = 'wss://api.deepgram.com/v1/listen';
 const DEFAULT_MODEL = 'nova-3';
 const MAX_BYTES = 25 * 1024 * 1024;
 const SAMPLE_RATE = 16000;
+const STREAM_BYTES_PER_SEC = SAMPLE_RATE * 2; // linear16 mono: 2 bytes/sample
 const KEEPALIVE_MS = 8000; // Deepgram drops the socket after ~10s of no audio.
 
 export function isConfigured() {
@@ -48,7 +50,9 @@ export async function transcribeBatch(buffer, { model, language } = {}) {
     throw new Error(`transcription failed: ${err.message}`);
   }
   const text = (res?.results?.channels?.[0]?.alternatives?.[0]?.transcript || '').trim();
+  const seconds = Number(res?.metadata?.duration ?? res?.result?.metadata?.duration ?? 0);
   log.info(`batch transcribed ${buffer.length}B via ${m} -> ${text.length} chars`);
+  recordUsage('deepgram', 'stt', 'deepgram_stt_sec', seconds);
   return text;
 }
 
@@ -80,6 +84,7 @@ export async function createStream({ model, language, onOpen, onPartial, onError
   });
 
   let finalized = '';
+  let bytesSent = 0; // raw PCM streamed -> audio seconds billed (bytes / 32000)
   const withInterim = (interim) => (finalized && interim ? finalized + ' ' + interim : finalized || interim);
 
   try {
@@ -113,7 +118,10 @@ export async function createStream({ model, language, onOpen, onPartial, onError
     }
   });
   ws.on('error', (err) => onError?.(err));
-  ws.on('close', () => onClose?.(finalized));
+  ws.on('close', () => {
+    recordUsage('deepgram', 'stt', 'deepgram_stt_sec', bytesSent / STREAM_BYTES_PER_SEC);
+    onClose?.(finalized);
+  });
 
   const sendJson = (obj) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -123,7 +131,10 @@ export async function createStream({ model, language, onOpen, onPartial, onError
   return {
     sendAudio(chunk) {
       try {
-        if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(chunk);
+          bytesSent += chunk.length || chunk.byteLength || 0;
+        }
       } catch (err) {
         onError?.(err);
       }

@@ -20,6 +20,7 @@ import pairingRouter from './routes/pairing.js';
 import fsRouter from './routes/fs.js';
 import archiveRouter from './routes/archive.js';
 import promptsRouter from './routes/prompts.js';
+import usageRouter from './routes/usage.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -75,6 +76,7 @@ export function buildApp() {
   app.use('/api/fs', fsRouter);
   app.use('/api/archive', archiveRouter);
   app.use('/api/prompts', promptsRouter);
+  app.use('/api/usage', usageRouter);
 
   // JSON 404 + error handler so nothing leaks HTML/stack traces.
   app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));
