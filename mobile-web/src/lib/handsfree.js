@@ -120,7 +120,7 @@ export class HandsFree {
   stop() {
     this.on = false;
     clearTimeout(this.tid);
-    stopAudio();
+    this.stopPlayback();
     try {
       if (this.rec && this.rec.state !== 'inactive') this.rec.stop();
     } catch {
@@ -232,10 +232,57 @@ export class HandsFree {
     if (this.on) this.listen();
   }
 
+  // Play the reply through the SAME AudioContext the mic analyser uses (Web Audio),
+  // not an <audio> element. On Android/iOS Chrome, element playback while
+  // getUserMedia is capturing gets routed to the earpiece (the OS switches to
+  // communication audio mode) and is inaudible on the loudspeaker; Web Audio output
+  // stays on the media route. Falls back to the element if decode/playback fails.
+  async playBuffer(url) {
+    const ctx = this.ctx;
+    if (!ctx) return playUrl(url);
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch { /* ignore */ }
+    }
+    let buf;
+    try {
+      const arr = await (await fetch(url)).arrayBuffer();
+      buf = await ctx.decodeAudioData(arr);
+    } catch {
+      return playUrl(url); // fetch/decode failed — element fallback
+    }
+    if (!this.on) return undefined;
+    return new Promise((resolve) => {
+      let src;
+      try {
+        src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+      } catch {
+        return resolve();
+      }
+      this.playNode = src;
+      src.onended = () => {
+        if (this.playNode === src) this.playNode = null;
+        resolve();
+      };
+      try { src.start(); } catch { resolve(); }
+    });
+  }
+
+  // Cut whatever is playing — the Web Audio source and, if the fallback was used,
+  // the shared <audio> element.
+  stopPlayback() {
+    if (this.playNode) {
+      try { this.playNode.stop(); } catch { /* already stopped */ }
+      this.playNode = null;
+    }
+    stopAudio();
+  }
+
   // Play the reply, watching for barge-in the whole time.
   async speak(url) {
     this.setState('speaking');
-    const playing = playUrl(url);
+    const playing = this.playBuffer(url);
     const startedAt = performance.now();
     let loudSince = 0;
 
@@ -258,7 +305,7 @@ export class HandsFree {
         if (now - startedAt > BARGE_GUARD_MS && rms > BARGE_RMS) {
           if (!loudSince) loudSince = now;
           else if (now - loudSince > BARGE_HOLD_MS) {
-            stopAudio(); // you talked over it — cut the reply
+            this.stopPlayback(); // you talked over it — cut the reply
             return finish();
           }
         } else {
