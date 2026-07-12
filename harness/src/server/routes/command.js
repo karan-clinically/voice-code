@@ -42,7 +42,13 @@ router.post('/', async (req, res) => {
     insertInteraction.run(session.id, 'user', sent, null, null, null);
     recordUserMessage(session.id, sent); // Chat-view conversation log
 
-    const result = await executeCommand(session, sent);
+    // Hands-free voice passes a short timeout so a turn that never signals
+    // completion fails fast and the loop recovers, instead of the caller waiting
+    // out the 10-minute default in dead silence. Clamped to a sane range.
+    const raw = Number(req.body.timeoutMs);
+    const timeoutMs = Number.isFinite(raw) ? Math.min(Math.max(raw, 10_000), 10 * 60_000) : undefined;
+
+    const result = await executeCommand(session, sent, timeoutMs ? { timeoutMs } : undefined);
     const summary = await summarizeForSpeech(result.text);
 
     // The reply is recorded with no audio yet. Synthesis is the slowest step in a

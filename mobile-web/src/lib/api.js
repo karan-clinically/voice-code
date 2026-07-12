@@ -61,7 +61,8 @@ export const transcribe = async (blob, ext, { cleanup = true } = {}) => {
   fd.append('cleanup', String(cleanup));
   return (await jform('/api/transcribe', fd)).text || '';
 };
-export const commandText = (sessionId, text) => jpost('/api/command', { sessionId, text });
+export const commandText = (sessionId, text, timeoutMs) =>
+  jpost('/api/command', { sessionId, text, ...(timeoutMs ? { timeoutMs } : {}) });
 
 // --- settings (non-secret prefs; API keys are NOT reachable from the phone) ---
 export const getSettings = () => jget('/api/settings');

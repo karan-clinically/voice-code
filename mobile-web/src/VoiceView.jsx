@@ -47,7 +47,9 @@ export default function VoiceView({ session, onBack, notify }) {
       onError: (m) => notify(m),
       transcribe: (blob, ext) => transcribe(blob, ext),
       send: async (text) => {
-        const d = await commandText(session.id, text);
+        // Conversational cap: if a turn never signals completion, fail in ~2 min
+        // so the loop recovers, rather than hanging on the 10-minute default.
+        const d = await commandText(session.id, text, 120_000);
         setHasReply(true);
         return { text: d.summary || d.responseText || '', audioUrl: d.audioUrl ? mediaUrl(d.audioUrl) : null };
       },
