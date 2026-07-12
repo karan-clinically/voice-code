@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { commandText, mediaUrl } from './lib/api.js';
+import { commandText, mediaUrl, sessionKey, sessionInput } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { DictationMic, Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
@@ -35,6 +35,11 @@ export default function SessionView({ session, onBack, notify }) {
     runResult(commandText(session.id, t));
   }
 
+  // Raw keys for answering the TUI's interactive prompts (permission dialogs,
+  // "press Enter", menus) — the phone has no real keyboard into the pty.
+  const pressEnter = () => sessionInput(session.id, '').catch((e) => notify(e.message)); // bare Enter (works now)
+  const pressKey = (key) => sessionKey(session.id, key).catch(() => {}); // esc/up/down
+
   const stateCls = 'sv-state' + (state === 'working…' ? ' busy' : state === 'ready' ? ' ready' : '');
 
   return (
@@ -56,6 +61,12 @@ export default function SessionView({ session, onBack, notify }) {
       ) : (
         <>
           <Terminal sessionId={session.id} className="sv-term" />
+          <div className="sv-keys">
+            <button onClick={() => pressKey('stop')}>Esc</button>
+            <button onClick={() => pressKey('up')}>↑</button>
+            <button onClick={() => pressKey('down')}>↓</button>
+            <button className="sv-key-enter" onClick={pressEnter}>⏎ Enter</button>
+          </div>
           <div className="sv-bar">
             <DictationMic className="micbtn" text={text} setText={setText} notify={notify} />
             <textarea

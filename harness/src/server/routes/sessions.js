@@ -25,9 +25,19 @@ const log = makeLogger('sessions-route');
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-// Allowlisted raw key sequences the chat composer may send (no arbitrary control
-// chars from clients). Shift+Tab cycles the permission mode; Esc interrupts.
-const KEY_SEQS = { 'cycle-mode': '\x1b[Z', stop: '\x1b' };
+// Allowlisted raw key sequences clients may send (no arbitrary control chars).
+// Shift+Tab cycles the permission mode; Esc interrupts / cancels; the rest let the
+// phone answer interactive prompts (Enter, arrows) without a real keyboard.
+const KEY_SEQS = {
+  'cycle-mode': '\x1b[Z',
+  stop: '\x1b',
+  esc: '\x1b',
+  enter: '\r',
+  up: '\x1b[A',
+  down: '\x1b[B',
+  left: '\x1b[D',
+  right: '\x1b[C',
+};
 
 // Footer strings Claude Code shows for each permission mode -> our label. Require
 // the trailing "on" so boot-screen chatter (e.g. the "Auto mode is now available"
