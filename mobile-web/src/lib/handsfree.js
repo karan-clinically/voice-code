@@ -20,6 +20,36 @@
 
 import { pickMime, playUrl, stopAudio } from './audio.js';
 
+// Spoken replies are summarized by default. These phrases mean "read out the
+// reply you just summarized" — they are answered locally from the text the
+// harness already has, instead of being sent to Claude as a new prompt.
+//
+// The guard against hijacking a genuine follow-up is the WHOLE-utterance match:
+// "more detail" on its own replays the last reply, but "more detail on the rate
+// limiter" is a real question and goes to Claude. Leading politeness and trailing
+// "please" are stripped first so "can you read that in full please" still counts.
+const READ_FULL = new Set([
+  'read the full response', 'read the full reply', 'read the full answer',
+  'read that in full', 'read it in full', 'read it out in full', 'read in full',
+  'read it all', 'read it out', 'read the rest', 'read the whole thing',
+  'say the whole thing', 'say it all',
+  'full response', 'full reply', 'full answer', 'the full response', 'the whole thing',
+  'tell me more', 'more detail', 'more details', 'give me more detail',
+  'give me more details', 'expand on that', 'go on',
+]);
+
+export function isReadFullRequest(text) {
+  const t = (text || '')
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(?:ok|okay|hey|claude|please|can you|could you|would you|just)\s+/g, '')
+    .replace(/\s+please$/, '')
+    .trim();
+  return READ_FULL.has(t);
+}
+
 const SPEECH_RMS = 0.03; // start-of-speech threshold while listening
 const SILENCE_MS = 1200; // quiet needed to call the turn finished
 const MIN_SPEECH_MS = 350; // ignore coughs/clicks
@@ -34,7 +64,7 @@ const TICK_MS = 60;
 export class HandsFree {
   // onState('listening'|'thinking'|'speaking'|'idle') · onLevel(0..1 for the orb)
   // onUser(text) · onAssistant(text) · onError(msg)
-  constructor({ onState, onLevel, onUser, onAssistant, onError, transcribe, send }) {
+  constructor({ onState, onLevel, onUser, onAssistant, onError, transcribe, send, fullReplyUrl }) {
     this.onState = onState || (() => {});
     this.onLevel = onLevel || (() => {});
     this.onUser = onUser || (() => {});
@@ -42,8 +72,24 @@ export class HandsFree {
     this.onError = onError || (() => {});
     this.transcribe = transcribe; // async (blob, ext) -> text
     this.send = send; // async (text) -> { text, audioUrl }
+    this.fullReplyUrl = fullReplyUrl; // () -> url that speaks the last reply in full
+    this.hasReply = false; // nothing to read out in full until Claude has answered
     this.on = false;
     this.state = 'idle';
+  }
+
+  // Read out the last reply verbatim. Also driven by the view's "Read in full"
+  // button, so the voice trigger has a tappable equivalent.
+  async speakFull() {
+    if (!this.fullReplyUrl) return false;
+    this.setState('speaking');
+    try {
+      await this.speak(this.fullReplyUrl());
+      return true;
+    } catch (e) {
+      this.onError('Could not read the full reply: ' + e.message);
+      return false;
+    }
   }
 
   setState(s) {
@@ -163,9 +209,21 @@ export class HandsFree {
       if (!this.on) return;
       this.onUser(said);
 
+      // "read that in full" / "tell me more" — answer it here from the reply we
+      // already have rather than bothering Claude for a fresh (and different) one.
+      // Only once there IS a reply to read; otherwise it is just a normal prompt.
+      if (this.hasReply && isReadFullRequest(said)) {
+        await this.speakFull();
+        if (this.on) this.listen();
+        return;
+      }
+
       const reply = await this.send(said); // auto-sends — the point of this mode
       if (!this.on) return;
-      if (reply?.text) this.onAssistant(reply.text);
+      if (reply?.text) {
+        this.hasReply = true;
+        this.onAssistant(reply.text);
+      }
       if (reply?.audioUrl) await this.speak(reply.audioUrl);
     } catch (e) {
       if (!this.on) return;

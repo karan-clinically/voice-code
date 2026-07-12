@@ -469,3 +469,17 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
   background: var(--surface);
   color: var(--accent);
 }
+/* Secondary to the Start/Stop button — replays the last reply verbatim. */
+.voice-full {
+  flex: 0 0 auto;
+  height: 44px;
+  margin-bottom: 10px;
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 15px;
+}
+.voice-full:disabled {
+  opacity: 0.45;
+}

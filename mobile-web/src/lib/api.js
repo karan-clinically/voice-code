@@ -109,3 +109,13 @@ export function sayUrl(text) {
   if (token) qs.set('token', token);
   return base + '/api/tts/say?' + qs.toString();
 }
+
+// Speak this session's latest Claude reply: 'summary' (the short spoken version)
+// or 'full' (the whole answer, verbatim). The harness holds the text, so nothing
+// travels up the URL — which is what used to blow /say's length cap on long
+// replies and read the markdown symbols aloud.
+export function replyUrl(sessionId, mode = 'summary') {
+  const qs = new URLSearchParams({ mode });
+  if (token) qs.set('token', token);
+  return base + `/api/tts/reply/${sessionId}?` + qs.toString();
+}

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionMode, sessionKey, ttsSayUrl, transcribeAudio, configState, sttWsUrl } from '../lib/api.js';
+import { sessionMode, sessionKey, replyUrl, transcribeAudio, configState, sttWsUrl } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
 import { startSttStream } from '../lib/sttStream.js';
 import PromptsModal from './PromptsModal.jsx';
@@ -148,10 +148,13 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
     }
   }
 
-  async function replay() {
+  // 🔊 speaks the short summary; 📖 reads the whole reply verbatim. Both are keyed
+  // by session so the harness owns the text — it strips the markdown and streams,
+  // where passing the raw reply up the URL used to blow /say's length cap.
+  function replay(mode) {
     if (!lastAssistantText) return notify?.('Nothing to replay yet');
     try {
-      new Audio(ttsSayUrl(lastAssistantText)).play().catch(() => {});
+      new Audio(replyUrl(session.id, mode)).play().catch(() => {});
     } catch (e) {
       notify?.('Replay failed: ' + e.message);
     }
@@ -210,7 +213,8 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
         >
           {tidying ? '✨' : '🎙'}
         </button>
-        <button className="cbtn" onClick={replay} title="Replay last reply aloud">🔊</button>
+        <button className="cbtn" onClick={() => replay('summary')} title="Replay the spoken summary">🔊</button>
+        <button className="cbtn" onClick={() => replay('full')} title="Read the full reply aloud">📖</button>
         <button className="cbtn" onClick={() => setShowPrompts(true)} title="Saved prompts">/</button>
         <button className="cbtn" onClick={attach} title="Attach a file">📎</button>
         {busy ? (

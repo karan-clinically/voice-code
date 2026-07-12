@@ -93,6 +93,14 @@ export function ttsSayUrl(text) {
   return `${baseUrl}/api/tts/say?text=${encodeURIComponent(text)}`;
 }
 
+// Speak this session's latest Claude reply: 'summary' (the short spoken version)
+// or 'full' (the whole answer, verbatim). Keyed by session so the text stays
+// harness-side — passing a long reply up the URL hit /say's length cap and read
+// the markdown symbols aloud.
+export function replyUrl(sessionId, mode = 'summary') {
+  return `${baseUrl}/api/tts/reply/${sessionId}?mode=${mode}`;
+}
+
 // --- wizard / config ---
 export const configState = () => apiGet('/api/config/state');
 export const saveConfig = (obj) => apiPost('/api/config', obj);

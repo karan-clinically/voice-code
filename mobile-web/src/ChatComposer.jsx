@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionMode, sessionKey, attachFile, sayUrl } from './lib/api.js';
+import { sessionMode, sessionKey, attachFile, replyUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { DictationMic } from './components.jsx';
 import PromptsModal from './PromptsModal.jsx';
@@ -50,10 +50,14 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
     }
   }
 
-  async function replay() {
+  // 🔊 speaks the short summary; 📖 reads the whole reply. Both go through the
+  // harness by session id — it holds the text, strips the markdown, and streams,
+  // so a long reply no longer blows /say's length cap the way passing the text up
+  // the URL did.
+  function replay(mode) {
     if (!lastAssistantText) return notify('Nothing to replay yet');
     try {
-      playUrl(sayUrl(lastAssistantText));
+      playUrl(replyUrl(session.id, mode));
     } catch (e) {
       notify(e.message);
     }
@@ -108,7 +112,8 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
         </button>
         <div className="composer-spacer" />
         <DictationMic className="cbtn" text={text} setText={setText} notify={notify} />
-        <button className="cbtn" onClick={replay} aria-label="Replay last reply">🔊</button>
+        <button className="cbtn" onClick={() => replay('summary')} aria-label="Replay the summary">🔊</button>
+        <button className="cbtn" onClick={() => replay('full')} aria-label="Read the full reply aloud">📖</button>
         <button className="cbtn" onClick={() => setShowPrompts(true)} aria-label="Saved prompts">/</button>
         <button className="cbtn" onClick={() => fileRef.current?.click()} aria-label="Attach">📎</button>
         {busy ? (

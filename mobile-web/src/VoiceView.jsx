@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { transcribe, commandText, mediaUrl } from './lib/api.js';
+import { transcribe, commandText, mediaUrl, replyUrl } from './lib/api.js';
 import { HandsFree } from './lib/handsfree.js';
 import { basename } from './components.jsx';
 
@@ -17,6 +17,7 @@ const LABEL = {
 export default function VoiceView({ session, onBack, notify }) {
   const [state, setState] = useState('idle');
   const [level, setLevel] = useState(0);
+  const [hasReply, setHasReply] = useState(false);
   const [turns, setTurns] = useState([]); // {role, text}
   const hfRef = useRef(null);
   const logRef = useRef(null);
@@ -47,8 +48,10 @@ export default function VoiceView({ session, onBack, notify }) {
       transcribe: (blob, ext) => transcribe(blob, ext),
       send: async (text) => {
         const d = await commandText(session.id, text);
+        setHasReply(true);
         return { text: d.summary || d.responseText || '', audioUrl: d.audioUrl ? mediaUrl(d.audioUrl) : null };
       },
+      fullReplyUrl: () => replyUrl(session.id, 'full'),
     });
     hfRef.current = hf;
     if (!(await hf.start())) hfRef.current = null;
@@ -83,6 +86,16 @@ export default function VoiceView({ session, onBack, notify }) {
         <div className={'orb ' + state} style={{ transform: `scale(${scale.toFixed(3)})` }} />
         <div className="voice-state">{LABEL[state]}</div>
       </div>
+
+      {hasReply && (
+        <button
+          className="voice-full"
+          onClick={() => hfRef.current?.speakFull()}
+          disabled={!live || state === 'thinking'}
+        >
+          📖 Read that in full
+        </button>
+      )}
 
       <button className={'voice-btn' + (live ? ' on' : '')} onClick={toggle}>
         {live ? 'Stop' : 'Start'}
