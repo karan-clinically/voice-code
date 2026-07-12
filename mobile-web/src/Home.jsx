@@ -99,10 +99,15 @@ export default function Home({ onOpen, onHistory, notify }) {
   }
 
   // One session row, styled like the Claude Code app: avatar, name + time, a
-  // connection status with where it was started, then repo/branch + session id.
+  // connection status with where it was started, then folder + repo/branch.
   const sessionRow = (it) => {
-    const source = it.repo ? (it.branch ? `${it.repo} · ${it.branch}` : it.repo) : it.cwd ? basename(it.cwd) : '';
-    const sub = [source, it.sessionId ? `session ${it.sessionId.slice(0, 8)}` : ''].filter(Boolean).join('  ·  ');
+    const repo = it.repo ? (it.branch ? `${it.repo} · ${it.branch}` : it.repo) : '';
+    const folder = it.cwd ? basename(it.cwd) : '';
+    // Skip the folder when the repo line already carries the same name (e.g.
+    // folder "pearls" inside karan-clinically/pearls) — one clean line, no echo.
+    const sub = [repo.toLowerCase().includes(folder.toLowerCase()) ? '' : folder, repo]
+      .filter(Boolean)
+      .join('  ·  ');
     const openable = canOpen(it);
     return (
       <button key={it.key} className="cc-item" onClick={openable ? () => openItem(it) : undefined} disabled={!openable}>
