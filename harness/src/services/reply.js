@@ -23,7 +23,12 @@ export function recordUserInteraction(sessionId, text) {
   insertInteraction.run(sessionId, 'user', text, null, null, null);
 }
 
-export async function buildReplyResponse(session, result) {
+// `desktopPlayback` (default true) renders the whole clip up front to play on the
+// harness machine's speaker. Remote phone clients pass false: that render blocks
+// the phone's /api/tts request (it waits for the full render instead of streaming),
+// so skipping it lets Aura-2 stream to the phone and start ~0.4s in. The desktop
+// app plays the audioUrl in its own <audio>, so it doesn't need this path.
+export async function buildReplyResponse(session, result, { desktopPlayback = true } = {}) {
   const summary = await summarizeForSpeech(result.text);
 
   // Recorded with no audio yet — synthesis is the slowest step, so the client is
@@ -36,7 +41,7 @@ export async function buildReplyResponse(session, result) {
   broadcastResponse({ sessionId: session.id, interactionId, summary, audioUrl });
 
   const target = getConfig('tts_playback_target', 'desktop');
-  if (speakable && (target === 'desktop' || target === 'both')) {
+  if (speakable && desktopPlayback && (target === 'desktop' || target === 'both')) {
     ensureAudio(interactionId)
       .then((a) => a.path && playLocal(a.path))
       .catch((err) => log.warn(`local playback failed: ${err.message}`));

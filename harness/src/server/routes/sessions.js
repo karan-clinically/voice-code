@@ -200,7 +200,7 @@ router.post('/:id/select', async (req, res) => {
 
     if (!wait) return res.json({ ok: true, selected: index });
     const result = await awaitReply(session, getPtyId(session.id), sentAt, 120_000);
-    const payload = await buildReplyResponse(session, result);
+    const payload = await buildReplyResponse(session, result, { desktopPlayback: req.body?.desktopPlayback !== false });
     res.json({ ok: true, selected: index, ...payload });
   } catch (err) {
     res.status(500).json({ error: err.message });

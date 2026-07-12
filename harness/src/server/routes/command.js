@@ -39,7 +39,7 @@ router.post('/', async (req, res) => {
     const timeoutMs = Number.isFinite(raw) ? Math.min(Math.max(raw, 10_000), 10 * 60_000) : undefined;
 
     const result = await executeCommand(session, sent, timeoutMs ? { timeoutMs } : undefined);
-    const payload = await buildReplyResponse(session, result);
+    const payload = await buildReplyResponse(session, result, { desktopPlayback: req.body.desktopPlayback !== false });
     res.json({ transcript: sent, ...payload });
   } catch (err) {
     log.error(`command error: ${err.message}`);

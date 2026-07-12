@@ -61,8 +61,10 @@ export const transcribe = async (blob, ext, { cleanup = true } = {}) => {
   fd.append('cleanup', String(cleanup));
   return (await jform('/api/transcribe', fd)).text || '';
 };
+// desktopPlayback:false — the phone plays the reply itself, so skip the harness
+// machine's blocking full-render and let Aura-2 stream to the phone (fast start).
 export const commandText = (sessionId, text, timeoutMs) =>
-  jpost('/api/command', { sessionId, text, ...(timeoutMs ? { timeoutMs } : {}) });
+  jpost('/api/command', { sessionId, text, desktopPlayback: false, ...(timeoutMs ? { timeoutMs } : {}) });
 
 // --- settings (non-secret prefs; API keys are NOT reachable from the phone) ---
 export const getSettings = () => jget('/api/settings');
@@ -97,7 +99,7 @@ export const sessionKey = (id, key) => jpost(`/api/sessions/${id}/key`, { key })
 // --- interactive picker (question + numbered options Claude is waiting on) ---
 export const sessionPrompt = (id) => jget(`/api/sessions/${id}/prompt`);
 // Answer option `index`; resolves with Claude's follow-up reply ({responseText, audioUrl, prompt}).
-export const selectPromptOption = (id, index) => jpost(`/api/sessions/${id}/select`, { index });
+export const selectPromptOption = (id, index) => jpost(`/api/sessions/${id}/select`, { index, desktopPlayback: false });
 export const attachFile = (id, file) => {
   const fd = new FormData();
   fd.append('file', file, file.name || 'upload');
