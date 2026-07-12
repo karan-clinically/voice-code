@@ -292,11 +292,69 @@ export class HandsFree {
     }
   }
 
-  // Play the reply through the SAME AudioContext the mic analyser uses (Web Audio),
-  // not an <audio> element. On Android/iOS Chrome, element playback while
-  // getUserMedia is capturing gets routed to the earpiece (the OS switches to
-  // communication audio mode) and is inaudible on the loudspeaker; Web Audio output
-  // stays on the media route. Falls back to the element if decode/playback fails.
+  // Preferred playback: stream the reply through an <audio> element ROUTED into the
+  // shared AudioContext (createMediaElementSource -> ctx.destination). This starts on
+  // the first frames (~0.9s) instead of waiting for the whole Aura-2 render to
+  // download and decode, and — because the audio exits ctx.destination, the same
+  // node that made buffered playback audible — it stays on the loudspeaker during
+  // mic capture rather than the earpiece. Falls back to buffered decode if routing
+  // or autoplay is refused.
+  async playRouted(url) {
+    const ctx = this.ctx;
+    if (!ctx) return playUrl(url);
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch { /* ignore */ }
+    }
+    let el;
+    let node;
+    try {
+      el = new Audio();
+      el.playsInline = true;
+      el.preload = 'auto';
+      el.src = url;
+      node = ctx.createMediaElementSource(el);
+      node.connect(ctx.destination);
+      // Resolves once playback begins; reject if it's blocked OR doesn't start in
+      // time, so a stuck element can't hang the turn — fall back to buffered decode.
+      await Promise.race([
+        el.play(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('play did not start')), 4000)),
+      ]);
+    } catch {
+      try { el && el.pause(); if (node) node.disconnect(); } catch { /* ignore */ }
+      return this.playBuffer(url); // routing/autoplay refused — buffered fallback
+    }
+    if (!this.on) {
+      try { el.pause(); node.disconnect(); } catch { /* ignore */ }
+      return undefined;
+    }
+    return new Promise((resolve) => {
+      this.playEl = el;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try { el.pause(); node.disconnect(); } catch { /* ignore */ }
+        if (this.playEl === el) this.playEl = null;
+        clearActivePlayback(handle);
+        resolve();
+      };
+      // Pause the element (not the context — the mic analyser stays live for the
+      // level meter); skip resolves the turn so the loop moves on.
+      const handle = {
+        pause: () => el.pause(),
+        resume: () => el.play().catch(() => {}),
+        stop: finish,
+        isPaused: () => el.paused,
+      };
+      el.onended = finish;
+      el.onerror = finish;
+      setActivePlayback(handle);
+    });
+  }
+
+  // Fallback playback: fetch the whole clip and decode it into a buffer, played
+  // through ctx.destination. Reliable but only starts once the full render lands.
   async playBuffer(url) {
     const ctx = this.ctx;
     if (!ctx) return playUrl(url);
@@ -343,6 +401,10 @@ export class HandsFree {
   // Cut whatever is playing — the Web Audio source and, if the fallback was used,
   // the shared <audio> element.
   stopPlayback() {
+    if (this.playEl) {
+      try { this.playEl.pause(); } catch { /* already stopped */ }
+      this.playEl = null;
+    }
     if (this.playNode) {
       try { this.playNode.stop(); } catch { /* already stopped */ }
       this.playNode = null;
@@ -354,7 +416,7 @@ export class HandsFree {
   // Play the reply, watching for barge-in the whole time.
   async speak(url) {
     this.setState('speaking');
-    const playing = this.playBuffer(url);
+    const playing = this.playRouted(url);
     const startedAt = performance.now();
     let loudSince = 0;
 
