@@ -15,7 +15,7 @@ import db, { UPLOADS_DIR } from '../../db.js';
 import { getConfig } from '../../config.js';
 import {
   listSessions, getSession, createSession, killSession, renameSession,
-  sendInput, sendRawKey, readScreen, readScreenColored, setKind,
+  sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, setKind,
 } from '../../services/sessionManager.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand } from '../../services/claudeCode.js';
@@ -133,6 +133,22 @@ router.post('/:id/key', (req, res) => {
   try {
     sendRawKey(req.params.id, seq);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Resize a session's PTY (the phone terminal fits the TUI to its width).
+router.post('/:id/resize', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  const cols = Math.max(20, Math.min(200, Number(req.body?.cols) | 0));
+  const rows = Math.max(8, Math.min(80, Number(req.body?.rows) | 0));
+  if (!cols || !rows) return res.status(400).json({ error: 'cols and rows required' });
+  try {
+    resizeSession(req.params.id, cols, rows);
+    res.json({ ok: true, cols, rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

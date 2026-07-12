@@ -170,6 +170,14 @@ export function sendRawKey(id, seq) {
   return terminal.sendRaw(ptyId, seq);
 }
 
+// Resize a session's PTY so the TUI reflows to the caller's viewport — used by
+// the phone terminal to render at the phone's width (fits without horizontal scroll).
+export function resizeSession(id, cols, rows) {
+  const ptyId = ptyIdByDb.get(Number(id));
+  if (!ptyId) throw new Error('session has no live PTY');
+  return terminal.resize(ptyId, cols, rows);
+}
+
 export async function readScreen(id, opts) {
   const ptyId = ptyIdByDb.get(Number(id));
   if (!ptyId) throw new Error('session has no live PTY');

@@ -45,6 +45,7 @@ export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`);
 export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=1`);
 export const sessionInput = (id, text) => jpost(`/api/sessions/${id}/input`, { text });
+export const sessionResize = (id, cols, rows) => jpost(`/api/sessions/${id}/resize`, { cols, rows });
 export const launchClaudeIn = (id) => jpost(`/api/sessions/${id}/launch-claude`);
 export const fsList = (path) => jget('/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : ''));
 // cleanup=true runs the Wispr-style dictation pass server-side (fillers, false

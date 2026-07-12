@@ -131,8 +131,11 @@ button.ghost:hover { background: var(--surface-2); }
   border: 1px solid #1e1e24; border-radius: var(--radius-lg); padding: 10px;
   overflow: auto; min-width: 0; max-width: 100%; -webkit-overflow-scrolling: touch;
 }
-.screen-inner { white-space: pre; word-break: normal; line-height: 1.3; }
-.screen span { white-space: pre; }
+/* Wrap long lines so the whole width is readable without sideways scrolling.
+   Once the PTY is fitted to the phone width this rarely wraps; it's the safety net
+   (and the fix when the resize route isn't deployed yet). */
+.screen-inner { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.3; }
+.screen span { white-space: pre-wrap; }
 /* A−/A+ font stepper, pinned to the terminal's top-right corner */
 .term-fontctl {
   position: absolute; top: 6px; right: 8px; z-index: 2; display: flex; gap: 4px;

@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { sessionScreen, fsList, getSttMode, setSttMode, getSettings, saveSettings } from './lib/api.js';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { sessionScreen, sessionResize, fsList, getSttMode, setSttMode, getSettings, saveSettings } from './lib/api.js';
 import { tapRecord } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 
@@ -130,9 +130,9 @@ export function MicButton({ className, onBlob, notify }) {
 }
 
 // Colored terminal view: polls the session's rendered HTML and injects it,
-// keeping scroll pinned to the bottom unless the user scrolled up. Renders at a
-// readable, user-adjustable font (A−/A+, persisted); wide lines scroll INSIDE the
-// terminal box, so the page itself never scrolls horizontally.
+// keeping scroll pinned to the bottom unless the user scrolled up. Resizes the
+// session's PTY to the phone's width so the TUI reflows to fit — full lines are
+// visible at a readable, user-adjustable font (A−/A+, persisted), no sideways scroll.
 export function Terminal({ sessionId, className }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
@@ -144,6 +144,31 @@ export function Terminal({ sessionId, className }) {
   useEffect(() => {
     localStorage.setItem('cvh_term_font', String(fontPx));
   }, [fontPx]);
+
+  // Fit the PTY to the box: measure the monospace cell at the current font, derive
+  // cols/rows, and resize the session so Claude renders exactly this wide.
+  const fitPty = useCallback(() => {
+    const outer = outerRef.current;
+    if (!outer || !outer.clientWidth) return;
+    const probe = document.createElement('span');
+    probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font-family:${getComputedStyle(outer).fontFamily};font-size:${fontPx}px`;
+    probe.textContent = 'X'.repeat(40);
+    document.body.appendChild(probe);
+    const charW = probe.getBoundingClientRect().width / 40;
+    probe.remove();
+    if (!charW) return;
+    const cols = Math.max(20, Math.min(120, Math.floor((outer.clientWidth - 20) / charW)));
+    const rows = Math.max(12, Math.min(60, Math.floor((outer.clientHeight - 20) / (fontPx * 1.3))));
+    sessionResize(sessionId, cols, rows).catch(() => {});
+  }, [sessionId, fontPx]);
+
+  useEffect(() => {
+    const t = setTimeout(fitPty, 150); // after layout settles
+    let rt;
+    const onResize = () => { clearTimeout(rt); rt = setTimeout(fitPty, 250); };
+    window.addEventListener('resize', onResize);
+    return () => { clearTimeout(t); clearTimeout(rt); window.removeEventListener('resize', onResize); };
+  }, [fitPty]);
 
   useEffect(() => {
     let stop = false;
