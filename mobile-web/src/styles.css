@@ -255,6 +255,55 @@ button.ghost:hover { background: var(--surface-2); }
 .sv-back { width: 42px; height: 42px; flex: 0 0 auto; font-size: 18px; padding: 0; }
 .sv-title { font-size: 16px; font-weight: 600; color: var(--text-2); flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Title doubles as the session switcher trigger. */
+.sv-title-btn {
+  display: flex; align-items: center; gap: 5px; background: none; border: none; box-shadow: none;
+  padding: 0; cursor: pointer; text-align: left;
+}
+.sv-title-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sv-caret { flex: 0 0 auto; font-size: 13px; color: var(--muted-2); }
+
+/* Left session-switcher drawer — jump between connected sessions from inside one. */
+.sw-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.35); }
+.sw-drawer {
+  position: fixed; top: 0; left: 0; bottom: 0; z-index: 61; width: min(80vw, 340px);
+  display: flex; flex-direction: column; background: var(--bg);
+  border-right: 1px solid var(--border-strong); box-shadow: var(--shadow);
+  padding: calc(env(safe-area-inset-top) + 8px) 0 calc(env(safe-area-inset-bottom) + 8px);
+  animation: sw-in 0.16s ease;
+}
+@keyframes sw-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+.sw-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px 10px; font-weight: 600; font-size: 16px; color: var(--text);
+}
+.sw-list { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 0 8px; }
+.sw-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; min-width: 0;
+  padding: 11px 10px; border-radius: var(--radius-lg); border: 1px solid transparent;
+  background: var(--surface); box-shadow: none; color: var(--text);
+}
+.sw-item.current { border-color: var(--accent); background: var(--accent-tint); }
+.sw-item:active { background: var(--surface-2); }
+.sw-ic {
+  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.sw-body { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.sw-name { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-meta {
+  display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sw-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--muted-2); }
+.sw-dot.busy { background: var(--warn-text); }
+.sw-dot.on { background: var(--success); }
+.sw-here { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; }
+.sw-foot {
+  margin: 8px 12px 0; padding: 12px; border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2); font-weight: 500;
+}
 .sv-term { flex: 1 1 auto; min-height: 0; min-width: 0; }
 /* terminal composer Send — a labelled pill in the one-container control row */
 .composer-send {

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { createSession, transcribe, usageSummary, recentSessions, reindexArchive, resumeArchive, openAgentView } from './lib/api.js';
+import { createSession, transcribe, usageSummary, recentSessions, reindexArchive } from './lib/api.js';
+import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
@@ -80,33 +81,10 @@ export default function Home({ onOpen, onHistory, notify }) {
       notify(e.message);
     }
   }
-  async function resumeUuid(uuid) {
-    try {
-      onOpen(await resumeArchive(uuid));
-    } catch (e) {
-      notify(e.message);
-    }
-  }
-
   // Tap: open a live harness session directly; a background agent opens the agent
-  // view (it rejects --resume); resume any other into a harness PTY.
-  const canOpen = (it) => (it.kind === 'harness' && it.alive) || it.bgAgent || !!it.resumeUuid;
-  async function openAgent(it) {
-    try {
-      onOpen(await openAgentView(it.agentCwd || it.cwd, it.name));
-    } catch (e) {
-      notify(e.message);
-    }
-  }
-  function openItem(it) {
-    if (it.kind === 'harness' && it.alive) {
-      onOpen({ id: it.harnessId, kind: it.shell ? 'shell' : 'claude', label: it.name, cwd: it.cwd });
-    } else if (it.bgAgent) {
-      openAgent(it);
-    } else if (it.resumeUuid) {
-      resumeUuid(it.resumeUuid);
-    }
-  }
+  // view; resume any other into a harness PTY. Shared with the in-session switcher.
+  const canOpen = canOpenRow;
+  const openItem = (it) => openSessionRow(it, onOpen, notify);
 
   // One session row, styled like the Claude Code app: avatar, name + time, a
   // connection status with where it was started, then folder + repo/branch.

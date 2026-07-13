@@ -55,7 +55,9 @@ export default function App() {
           notify={notify}
         />
       )}
-      {route === 'claude' && <SessionView session={session} onBack={goHome} notify={notify} />}
+      {route === 'claude' && (
+        <SessionView key={session?.id} session={session} onBack={goHome} onOpen={openSession} notify={notify} />
+      )}
       <PlaybackControls />
     </>
   );

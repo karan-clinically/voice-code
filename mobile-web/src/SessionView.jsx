@@ -6,6 +6,7 @@ import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
 import SlashCommands from './SlashCommands.jsx';
 import TerminalKeypad from './TerminalKeypad.jsx';
+import SessionSwitcher from './SessionSwitcher.jsx';
 import { normalizeSpokenSlash } from './lib/slashCommands.js';
 
 // Spoken form of a detected prompt (a numbered picker or a bash-permission dialog):
@@ -25,7 +26,7 @@ const announcedPrompts = new Set();
 // Full-screen Claude session — terminal is the main view. Voice dictates into the
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
 // code is retained in lib/audio.js but not surfaced here.
-export default function SessionView({ session, onBack, notify }) {
+export default function SessionView({ session, onBack, onOpen, notify }) {
   const [text, setText] = useState('');
   const taRef = useRef(null);
   const [state, setState] = useState(session.state || 'idle');
@@ -33,6 +34,7 @@ export default function SessionView({ session, onBack, notify }) {
   const [voice, setVoice] = useState(false); // hands-free overlay
   const [keysMode, setKeysMode] = useState(false); // terminal key-pad replaces the composer input
   const [showCmds, setShowCmds] = useState(false); // slash-command picker
+  const [showSwitch, setShowSwitch] = useState(false); // left session-switcher drawer
   // Speak replies aloud? Off = a normal, silent coding session. Persisted so the
   // choice sticks across sessions. TTS renders lazily on first fetch, so muting
   // also means no synthesis is billed for skipped replies.
@@ -183,7 +185,10 @@ export default function SessionView({ session, onBack, notify }) {
     <div className="session-view">
       <div className="sv-top">
         <button className="ghost sv-back" onClick={onBack}>←</button>
-        <div className="sv-title">{title}</div>
+        <button className="sv-title sv-title-btn" onClick={() => setShowSwitch(true)} title="Switch session">
+          <span className="sv-title-txt">{title}</span>
+          <span className="sv-caret">⌄</span>
+        </button>
         <button
           className="ghost"
           onClick={toggleSpeak}
@@ -200,6 +205,16 @@ export default function SessionView({ session, onBack, notify }) {
       </div>
 
       {voice && <VoiceView session={session} onBack={() => setVoice(false)} notify={notify} />}
+
+      {showSwitch && (
+        <SessionSwitcher
+          session={session}
+          onOpen={onOpen}
+          onClose={() => setShowSwitch(false)}
+          onHome={onBack}
+          notify={notify}
+        />
+      )}
 
       {mode === 'chat' ? (
         <ChatView session={session} notify={notify} />
