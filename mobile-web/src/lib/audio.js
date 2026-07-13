@@ -68,9 +68,49 @@ export function initAudio() {
     } catch {
       /* ignore */
     }
+    getDingCtx(); // resume the tone context on the same gesture so later dings sound
   };
   document.addEventListener('touchend', unlock, { once: true, passive: true });
   document.addEventListener('click', unlock, { once: true });
+}
+
+// --- UI feedback tones (synthesized, no asset files) --------------------------
+// Short cues so a send/reply is felt, not just seen. Independent of the spoken-
+// reply mute — this is interface feedback the user asked for, not TTS readback.
+let dingCtx = null;
+function getDingCtx() {
+  try {
+    if (!dingCtx) dingCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (dingCtx.state === 'suspended') dingCtx.resume().catch(() => {});
+    return dingCtx;
+  } catch {
+    return null;
+  }
+}
+
+// kind: 'sent' (one blip) | 'success' (two rising) | 'error' (two falling, low).
+const DING_SEQ = {
+  sent: [[620, 0, 0.12]],
+  success: [[660, 0, 0.1], [990, 0.1, 0.16]],
+  error: [[400, 0, 0.14], [300, 0.15, 0.24]],
+};
+export function ding(kind = 'success') {
+  const ctx = getDingCtx();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  for (const [freq, at, dur] of DING_SEQ[kind] || DING_SEQ.success) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const t0 = now + at;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.22, t0 + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
 }
 
 export function playUrl(u) {

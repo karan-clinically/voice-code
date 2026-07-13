@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sessionMessages, sendChat, sessionPrompt, selectPromptOption } from './lib/api.js';
+import { ding } from './lib/audio.js';
 import ChatComposer from './ChatComposer.jsx';
 
 // Claude-app-style chat over a live session (phone). Renders the harness
@@ -14,6 +15,7 @@ export default function ChatView({ session, notify }) {
   const lastId = useRef(0);
   const scrollRef = useRef(null);
   const pinned = useRef(true);
+  const firstPoll = useRef(true); // don't chime for the backfilled history on open
 
   const poll = useCallback(async () => {
     try {
@@ -38,7 +40,10 @@ export default function ChatView({ session, notify }) {
           }
           return [...base, ...fresh];
         });
+        // Chime when Claude's reply lands — but not for the history backfilled on open.
+        if (!firstPoll.current && fresh.some((m) => m.role === 'assistant')) ding('success');
       }
+      firstPoll.current = false;
     } catch {
       /* transient */
     }
@@ -66,8 +71,10 @@ export default function ChatView({ session, notify }) {
     pinned.current = true;
     try {
       await sendChat(session.id, t);
+      ding('sent'); // the harness accepted it — Claude is now working
     } catch (e) {
       setWorking(false);
+      ding('error');
       notify(e.message);
     }
   }

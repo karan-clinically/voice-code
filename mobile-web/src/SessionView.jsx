@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { commandText, mediaUrl, termWsUrl } from './lib/api.js';
-import { playUrl, stopAudio } from './lib/audio.js';
+import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { DictationMic, Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
@@ -37,11 +37,13 @@ export default function SessionView({ session, onBack, notify }) {
     try {
       const d = await promise;
       setState('ready');
+      ding('success'); // turn landed — audible even when spoken replies are muted
       // Read via the ref — the reply may land minutes after Send, and the user
       // may have muted in between.
       if (d.audioUrl && speakRef.current) playUrl(mediaUrl(d.audioUrl));
     } catch (e) {
       setState('idle');
+      ding('error');
       notify(e.message);
     }
   }
@@ -55,6 +57,7 @@ export default function SessionView({ session, onBack, notify }) {
     // (/api/command) mishandles that menu, so send them as raw keystrokes over
     // /ws/term (exactly like the desktop terminal): type it, then Enter once the
     // menu has filtered. The screen poll shows the result.
+    ding('sent'); // immediate "it went through" cue on every send
     if (t.startsWith('/')) {
       sendRaw(t);
       setTimeout(() => sendRaw('\r'), 200);
@@ -178,7 +181,18 @@ export default function SessionView({ session, onBack, notify }) {
               <button className="composer-send" onClick={() => sendText()}>Send</button>
             </div>
           </div>
-          <div className={stateCls}>{state}</div>
+          <div className={stateCls}>
+            {state === 'working…' ? (
+              <span className="sv-working">
+                <span className="cw-dot" /><span className="cw-dot" /><span className="cw-dot" />
+                Claude is working…
+              </span>
+            ) : state === 'ready' ? (
+              '✓ Ready'
+            ) : (
+              state
+            )}
+          </div>
           {showCmds && <SlashCommands onPick={pickCommand} onClose={() => setShowCmds(false)} />}
         </>
       )}
