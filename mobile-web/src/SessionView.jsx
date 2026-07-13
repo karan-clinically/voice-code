@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { commandText, mediaUrl, termWsUrl } from './lib/api.js';
-import { playUrl } from './lib/audio.js';
+import { playUrl, stopAudio } from './lib/audio.js';
 import { DictationMic, Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
@@ -18,6 +18,18 @@ export default function SessionView({ session, onBack, notify }) {
   const [voice, setVoice] = useState(false); // hands-free overlay
   const [showKeys, setShowKeys] = useState(false); // raw-key popover
   const [showCmds, setShowCmds] = useState(false); // slash-command picker
+  // Speak replies aloud? Off = a normal, silent coding session. Persisted so the
+  // choice sticks across sessions. TTS renders lazily on first fetch, so muting
+  // also means no synthesis is billed for skipped replies.
+  const [speak, setSpeak] = useState(() => localStorage.getItem('cvh_speak') !== 'off');
+  const speakRef = useRef(speak);
+  function toggleSpeak() {
+    const next = !speak;
+    setSpeak(next);
+    speakRef.current = next;
+    localStorage.setItem('cvh_speak', next ? 'on' : 'off');
+    if (!next) stopAudio(); // cut anything mid-sentence right away
+  }
   const title = 'Claude · ' + (session.label || basename(session.cwd));
 
   async function runResult(promise) {
@@ -25,7 +37,9 @@ export default function SessionView({ session, onBack, notify }) {
     try {
       const d = await promise;
       setState('ready');
-      if (d.audioUrl) playUrl(mediaUrl(d.audioUrl));
+      // Read via the ref — the reply may land minutes after Send, and the user
+      // may have muted in between.
+      if (d.audioUrl && speakRef.current) playUrl(mediaUrl(d.audioUrl));
     } catch (e) {
       setState('idle');
       notify(e.message);
@@ -90,6 +104,14 @@ export default function SessionView({ session, onBack, notify }) {
       <div className="sv-top">
         <button className="ghost sv-back" onClick={onBack}>←</button>
         <div className="sv-title">{title}</div>
+        <button
+          className="ghost"
+          onClick={toggleSpeak}
+          title={speak ? 'Replies are read aloud — tap for a silent coding session' : 'Silent — tap to read replies aloud'}
+          aria-label={speak ? 'Mute spoken replies' : 'Unmute spoken replies'}
+        >
+          {speak ? '🔊' : '🔇'}
+        </button>
         <button className="ghost" onClick={() => setVoice(true)} title="Hands-free voice session">🎧</button>
         <div className="seg">
           <button className={'seg-btn' + (mode !== 'chat' ? ' on' : '')} onClick={() => setMode('terminal')}>Terminal</button>
