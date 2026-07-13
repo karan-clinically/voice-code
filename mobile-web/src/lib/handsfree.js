@@ -414,9 +414,17 @@ export class HandsFree {
   }
 
   // Play the reply, watching for barge-in the whole time.
+  //
+  // Buffered decode (fetch the whole clip → decodeAudioData → AudioBufferSource)
+  // is the primary path, not the streaming <audio> element. The element route
+  // (playRouted) starts ~1s sooner, but it plays SILENCE for Deepgram Aura-2's
+  // stream — a header-less 24kHz mp3 — and "succeeds" (no error), so it never
+  // fell back. decodeAudioData handles both providers' formats and always exits
+  // through ctx.destination (the loudspeaker, audible during mic capture), so the
+  // reply is actually heard. Worth the small start delay on a short summary.
   async speak(url) {
     this.setState('speaking');
-    const playing = this.playRouted(url);
+    const playing = this.playBuffer(url);
     const startedAt = performance.now();
     let loudSince = 0;
 
