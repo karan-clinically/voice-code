@@ -47,9 +47,9 @@ export default function SpendModal({ onClose }) {
             )}
           </div>
           <p className="muted spend-note">
-            Rough estimates from list prices — ElevenLabs bills in credits, so treat the total as a ballpark.
-            Speech-in seconds and OpenAI tokens are counted from when this tally shipped; speech-out characters
-            include prior history.
+            Estimated from list prices, calibrated to the ElevenLabs dashboard — it bills in credits, so treat the
+            total as a ballpark. Speech-in seconds and OpenAI tokens are counted from when this tally shipped;
+            speech-out characters include prior history.
           </p>
         </>
       )}

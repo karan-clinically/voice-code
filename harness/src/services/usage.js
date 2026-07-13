@@ -10,11 +10,13 @@ import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('usage');
 
-// USD per single unit.
+// USD per single unit. Deepgram was dropped as a voice provider, so only
+// ElevenLabs + OpenAI are priced here (any lingering deepgram rows are filtered
+// out of the summary below).
 const DEFAULT_RATES = {
-  deepgram_tts_char: 0.03 / 1000, // Aura-2 ~$0.030 / 1k characters
-  elevenlabs_tts_char: 0.22 / 1000, // credit-based estimate (~Creator tier)
-  deepgram_stt_sec: 0.0043 / 60, // Nova ~$0.0043 / minute
+  // Calibrated to the ElevenLabs dashboard: $0.48 for 9.36K characters generated
+  // (≈ $0.051 / 1k chars). Credit-priced, so still an estimate.
+  elevenlabs_tts_char: 0.48 / 9360,
   elevenlabs_stt_sec: 0.4 / 3600, // Scribe ~$0.40 / hour
   openai_in_token: 0.15 / 1_000_000, // gpt-4o-mini input
   openai_out_token: 0.6 / 1_000_000, // gpt-4o-mini output
@@ -41,18 +43,18 @@ export function recordUsage(provider, service, unitType, units) {
 
 // Human labels for the breakdown rows.
 const LABEL = {
-  deepgram_tts_char: { title: 'Deepgram · speech out', unit: 'chars' },
   elevenlabs_tts_char: { title: 'ElevenLabs · speech out', unit: 'chars' },
-  deepgram_stt_sec: { title: 'Deepgram · speech in', unit: 'audio min' },
   elevenlabs_stt_sec: { title: 'ElevenLabs · speech in', unit: 'audio min' },
   openai_in_token: { title: 'OpenAI · summaries in', unit: 'tokens' },
   openai_out_token: { title: 'OpenAI · summaries out', unit: 'tokens' },
 };
 
 export function usageSummary() {
+  // Deepgram is no longer used — exclude its historical rows so the tally reflects
+  // the current ElevenLabs + OpenAI stack (the rows stay in the table, just hidden).
   const rows = db
     .prepare(
-      'SELECT provider, service, unit_type, SUM(units) units, COUNT(*) calls FROM api_usage GROUP BY unit_type'
+      "SELECT provider, service, unit_type, SUM(units) units, COUNT(*) calls FROM api_usage WHERE provider != 'deepgram' GROUP BY unit_type"
     )
     .all();
   const lines = rows
@@ -69,7 +71,7 @@ export function usageSummary() {
     })
     .sort((a, b) => b.usd - a.usd);
   const totalUsd = lines.reduce((a, l) => a + l.usd, 0);
-  const since = db.prepare('SELECT MIN(created_at) t FROM api_usage').get()?.t || null;
+  const since = db.prepare("SELECT MIN(created_at) t FROM api_usage WHERE provider != 'deepgram'").get()?.t || null;
   return { totalUsd, since, lines };
 }
 
