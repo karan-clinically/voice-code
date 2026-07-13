@@ -79,7 +79,11 @@ Launch the desktop app (below). The **setup wizard** walks you through:
    toggle with a **Test voice** button (see below). An ElevenLabs key is optional. Keys are stored
    locally in SQLite at `~/.claude-voice-harness/harness.db` and used server-side only — they are
    never sent to your phone.
-2. **Tunnel** — Tailscale (auto-detected), local-network-only, or a custom URL.
+2. **Tunnel** — Tailscale (auto-detected), local-network-only, or a custom URL. The phone app is
+   published via **Tailscale funnel** by default (`tunnel_mode=funnel`), so the same `ts.net` URL
+   works on **and** off the tailnet. Funnel is public, so all funnel traffic must present the
+   pairing token; direct-localhost (desktop app / Stop hook) and tailnet peers proxied by tailscaled
+   stay tokenless — see `server/auth.js` for the three trust tiers.
 3. **Claude hook** — copy the Stop-hook snippet (below) into your Claude settings.
 4. **Pairing** — a QR code for the future phone app.
 
@@ -185,24 +189,30 @@ app (`mobile-web/` workspace) styled to the MDpearls design system.
 > `npm run build --workspace mobile-web`. (The old hand-written version is kept at
 > `harness/src/mobile/index.legacy.html`, unserved.)
 
-1. Install Tailscale on the phone (same tailnet as the PC).
-2. Enable HTTPS so the microphone works (browsers block mic on plain HTTP):
+1. Enable HTTPS so the microphone works (browsers block mic on plain HTTP). The harness self-heals
+   this every 60s using `tunnel_mode` (`funnel` by default — public — or `serve` for tailnet-only):
    ```
-   tailscale serve --bg 4620
+   tailscale funnel --bg 4620      # public: works on any network
+   # or:  tailscale serve --bg 4620   # tailnet-only
    ```
-   This publishes `https://<your-machine>.<tailnet>.ts.net/` → the harness (tailnet-private,
-   automatic TLS). Because it proxies as localhost, no token is needed on that URL.
-3. On the phone, open `https://<your-machine>.<tailnet>.ts.net/m`.
+   Both publish `https://<your-machine>.<tailnet>.ts.net/` → the harness with automatic TLS. On the
+   tailnet the phone is tokenless; over funnel (public) the app carries the **pairing token** from
+   the desktop pairing QR / hash-link.
+2. On the phone, open `https://<your-machine>.<tailnet>.ts.net/m` (pair once if using funnel).
 
-Entirely from the phone you can:
+The Home screen has a **Start | Sessions** tab strip, a **☰ Settings** sheet (Dictation mode + the
+ElevenLabs voice picker), a **💲 spend tally**, and **🕘 History**. Entirely from the phone you can:
 - **Start Claude in a folder** — type/speak a path, or **📁 Browse** the PC's folders to pick one.
 - **Start a shell to navigate** — PowerShell in your projects base (`C:\AI` by default, via the
   `mobile_base_dir` config key). `cd`/`ls` by typing or voice, **🔊 Where am I** to hear the current
   directory, then **🚀 Launch Claude** to hand off.
+- **Sessions tab** — a Claude-Code-app-style, day-bucketed list of every *connected* session
+  (harness PTYs marked Phone/This PC, external terminals marked Remote control, cloud ones Cloud),
+  each showing a friendly name, Working/Connected status, and folder · repo. Tap to open or resume.
 - **Full-screen session view** — a live, colour-rendered terminal (the real Claude Code TUI),
   with a mic + expanding text field; voice input is cleaned up (Wispr-style, gpt-4o-mini) before
-  Claude sees it, and Claude's spoken reply auto-plays.
-- **Resume** any live session.
+  Claude sees it, and Claude's spoken reply auto-plays. A **🔊/🔇** header toggle mutes the spoken
+  readback for a normal silent coding session; send/reply chimes give audible feedback.
 
 > A `502` on the phone means either the harness isn't running on the PC, or something repointed the
 > Tailscale `serve` root off port 4620. The harness **self-heals** the `serve` mapping every 60s
@@ -234,28 +244,22 @@ Notes:
 - The Deepgram key never leaves the harness — the phone streams audio to *your PC*, which talks to
   Deepgram.
 
-## Voice (text-to-speech): two providers
+## Voice (text-to-speech)
 
-Spoken replies come from one of two providers, chosen in desktop **Settings (⚙)** or on the phone's
-**Home** screen. Both write an mp3 to `~/.claude-voice-harness/audio/`, so replay (`/api/tts/:id`),
-desktop speakers and phone playback all behave identically regardless of provider.
+Spoken replies use **ElevenLabs**. The phone's **Settings (☰) → Voice** has a dropdown of your
+account's voices (with a **Preview** button); the choice is stored server-side and applies to *new*
+replies. Audio is an mp3 in `~/.claude-voice-harness/audio/`, streamed to the phone so playback
+starts on the first frames.
 
-| Provider | Voice | Notes |
-| --- | --- | --- |
-| **Deepgram Aura-2** | 51 voices (`aura-2-*`) | **No extra signup** — same key and free credit as STT. Utility-grade: clear and fast, built for agent replies rather than narration. Streaming-first, so synthesis starts almost immediately. |
-| **ElevenLabs** | your account's voices | More expressive and natural. Needs its own key + subscription. |
+Deepgram Aura-2 is still wired in as a backend provider (`services/tts/`) and is the automatic
+fallback when no ElevenLabs key is present, but it is **no longer offered in the phone UI**: Aura-2
+renders at ~1× realtime (a 6-second reply takes ~6 seconds to synthesize) and its header-less 24 kHz
+mp3 won't play progressively in the browser, so it's too slow for hands-free. ElevenLabs streams and
+starts in ~1 second.
 
-For short spoken command summaries — the thing this harness actually does — Aura-2 is usually plenty.
-Keep ElevenLabs if you care about voice quality.
-
-Defaults are chosen so nothing changes under you: if ElevenLabs is already configured it stays
-active; a fresh install (Deepgram key only) gets Aura-2. Switching providers only affects *new*
-replies — previously synthesized audio replays with the voice it was made in.
-
-`interactions.tts_chars` records characters synthesized per reply, so voice spend is auditable.
-
-> **Not yet:** streaming playback. Aura-2 can stream audio as it renders, but the local player takes
-> a file path rather than a pipe, so v1 writes the mp3 then plays it. Tracked as a follow-up.
+`interactions.tts_chars` records characters synthesized per reply, so voice spend is auditable — see
+the header **💲 spend tally** (`SpendModal`), which estimates ElevenLabs + OpenAI cost calibrated to
+the ElevenLabs dashboard rate.
 
 ## Two views per session: Terminal & Chat
 
@@ -338,7 +342,9 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
   Stop hook makes completion detection instant; without it the harness falls back to output
   stabilization.
 - **Config keys of note:** `dictation_cleanup` (on/off), `cleanup_model`, `mobile_base_dir`,
-  `tailscale_serve` (self-heal on/off), `tts_playback_target` (`desktop`\|`phone`\|`both`).
+  `tailscale_serve` (self-heal on/off), `tunnel_mode` (`serve`\|`funnel`), `tunnel_url` (pairing-QR
+  base URL), `tts_playback_target` (`desktop`\|`phone`\|`both`), `rate_<unit_type>` (spend-tally
+  rate overrides).
 
 ---
 
@@ -348,6 +354,7 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 |---|---|---|
 | `/api/health` | GET | `{ok, version}` |
 | `/api/sessions` | GET/POST | list / spawn (`{cwd,label,kind}`; kind `claude`\|`shell`) |
+| `/api/sessions/recent` | GET | connected sessions for the phone Sessions tab — harness PTYs + live Claude sessions from Claude's own API (`api.anthropic.com/v1/code/sessions`); disconnected/ghost/duplicate ones filtered out |
 | `/api/sessions/:id` | GET | one session |
 | `/api/sessions/:id/history` | GET | interactions |
 | `/api/sessions/:id/screen` | GET | rendered terminal (`?full=1&color=1` for colored HTML) |
@@ -370,6 +377,7 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/command` | POST | JSON `{text,sessionId}` — **text only**; audio never reaches a pty in one hop |
 | `/api/transcribe` | POST | multipart `audio` → `{text}` (batch STT; text goes to the command box) |
 | `/api/settings` | GET · POST | non-secret prefs (`stt_mode`, `tts_provider`, voice ids) — phone-reachable; **API keys can be neither read nor written here** |
+| `/api/settings/voices` | GET | phone-safe ElevenLabs voice list (names/ids only) for the Settings voice dropdown |
 | `/api/tts/:interactionId` | GET | replay cached mp3 |
 | `/api/tts/say` | POST | speak arbitrary `{text}` → mp3 |
 | `/api/hooks/stop` | POST | Claude Stop hook (localhost only) |
