@@ -56,6 +56,32 @@ export async function enableNotifications() {
   return true;
 }
 
+// Heal the subscription on every app load. The push service rotates endpoints (after
+// long idle — e.g. the phone was off — or a browser update), and the harness prunes an
+// endpoint the moment it returns 410/404. Either leaves the device silently unsubscribed
+// while the browser still thinks it's on, so nothing arrives until the user re-toggles.
+// Re-asserting here restores a pruned endpoint, and re-subscribes if the browser dropped
+// the subscription while permission is still granted. Idempotent; never throws.
+export async function syncPushSubscription() {
+  try {
+    if (!pushSupported() || Notification.permission !== 'granted') return;
+    const reg = await getReg();
+    if (!reg) return;
+    await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      // Permission granted but no subscription — the browser dropped it. Re-create so
+      // pushes resume without the user having to revisit Settings.
+      const { enabled, publicKey } = await pushVapid();
+      if (!enabled || !publicKey) return;
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(publicKey) });
+    }
+    await pushSubscribe(sub.toJSON()); // upsert — restores a server-side prune
+  } catch {
+    /* offline / not configured — the Settings toggle is still the manual fallback */
+  }
+}
+
 export async function disableNotifications() {
   const reg = await navigator.serviceWorker.getRegistration(SCOPE);
   const sub = reg ? await reg.pushManager.getSubscription() : null;
