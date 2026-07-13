@@ -21,6 +21,7 @@ import fsRouter from './routes/fs.js';
 import archiveRouter from './routes/archive.js';
 import promptsRouter from './routes/prompts.js';
 import usageRouter from './routes/usage.js';
+import pushRouter from './routes/push.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -60,7 +61,10 @@ export function buildApp() {
   // React (Vite) build lives at mobile-web/dist; base is /m/, so assets are at
   // /m/assets/*. The hand-written app is kept at ../mobile/index.legacy.html.
   const mobileDist = join(__dirname, '../../../mobile-web/dist');
-  app.use('/m/assets', express.static(join(mobileDist, 'assets')));
+  // Serve the whole build under /m so the PWA's service worker, manifest and icon
+  // (dist-root files, not under /assets) are reachable. index:false so a bare /m
+  // still falls through to the SPA shell below.
+  app.use('/m', express.static(mobileDist, { index: false }));
   app.get(['/m', '/m/', '/mobile'], (req, res) => res.sendFile(join(mobileDist, 'index.html')));
 
   app.use('/api/sessions', sessionsRouter);
@@ -77,6 +81,7 @@ export function buildApp() {
   app.use('/api/archive', archiveRouter);
   app.use('/api/prompts', promptsRouter);
   app.use('/api/usage', usageRouter);
+  app.use('/api/push', pushRouter);
 
   // JSON 404 + error handler so nothing leaks HTML/stack traces.
   app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));

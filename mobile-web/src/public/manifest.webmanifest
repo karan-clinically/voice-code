@@ -1,0 +1,14 @@
+{
+  "name": "Voice Harness",
+  "short_name": "Harness",
+  "description": "Drive and monitor your Claude Code sessions by voice, from your phone.",
+  "start_url": "/m",
+  "scope": "/m/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d0d10",
+  "theme_color": "#1a4b40",
+  "icons": [
+    { "src": "/m/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

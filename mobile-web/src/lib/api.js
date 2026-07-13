@@ -81,6 +81,12 @@ export const saveSettings = (patch) => jpost('/api/settings', patch);
 // ElevenLabs voices for the Settings voice dropdown (non-secret metadata only).
 export const listElevenVoices = () => jget('/api/settings/voices');
 
+// --- push notifications (PWA) ---
+export const pushVapid = () => jget('/api/push/vapid');
+export const pushSubscribe = (subscription) => jpost('/api/push/subscribe', { subscription });
+export const pushUnsubscribe = (endpoint) => jpost('/api/push/unsubscribe', { endpoint });
+export const pushTest = () => jpost('/api/push/test');
+
 // Shared batch|stream dictation mode, persisted harness-side so it survives
 // app restarts and is the same setting the desktop sees.
 export const getSttMode = async () => (await getSettings()).stt_mode || 'batch';

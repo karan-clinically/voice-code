@@ -17,6 +17,7 @@ import { buildApp } from './server/http.js';
 import { attachWs } from './server/ws.js';
 import { ensureServe } from './services/tunnel.js';
 import { startReconciler, stopReconciler } from './services/sessionManager.js';
+import { startNotifier } from './services/notify.js';
 import { startIndexer } from './services/archiveIndex.js';
 import * as terminal from './services/terminal.js';
 import { makeLogger } from './util/logger.js';
@@ -35,6 +36,7 @@ server.on('error', (err) => {
 });
 
 startReconciler();
+startNotifier(); // session-attention → phone push notifications
 
 // Build/refresh the session archive (scan ~/.claude/projects/*.jsonl). Runs
 // shortly after boot and periodically; incremental by file mtime so rescans are

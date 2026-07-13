@@ -171,6 +171,18 @@ function migrate(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
   `);
+
+  // Web Push subscriptions — one row per device that opted into notifications.
+  // endpoint is the browser push service URL (unique per device); keys sign the
+  // payload. Rows are pruned when the push service reports them gone (404/410).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint    TEXT PRIMARY KEY,
+      p256dh      TEXT NOT NULL,
+      auth        TEXT NOT NULL,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+  `);
 }
 
 export default db;
