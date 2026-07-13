@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { transcribe, commandText, mediaUrl, replyUrl, selectPromptOption } from './lib/api.js';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { transcribe, commandText, mediaUrl, replyUrl, selectPromptOption, sessionMessages } from './lib/api.js';
 import { HandsFree } from './lib/handsfree.js';
 import { basename } from './components.jsx';
 
@@ -18,12 +18,43 @@ export default function VoiceView({ session, onBack, notify }) {
   const [state, setState] = useState('idle');
   const [level, setLevel] = useState(0);
   const [hasReply, setHasReply] = useState(false);
-  const [turns, setTurns] = useState([]); // {role, text}
+  const [turns, setTurns] = useState([]); // persisted conversation + optimistic user echoes
   const [prompt, setPrompt] = useState(null); // interactive picker Claude is waiting on
   const hfRef = useRef(null);
   const logRef = useRef(null);
+  const lastId = useRef(0);
+  const localSeq = useRef(0);
 
-  const push = (role, text) => setTurns((t) => [...t.slice(-20), { role, text }]);
+  // Voice mode shows the SAME persisted conversation the Chat view does, so history
+  // survives navigating away and coming back (user turns are recorded by /command,
+  // assistant turns by the Stop hook — both into the `messages` table). An optimistic
+  // user echo appears instantly and is dropped once the server returns the same text;
+  // the assistant bubble arrives on the next poll with its full text.
+  const pushUser = (text) =>
+    setTurns((t) => [...t, { id: `local-${++localSeq.current}`, role: 'user', text }].slice(-40));
+  const poll = useCallback(async () => {
+    try {
+      const { messages: fresh, lastId: last } = await sessionMessages(session.id, lastId.current);
+      if (fresh.length) {
+        lastId.current = last;
+        setTurns((prev) => {
+          let base = prev;
+          for (const f of fresh) {
+            if (f.role === 'user') base = base.filter((m) => !(String(m.id).startsWith('local-') && m.text === f.text));
+          }
+          return [...base, ...fresh].slice(-40);
+        });
+      }
+    } catch {
+      /* transient */
+    }
+  }, [session.id]);
+
+  useEffect(() => {
+    poll();
+    const t = setInterval(poll, 1600);
+    return () => clearInterval(t);
+  }, [poll]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
@@ -53,8 +84,8 @@ export default function VoiceView({ session, onBack, notify }) {
     const hf = new HandsFree({
       onState: setState,
       onLevel: setLevel,
-      onUser: (text) => push('user', text),
-      onAssistant: (text) => push('assistant', text),
+      onUser: (text) => pushUser(text),
+      onAssistant: () => {}, // the persisted assistant reply arrives via the /messages poll
       onError: (m) => notify(m),
       onPrompt: setPrompt,
       transcribe: (blob, ext) => transcribe(blob, ext),
@@ -86,8 +117,8 @@ export default function VoiceView({ session, onBack, notify }) {
             to cut it off.
           </p>
         )}
-        {turns.map((t, i) => (
-          <div key={i} className={'voice-msg ' + t.role}>
+        {turns.map((t) => (
+          <div key={t.id} className={'voice-msg ' + t.role}>
             <div className="voice-bubble">{t.text}</div>
           </div>
         ))}
