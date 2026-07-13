@@ -209,14 +209,40 @@ ElevenLabs voice picker), a **💲 spend tally**, and **🕘 History**. Entirely
 - **Sessions tab** — a Claude-Code-app-style, day-bucketed list of every *connected* session
   (harness PTYs marked Phone/This PC, external terminals marked Remote control, cloud ones Cloud),
   each showing a friendly name, Working/Connected status, and folder · repo. Tap to open or resume.
-- **Full-screen session view** — a live, colour-rendered terminal (the real Claude Code TUI),
-  with a mic + expanding text field; voice input is cleaned up (Wispr-style, gpt-4o-mini) before
-  Claude sees it, and Claude's spoken reply auto-plays. A **🔊/🔇** header toggle mutes the spoken
-  readback for a normal silent coding session; send/reply chimes give audible feedback.
+  **Background agents** (which reject `claude --resume`) show a **🤖** tag and open into Claude's
+  native **agent view** (`claude agents`) so you can attach or peek — drive it with the ⌨ key pad.
+- **Full-screen session view** — a live, colour-rendered terminal (the real Claude Code TUI) that
+  **repaints instantly** off the `/ws/term` stream (no 2s poll), with a mic + expanding text field;
+  voice input is cleaned up (Wispr-style, gpt-4o-mini) before Claude sees it, and Claude's spoken
+  reply auto-plays. The header title tracks the session's **live** Claude title and doubles as a
+  **session switcher** (tap it → a left drawer of connected sessions → jump between them without
+  going Home). A **⌨ key pad** replaces the composer for driving TUIs (cursor cluster, Esc/Tab/⇧Tab,
+  Ctrl-C, Enter, ⌫); a bare Enter confirms an on-screen prompt. **Questions & bash-permission prompts
+  are read aloud** via ElevenLabs (once each, honouring the **🔊/🔇** header toggle). Voice mode shows
+  the persisted conversation, so it survives navigating away and back.
 
 > A `502` on the phone means either the harness isn't running on the PC, or something repointed the
 > Tailscale `serve` root off port 4620. The harness **self-heals** the `serve` mapping every 60s
 > (disable with `tailscale_serve=off`); to fix manually: `tailscale serve --bg 4620`.
+
+## Installable app + push notifications (PWA)
+
+The phone app is an **installable PWA** — a manifest + icon + service worker served under `/m`.
+Android Chrome offers **Install app** (⋮ menu); it gets a home-screen icon and a standalone window.
+On iPhone: **Share → Add to Home Screen** (required there before notifications work, iOS ≥ 16.4).
+
+With **☰ Settings → Notifications → On** (grant the permission once), the device subscribes to
+**Web Push**, and you get a phone notification — *even with the app closed* — when a session:
+- **needs your input** (a question / bash-permission prompt, including one a background agent hits
+  on its own — a screen watcher catches those),
+- **finishes** a turn, or
+- **fails** (an errored turn).
+
+Notifications are deduped per session, **suppressed while you're looking at the app** (the service
+worker skips the toast if a window is focused), and **tapping one deep-links into that session**.
+Setup: **VAPID keys** live in `harness/.env` (gitignored — private key never committed); the notifier
+(`services/notify.js`) maps session-state transitions (`busy→awaiting_input`/`response_ready`/`idle`)
+plus the prompt watcher to pushes. A hard reload does **not** subscribe — you must toggle it On once.
 
 ## Dictation: review before send
 
@@ -379,7 +405,12 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/settings` | GET · POST | non-secret prefs (`stt_mode`, `tts_provider`, voice ids) — phone-reachable; **API keys can be neither read nor written here** |
 | `/api/settings/voices` | GET | phone-safe ElevenLabs voice list (names/ids only) for the Settings voice dropdown |
 | `/api/tts/:interactionId` | GET | replay cached mp3 |
-| `/api/tts/say` | POST | speak arbitrary `{text}` → mp3 |
+| `/api/tts/say` | GET/POST | speak arbitrary `{text}` → mp3 (also used to read prompts aloud) |
+| `/api/sessions/:id/prompt` · `/select` | GET · POST | current interactive picker off the screen · answer option `{index}` |
+| `/api/sessions/agent-view` | POST | open Claude's `claude agents` view in a pty (`{cwd,label}`) to attach/peek a background agent |
+| `/api/push/vapid` | GET | public VAPID key + enabled flag + subscribed-device count |
+| `/api/push/subscribe` · `/unsubscribe` | POST | register / drop this device's Web Push subscription |
+| `/api/push/test` | POST | send a test notification to all subscribed devices |
 | `/api/hooks/stop` | POST | Claude Stop hook (localhost only) |
 | `/api/config/state` · `/api/config` | GET · POST | wizard config (localhost only) |
 | `/api/voices?provider=` · `/api/voices/preview` | GET · POST | voices for a TTS provider + sample (localhost only) |
