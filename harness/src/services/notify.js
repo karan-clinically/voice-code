@@ -14,6 +14,7 @@
 import { sessionEvents, listSessions, getSession, readScreen } from './sessionManager.js';
 import { detectPrompt } from './prompt.js';
 import { sendToAll, pushConfigured } from './push.js';
+import { setAttention, clearAttention, isMutedById } from './attention.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('notify');
@@ -34,7 +35,9 @@ const COPY = {
 };
 
 function fire(id, kind, bodyOverride) {
+  setAttention(id, kind); // sticky Sessions-list badge — shows even when push is off/muted
   if (!pushConfigured()) return;
+  if (isMutedById(id)) return; // this session is silenced — badge yes, push no
   if (lastKind.get(id) === kind) return; // don't repeat the same state
   lastKind.set(id, kind);
   const name = labelFor(id);
@@ -64,6 +67,7 @@ async function watchTick() {
     if (!s.alive) {
       lastKind.delete(s.id);
       prevState.delete(s.id);
+      clearAttention(s.id); // dead session drops off the list — no stale badge
       continue;
     }
     try {

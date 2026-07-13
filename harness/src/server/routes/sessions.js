@@ -24,6 +24,7 @@ import { bridgeSuffixMap } from '../../services/claudeSessions.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
 import { getRemoteSlug } from '../../services/terminal.js';
+import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt } from '../../services/prompt.js';
@@ -200,6 +201,9 @@ router.get('/recent', (req, res) => {
       ts: s.last_seen_at,
       harnessId: s.id,
       alive: true,
+      // Sticky badge: which ping this session is waiting on you for, until opened.
+      attention: getAttention(s.id)?.kind || null,
+      muted: isMutedById(s.id),
     }));
 
   // Newest activity first — the client buckets by day, like the app. Every row
@@ -286,7 +290,19 @@ router.get('/:id', (req, res) => {
     renameSession(session.id, title); // persist, so the Sessions list agrees with the header
     session.label = title;
   }
-  res.json(session);
+  // Viewing a session is acknowledging its ping — clear the sticky badge. SessionView
+  // polls this every 5s while open, so the badge drops the moment you're looking.
+  clearAttention(session.id);
+  res.json({ ...session, muted: isMutedById(session.id) });
+});
+
+// Silence (or unsilence) phone push for one session. The badge still shows; only
+// the notification is suppressed. Persisted, so it survives reconnects.
+router.post('/:id/mute', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  const muted = setMutedById(session.id, req.body?.muted !== false);
+  res.json({ muted });
 });
 
 router.get('/:id/history', (req, res) => {

@@ -55,6 +55,7 @@ export const createSession = (body) => jpost('/api/sessions', body);
 export const openAgentView = (cwd, label) => jpost('/api/sessions/agent-view', { cwd, label });
 export const sessionInfo = (id) => jget(`/api/sessions/${id}`);
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
+export const muteSession = (id, muted) => jpost(`/api/sessions/${id}/mute`, { muted });
 export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`);
 export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=1`);
 export const sessionInput = (id, text) => jpost(`/api/sessions/${id}/input`, { text });

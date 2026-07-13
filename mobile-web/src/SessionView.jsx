@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl } from './lib/api.js';
+import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession } from './lib/api.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { DictationMic, Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
@@ -51,16 +51,40 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   // (Claude re-titles the session). Re-read it so the header names the session you
   // are actually in, not the one whose row you tapped.
   const [label, setLabel] = useState(session.label);
+  // Whether phone push for THIS session is silenced. Loaded once from the server
+  // (it is persisted there); the toggle owns it after that, so the 5s poll can't
+  // clobber an optimistic flip.
+  const [muted, setMuted] = useState(false);
+  const muteLoaded = useRef(false);
   useEffect(() => {
     setLabel(session.label);
+    muteLoaded.current = false;
     let stop = false;
     const pull = () => sessionInfo(session.id)
-      .then((s) => { if (!stop && s?.label) setLabel(s.label); })
+      .then((s) => {
+        if (stop) return;
+        if (s?.label) setLabel(s.label);
+        if (!muteLoaded.current && typeof s?.muted === 'boolean') {
+          muteLoaded.current = true;
+          setMuted(s.muted);
+        }
+      })
       .catch(() => { /* transient */ });
     pull();
     const t = setInterval(pull, 5000);
     return () => { stop = true; clearInterval(t); };
   }, [session.id, session.label]);
+  async function toggleMute() {
+    const next = !muted;
+    setMuted(next); // optimistic
+    try {
+      const r = await muteSession(session.id, next);
+      setMuted(!!r.muted);
+    } catch (e) {
+      setMuted(!next);
+      notify?.(e.message);
+    }
+  }
   const title = 'Claude · ' + (label || basename(session.cwd));
 
   // Announce Claude's questions & bash-permission prompts aloud via ElevenLabs, once
@@ -196,6 +220,14 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
           aria-label={speak ? 'Mute spoken replies' : 'Unmute spoken replies'}
         >
           {speak ? '🔊' : '🔇'}
+        </button>
+        <button
+          className="ghost"
+          onClick={toggleMute}
+          title={muted ? 'Push notifications silenced for this session — tap to unmute' : 'Get phone notifications for this session — tap to silence'}
+          aria-label={muted ? 'Unmute notifications for this session' : 'Mute notifications for this session'}
+        >
+          {muted ? '🔕' : '🔔'}
         </button>
         <button className="ghost" onClick={() => setVoice(true)} title="Hands-free voice session">🎧</button>
         <div className="seg">

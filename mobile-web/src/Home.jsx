@@ -8,6 +8,15 @@ import SettingsModal from './SettingsModal.jsx';
 // Avatar glyph by where a session was started.
 const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '☁️' };
 
+// What a session is waiting on you for — a sticky badge until you open it. Remote
+// sessions carry Claude's own 'unread'; harness ones carry a specific kind.
+const ATTENTION_TITLE = {
+  input: 'Needs your input',
+  finished: 'Finished — result waiting',
+  failed: 'Last turn errored',
+  unread: 'Unread activity',
+};
+
 // Compact relative time, like the Claude Code app ("now", "4m", "8h", "3d").
 function shortAgo(ts) {
   if (!ts) return '';
@@ -97,15 +106,17 @@ export default function Home({ onOpen, onHistory, notify }) {
       .filter(Boolean)
       .join('  ·  ');
     const openable = canOpen(it);
+    const att = it.attention || (it.unread ? 'unread' : null);
     return (
       <button key={it.key} className="cc-item" onClick={openable ? () => openItem(it) : undefined} disabled={!openable}>
         <span className={'cc-avatar cc-' + it.origin}>
           {it.bgAgent ? '🤖' : ORIGIN_ICON[it.origin] || '⌨️'}
-          {it.unread && <span className="cc-unread" />}
+          {att && <span className={'cc-unread cc-att-' + att} title={ATTENTION_TITLE[att] || 'Wants attention'} />}
         </span>
         <span className="cc-body">
           <span className="cc-line1">
             <span className="cc-name">{it.name}</span>
+            {it.muted && <span className="cc-muted" title="Notifications silenced">🔕</span>}
             <span className="cc-time">{shortAgo(it.ts)}</span>
           </span>
           <span className="cc-status">
