@@ -51,6 +51,32 @@ export function SttModeToggle({ notify }) {
   );
 }
 
+// Summarise dictation: off = light cleanup (near-verbatim), on = condense
+// rambling speech into a tight instruction (keeps file names/paths/code). Shared
+// harness-side via /api/settings, so it applies to phone + desktop dictation.
+export function SummariseToggle({ notify }) {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    getSettings().then((s) => setOn(s.dictation_summarise === 'on')).catch(() => {});
+  }, []);
+  const choose = async (want) => {
+    if (want === on) return;
+    setOn(want); // optimistic
+    try {
+      await saveSettings({ dictation_summarise: want ? 'on' : 'off' });
+    } catch (e) {
+      setOn(!want);
+      notify?.(e.message);
+    }
+  };
+  return (
+    <div className="seg" title="How much your speech is rewritten before it lands in the box">
+      <button className={'seg-btn' + (!on ? ' on' : '')} onClick={() => choose(false)}>Clean up</button>
+      <button className={'seg-btn' + (on ? ' on' : '')} onClick={() => choose(true)}>Summarise</button>
+    </div>
+  );
+}
+
 // ElevenLabs voice picker. Voice is the only speech choice now — Deepgram was
 // dropped (its Aura-2 renders at ~1x realtime, too slow for hands-free). On load
 // it also pins the provider to ElevenLabs so nothing can drift back to Deepgram.

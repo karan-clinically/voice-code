@@ -19,6 +19,7 @@ const router = Router();
 // key -> validator. Nothing outside this map can be written.
 const ALLOWED = {
   stt_mode: (v) => ['batch', 'stream'].includes(v),
+  dictation_summarise: (v) => ['on', 'off'].includes(v),
   stt_provider: (v) => ['elevenlabs', 'deepgram'].includes(v),
   tts_provider: (v) => ['elevenlabs', 'deepgram'].includes(v),
   elevenlabs_voice_id: (v) => typeof v === 'string' && /^[\w-]{1,64}$/.test(v),
@@ -28,6 +29,7 @@ const ALLOWED = {
 function readSettings() {
   return {
     stt_mode: getConfig('stt_mode', 'batch'),
+    dictation_summarise: getConfig('dictation_summarise', 'off'),
     stt_provider: getConfig('stt_provider') || null,
     tts_provider: getConfig('tts_provider') || null,
     elevenlabs_voice_id: getConfig('elevenlabs_voice_id') || null,

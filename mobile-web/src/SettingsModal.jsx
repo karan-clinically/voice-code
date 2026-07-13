@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { SttModeToggle, ElevenVoicePicker } from './components.jsx';
+import { SttModeToggle, SummariseToggle, ElevenVoicePicker } from './components.jsx';
 import { pushSupported, notificationsOn, enableNotifications, disableNotifications } from './lib/push.js';
 import { pushTest } from './lib/api.js';
 
@@ -21,6 +21,14 @@ export default function SettingsModal({ onClose, notify }) {
             nothing sends until you tap Send.
           </div>
           <SttModeToggle notify={notify} />
+        </div>
+        <div className="set-item">
+          <strong>Rewrite</strong>
+          <div className="muted">
+            Clean up fixes grammar and filler, near word-for-word. Summarise condenses rambling speech into a tight
+            instruction (file names, paths and code are always kept). Review it before you send.
+          </div>
+          <SummariseToggle notify={notify} />
         </div>
         <div className="set-item">
           <strong>Voice</strong>
