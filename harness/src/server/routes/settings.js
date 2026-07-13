@@ -12,6 +12,7 @@
 
 import { Router } from 'express';
 import { getConfig, setConfig } from '../../config.js';
+import { listVoices } from '../../services/tts/index.js';
 
 const router = Router();
 
@@ -39,6 +40,17 @@ function readSettings() {
 }
 
 router.get('/', (req, res) => res.json(readSettings()));
+
+// Phone-safe ElevenLabs voice list for the Settings voice picker. Returns only
+// non-secret voice metadata (id/name/category) — the API key stays server-side,
+// unlike the localhost-only /api/voices route.
+router.get('/voices', async (req, res) => {
+  try {
+    res.json({ voices: await listVoices('elevenlabs') });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
 
 router.post('/', (req, res) => {
   const body = req.body || {};

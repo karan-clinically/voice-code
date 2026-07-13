@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionScreen, sessionResize, fsList, getSttMode, setSttMode, getSettings, saveSettings } from './lib/api.js';
-import { tapRecord } from './lib/audio.js';
+import { sessionScreen, sessionResize, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
+import { tapRecord, playUrl } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
@@ -51,54 +51,82 @@ export function SttModeToggle({ notify }) {
   );
 }
 
-// Which voice reads replies back. Mirrors the desktop setting (same config key);
-// the ElevenLabs option is offered only when a key for it exists on the PC — the
-// phone learns that as a boolean and never sees the key itself.
-export function TtsProviderToggle({ notify }) {
-  const [stt, setStt] = useState('deepgram');
-  const [tts, setTts] = useState('deepgram');
-  const [elevenOk, setElevenOk] = useState(false);
+// ElevenLabs voice picker. Voice is the only speech choice now — Deepgram was
+// dropped (its Aura-2 renders at ~1x realtime, too slow for hands-free). On load
+// it also pins the provider to ElevenLabs so nothing can drift back to Deepgram.
+// The API key never reaches the phone; it only sees voice names/ids.
+export function ElevenVoicePicker({ notify }) {
+  const [voices, setVoices] = useState([]);
+  const [voiceId, setVoiceId] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [available, setAvailable] = useState(true);
+  const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => {
-    getSettings()
-      .then((s) => {
-        setElevenOk(!!s.elevenlabs_available);
-        const fallback = s.elevenlabs_available ? 'elevenlabs' : 'deepgram';
-        setStt(s.stt_provider || 'deepgram');
-        setTts(s.tts_provider || fallback);
-      })
-      .catch(() => {});
+    let stop = false;
+    (async () => {
+      try {
+        const s = await getSettings();
+        if (!s.elevenlabs_available) {
+          if (!stop) { setAvailable(false); setLoading(false); }
+          return;
+        }
+        if (!stop) setVoiceId(s.elevenlabs_voice_id || '');
+        // Lock speech to ElevenLabs (Deepgram removed from the UI).
+        if (s.stt_provider !== 'elevenlabs' || s.tts_provider !== 'elevenlabs') {
+          saveSettings({ stt_provider: 'elevenlabs', tts_provider: 'elevenlabs' }).catch(() => {});
+        }
+        const d = await listElevenVoices();
+        if (!stop) { setVoices(d.voices || []); setLoading(false); }
+      } catch (e) {
+        if (!stop) { setLoading(false); notify?.(e.message); }
+      }
+    })();
+    return () => { stop = true; };
   }, []);
 
-  // Both halves run on the chosen vendor — one key, one credit pool. (The desktop
-  // wizard can still mix them; this shows "Mixed" if it has been.)
-  const vendor = stt === tts ? stt : 'mixed';
-  const choose = async (v) => {
-    const prev = { stt, tts };
-    setStt(v);
-    setTts(v); // optimistic
+  const choose = async (id) => {
+    const prev = voiceId;
+    setVoiceId(id); // optimistic
     try {
-      await saveSettings({ stt_provider: v, tts_provider: v });
+      await saveSettings({ elevenlabs_voice_id: id });
     } catch (e) {
-      setStt(prev.stt);
-      setTts(prev.tts);
+      setVoiceId(prev);
       notify?.(e.message);
     }
   };
 
+  const preview = async () => {
+    if (!voiceId || previewing) return;
+    setPreviewing(true);
+    try {
+      await playUrl(sayUrl('Hi, this is how I sound reading your replies.', voiceId));
+    } catch (e) {
+      notify?.(e.message);
+    }
+    setPreviewing(false);
+  };
+
+  if (!available) {
+    return <div className="muted">Add an ElevenLabs API key on the PC to choose a voice.</div>;
+  }
+  // A saved custom voice might not be in the fetched list — keep it selectable.
+  const hasCurrent = voices.some((v) => v.voice_id === voiceId);
   return (
-    <div className="seg" title="Which vendor does both the listening and the speaking">
-      <button className={'seg-btn' + (vendor === 'deepgram' ? ' on' : '')} onClick={() => choose('deepgram')}>
-        Deepgram
+    <div className="row" style={{ alignItems: 'stretch' }}>
+      <select value={voiceId} onChange={(e) => choose(e.target.value)} disabled={loading} style={{ flex: 1 }}>
+        {loading && <option value="">Loading voices…</option>}
+        {!loading && voices.length === 0 && <option value="">No voices found</option>}
+        {!loading && voiceId && !hasCurrent && <option value={voiceId}>Current voice</option>}
+        {voices.map((v) => (
+          <option key={v.voice_id} value={v.voice_id}>
+            {v.name}{v.category ? ` · ${v.category}` : ''}
+          </option>
+        ))}
+      </select>
+      <button type="button" onClick={preview} disabled={!voiceId || previewing} title="Hear this voice" style={{ flex: '0 0 auto' }}>
+        {previewing ? '▶…' : '▶ Preview'}
       </button>
-      <button
-        className={'seg-btn' + (vendor === 'elevenlabs' ? ' on' : '')}
-        onClick={() => elevenOk && choose('elevenlabs')}
-        disabled={!elevenOk}
-      >
-        ElevenLabs
-      </button>
-      {vendor === 'mixed' && <button className="seg-btn on" disabled>Mixed</button>}
     </div>
   );
 }

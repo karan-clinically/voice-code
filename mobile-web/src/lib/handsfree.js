@@ -299,7 +299,7 @@ export class HandsFree {
   // node that made buffered playback audible — it stays on the loudspeaker during
   // mic capture rather than the earpiece. Falls back to buffered decode if routing
   // or autoplay is refused.
-  async playRouted(url) {
+  async playRouted(url, onStart) {
     const ctx = this.ctx;
     if (!ctx) return playUrl(url);
     if (ctx.state === 'suspended') {
@@ -322,8 +322,9 @@ export class HandsFree {
       ]);
     } catch {
       try { el && el.pause(); if (node) node.disconnect(); } catch { /* ignore */ }
-      return this.playBuffer(url); // routing/autoplay refused — buffered fallback
+      return this.playBuffer(url, onStart); // routing/autoplay refused — buffered fallback
     }
+    if (onStart) onStart(); // playback has begun
     if (!this.on) {
       try { el.pause(); node.disconnect(); } catch { /* ignore */ }
       return undefined;
@@ -416,22 +417,16 @@ export class HandsFree {
 
   // Play the reply, watching for barge-in the whole time.
   //
-  // Buffered decode is the playback path: Deepgram Aura-2 returns a header-less
-  // 24kHz mp3 that a streaming <audio> element never even loads (readyState stays
-  // 0 — silent), whereas decodeAudioData handles both providers and always exits
-  // ctx.destination (loudspeaker, audible during mic capture). Crucially, barge-in
-  // is armed only AFTER audio actually starts (playFrom, set by the onStart hook)
-  // — otherwise the seconds spent rendering the clip get mistaken for you talking
-  // over the reply and it's cut before a word plays (the "text but no narration"
-  // bug). Deepgram renders at ~1x realtime, so its start is inherently slower than
-  // ElevenLabs' fast stream — nothing client-side can shortcut that.
+  // playRouted streams the ElevenLabs reply through the AudioContext so it starts
+  // on the first frames (~1s), falling back to buffered decode if routing/autoplay
+  // is refused. Barge-in is armed only AFTER audio actually starts (playFrom, set
+  // by the onStart hook), so the brief render/fetch wait can't be mistaken for you
+  // talking over the reply and cut it before a word plays. 'thinking' shows while
+  // it loads, 'speaking' the instant sound starts.
   async speak(url) {
-    // 'thinking' while the clip renders (Deepgram can take a few seconds), flipped
-    // to 'speaking' the instant audio actually starts — so the orb/label reflect
-    // reality instead of showing "Speaking" over several seconds of silence.
     this.setState('thinking');
     let playFrom = 0;
-    const playing = this.playBuffer(url, () => {
+    const playing = this.playRouted(url, () => {
       playFrom = performance.now();
       this.setState('speaking');
     });

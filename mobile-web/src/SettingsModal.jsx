@@ -1,9 +1,9 @@
 import React from 'react';
-import { SttModeToggle, TtsProviderToggle } from './components.jsx';
+import { SttModeToggle, ElevenVoicePicker } from './components.jsx';
 
-// Voice settings, moved off the Home screen behind the header ☰ menu. Same two
-// controls (dictation mode + voice vendor) the desktop shares harness-side, so a
-// change here follows you to the PC too.
+// Voice settings, behind the header ☰ menu. Dictation mode + which ElevenLabs
+// voice reads replies. Changes are shared harness-side, so they follow you to the
+// PC too.
 export default function SettingsModal({ onClose, notify }) {
   return (
     <div className="pm-sheet">
@@ -21,12 +21,9 @@ export default function SettingsModal({ onClose, notify }) {
           <SttModeToggle notify={notify} />
         </div>
         <div className="set-item">
-          <strong>Voice provider</strong>
-          <div className="muted">
-            Runs both halves — listening and speaking — on one vendor, so it's a single key and credit pool. Deepgram
-            is fast and clear; ElevenLabs is more expressive.
-          </div>
-          <TtsProviderToggle notify={notify} />
+          <strong>Voice</strong>
+          <div className="muted">Which ElevenLabs voice reads replies aloud. Tap Preview to hear it.</div>
+          <ElevenVoicePicker notify={notify} />
         </div>
       </div>
     </div>

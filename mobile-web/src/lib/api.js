@@ -74,6 +74,8 @@ export const commandText = (sessionId, text, timeoutMs) =>
 // --- settings (non-secret prefs; API keys are NOT reachable from the phone) ---
 export const getSettings = () => jget('/api/settings');
 export const saveSettings = (patch) => jpost('/api/settings', patch);
+// ElevenLabs voices for the Settings voice dropdown (non-secret metadata only).
+export const listElevenVoices = () => jget('/api/settings/voices');
 
 // Shared batch|stream dictation mode, persisted harness-side so it survives
 // app restarts and is the same setting the desktop sees.
@@ -120,8 +122,9 @@ export const deletePrompt = (id) => jdelete(`/api/prompts/${id}`);
 // Speak arbitrary text. Returns a URL for the <audio> element to fetch itself, so
 // playback starts on the first mp3 frames (~300ms) rather than after the full
 // render — buffering it into a Blob first would throw that streaming away.
-export function sayUrl(text) {
+export function sayUrl(text, voiceId) {
   const qs = new URLSearchParams({ text });
+  if (voiceId) qs.set('voiceId', voiceId);
   if (token) qs.set('token', token);
   return base + '/api/tts/say?' + qs.toString();
 }
