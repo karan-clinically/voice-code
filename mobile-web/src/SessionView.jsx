@@ -175,10 +175,32 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   const keyWs = useRef(null);
   useEffect(() => {
     if (mode !== 'terminal') return undefined;
-    const ws = new WebSocket(termWsUrl(session.id));
-    keyWs.current = ws;
-    ws.onclose = () => { if (keyWs.current === ws) keyWs.current = null; };
-    return () => { try { ws.close(); } catch { /* ignore */ } keyWs.current = null; };
+    let stop = false;
+    // Locking the phone suspends the tab and the OS kills this socket; without a
+    // rewire, sendRaw reports "Key channel not ready" after every unlock. Reconnect
+    // on close (while awake) and on the visibility flip back to foreground.
+    const connect = () => {
+      if (stop) return;
+      const ws = new WebSocket(termWsUrl(session.id));
+      keyWs.current = ws;
+      ws.onclose = () => {
+        if (keyWs.current === ws) keyWs.current = null;
+        if (!stop && !document.hidden) setTimeout(connect, 1500);
+      };
+    };
+    const onVisible = () => {
+      if (stop || document.hidden) return;
+      const ws = keyWs.current;
+      if (!ws || ws.readyState > 1) connect(); // socket died while backgrounded
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    connect();
+    return () => {
+      stop = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      try { keyWs.current?.close(); } catch { /* ignore */ }
+      keyWs.current = null;
+    };
   }, [session.id, mode]);
   const sendRaw = (seq) => {
     const ws = keyWs.current;

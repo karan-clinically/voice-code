@@ -275,21 +275,41 @@ export function Terminal({ sessionId, className }) {
       if (again && !stop) { again = false; paint(); }
     };
 
+    // The push socket. Locking the phone suspends the tab: the OS kills this socket
+    // (no more 'data' events) and can freeze an in-flight paint's fetch so `busy`
+    // never clears. Auto-reconnect on close, and — critically — treat the visibility
+    // flip as the recovery trigger: clear the stuck guard, rewire the socket, repaint.
     let ws = null;
-    try {
-      ws = new WebSocket(termWsUrl(sessionId));
-      ws.onmessage = (e) => {
-        try { if (JSON.parse(e.data).t === 'data') paint(); } catch { /* ignore */ }
-      };
-    } catch {
-      /* no socket — the backstop interval still drives the view */
-    }
+    const connect = () => {
+      if (stop) return;
+      try { ws?.close(); } catch { /* already gone */ }
+      try {
+        ws = new WebSocket(termWsUrl(sessionId));
+        ws.onmessage = (e) => {
+          try { if (JSON.parse(e.data).t === 'data') paint(); } catch { /* ignore */ }
+        };
+        ws.onclose = () => {
+          if (!stop && !document.hidden) setTimeout(connect, 1500); // dropped while awake — retry
+        };
+      } catch {
+        /* no socket — the backstop interval still drives the view */
+      }
+    };
+    const onVisible = () => {
+      if (stop || document.hidden) return;
+      busy = false; again = false; // unwedge a paint frozen by suspend
+      if (!ws || ws.readyState > 1) connect(); // socket died while backgrounded
+      paint(); // force an immediate catch-up repaint on resume
+    };
+    document.addEventListener('visibilitychange', onVisible);
 
+    connect();
     paint();
     const t = setInterval(paint, 2000);
     return () => {
       stop = true;
       clearInterval(t);
+      document.removeEventListener('visibilitychange', onVisible);
       try { ws?.close(); } catch { /* already gone */ }
     };
   }, [sessionId]);
