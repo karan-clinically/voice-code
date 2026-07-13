@@ -355,7 +355,7 @@ export class HandsFree {
 
   // Fallback playback: fetch the whole clip and decode it into a buffer, played
   // through ctx.destination. Reliable but only starts once the full render lands.
-  async playBuffer(url) {
+  async playBuffer(url, onStart) {
     const ctx = this.ctx;
     if (!ctx) return playUrl(url);
     if (ctx.state === 'suspended') {
@@ -394,9 +394,10 @@ export class HandsFree {
         resolve();
       };
       setActivePlayback(handle);
-      try { src.start(); } catch { clearActivePlayback(handle); resolve(); }
+      try { src.start(); if (onStart) onStart(); } catch { clearActivePlayback(handle); resolve(); }
     });
   }
+
 
   // Cut whatever is playing — the Web Audio source and, if the fallback was used,
   // the shared <audio> element.
@@ -415,17 +416,25 @@ export class HandsFree {
 
   // Play the reply, watching for barge-in the whole time.
   //
-  // Buffered decode (fetch the whole clip → decodeAudioData → AudioBufferSource)
-  // is the primary path, not the streaming <audio> element. The element route
-  // (playRouted) starts ~1s sooner, but it plays SILENCE for Deepgram Aura-2's
-  // stream — a header-less 24kHz mp3 — and "succeeds" (no error), so it never
-  // fell back. decodeAudioData handles both providers' formats and always exits
-  // through ctx.destination (the loudspeaker, audible during mic capture), so the
-  // reply is actually heard. Worth the small start delay on a short summary.
+  // Buffered decode is the playback path: Deepgram Aura-2 returns a header-less
+  // 24kHz mp3 that a streaming <audio> element never even loads (readyState stays
+  // 0 — silent), whereas decodeAudioData handles both providers and always exits
+  // ctx.destination (loudspeaker, audible during mic capture). Crucially, barge-in
+  // is armed only AFTER audio actually starts (playFrom, set by the onStart hook)
+  // — otherwise the seconds spent rendering the clip get mistaken for you talking
+  // over the reply and it's cut before a word plays (the "text but no narration"
+  // bug). Deepgram renders at ~1x realtime, so its start is inherently slower than
+  // ElevenLabs' fast stream — nothing client-side can shortcut that.
   async speak(url) {
-    this.setState('speaking');
-    const playing = this.playBuffer(url);
-    const startedAt = performance.now();
+    // 'thinking' while the clip renders (Deepgram can take a few seconds), flipped
+    // to 'speaking' the instant audio actually starts — so the orb/label reflect
+    // reality instead of showing "Speaking" over several seconds of silence.
+    this.setState('thinking');
+    let playFrom = 0;
+    const playing = this.playBuffer(url, () => {
+      playFrom = performance.now();
+      this.setState('speaking');
+    });
     let loudSince = 0;
 
     await new Promise((resolve) => {
@@ -439,12 +448,13 @@ export class HandsFree {
       playing.then(finish);
 
       const watch = () => {
-        if (done || !this.on || this.state !== 'speaking') return finish();
+        // Keep watching through both the render wait ('thinking') and playback.
+        if (done || !this.on || (this.state !== 'speaking' && this.state !== 'thinking')) return finish();
         const now = performance.now();
         const rms = this.level();
         this.onLevel(Math.min(1, rms / 0.25));
 
-        if (now - startedAt > BARGE_GUARD_MS && rms > BARGE_RMS) {
+        if (playFrom && now - playFrom > BARGE_GUARD_MS && rms > BARGE_RMS) {
           if (!loudSince) loudSince = now;
           else if (now - loudSince > BARGE_HOLD_MS) {
             this.stopPlayback(); // you talked over it — cut the reply
