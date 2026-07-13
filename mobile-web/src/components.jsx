@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionScreen, sessionResize, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
+import { sessionScreen, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
 import { tapRecord, playUrl } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 
@@ -215,10 +215,21 @@ export function Terminal({ sessionId, className }) {
     return () => { clearTimeout(t); clearTimeout(rt); window.removeEventListener('resize', onResize); };
   }, [fitPty]);
 
+  // Push, not poll. /ws/term streams every PTY byte the instant it lands, so use it
+  // as a change signal and repaint straight away instead of waiting out a timer. The
+  // in-flight guard makes this self-throttling: during a burst we repaint as fast as
+  // the server can render the screen and coalesce everything else into one trailing
+  // repaint, so fast-scrolling output costs no more than the old interval did. The
+  // slow interval stays purely as a backstop for whatever the socket misses (a
+  // dropped connection, a redraw with no new bytes).
   useEffect(() => {
     let stop = false;
-    const poll = async () => {
+    let busy = false;
+    let again = false;
+    const paint = async () => {
       if (stop) return;
+      if (busy) { again = true; return; }
+      busy = true;
       try {
         const { html } = await sessionScreen(sessionId);
         const outer = outerRef.current;
@@ -234,12 +245,26 @@ export function Terminal({ sessionId, className }) {
       } catch {
         /* transient */
       }
+      busy = false;
+      if (again && !stop) { again = false; paint(); }
     };
-    poll();
-    const t = setInterval(poll, 2000);
+
+    let ws = null;
+    try {
+      ws = new WebSocket(termWsUrl(sessionId));
+      ws.onmessage = (e) => {
+        try { if (JSON.parse(e.data).t === 'data') paint(); } catch { /* ignore */ }
+      };
+    } catch {
+      /* no socket — the backstop interval still drives the view */
+    }
+
+    paint();
+    const t = setInterval(paint, 2000);
     return () => {
       stop = true;
       clearInterval(t);
+      try { ws?.close(); } catch { /* already gone */ }
     };
   }, [sessionId]);
 
