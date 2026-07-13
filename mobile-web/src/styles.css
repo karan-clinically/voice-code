@@ -29,6 +29,8 @@
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.05);
+  /* accent-coloured glow — subtle here, cranked up by the neon movie themes */
+  --glow: rgba(26, 75, 64, 0.28);
 
   --font: 'Playfair Display', ui-serif, Georgia, 'Times New Roman', serif;
   --mono: 'Cascadia Code', 'SF Mono', Consolas, ui-monospace, monospace;
@@ -637,8 +639,8 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
   width: 116px;
   height: 116px;
   border-radius: 50%;
-  background: radial-gradient(circle at 34% 30%, #3f8d78, var(--accent) 62%);
-  box-shadow: 0 10px 34px rgba(26, 75, 64, 0.28);
+  background: radial-gradient(circle at 34% 30%, color-mix(in srgb, var(--accent) 55%, #fff), var(--accent) 62%);
+  box-shadow: 0 10px 34px var(--glow);
   transition: transform 90ms ease-out, opacity 200ms ease;
   will-change: transform;
 }
@@ -650,8 +652,8 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
   50% { opacity: 1; }
 }
 @keyframes orb-speak {
-  0%, 100% { box-shadow: 0 10px 34px rgba(26, 75, 64, 0.28); }
-  50% { box-shadow: 0 10px 52px rgba(26, 75, 64, 0.5); }
+  0%, 100% { box-shadow: 0 10px 34px var(--glow); }
+  50% { box-shadow: 0 10px 60px var(--glow); }
 }
 .voice-state {
   color: var(--muted);
@@ -772,3 +774,128 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 15px;
 }
+
+/* ============================================================================
+   Movie-themed sci-fi skins. Each block overrides the :root palette variables;
+   the whole app repaints because every surface reads these vars. Two shared
+   "modifier" attributes (set by lib/theme.js) layer on effects: [data-neon]
+   adds accent glow to controls, [data-scan] overlays CRT scanlines.
+   ========================================================================= */
+
+/* The Matrix — phosphor green on black, everything monospace. */
+:root[data-theme='matrix'] {
+  --bg: #000600; --surface: #04120a; --surface-2: #072016;
+  --text: #7dffa6; --text-2: #4dff88; --muted: #2c9c5a; --muted-2: #1a6b3d;
+  --border: #0d3d22; --border-strong: #14532d;
+  --accent: #00ff41; --accent-hover: #33ff6a; --accent-fg: #001b0a; --accent-tint: #062915;
+  --warn-bg: #1a1400; --warn-border: #4d3d00; --warn-text: #d9b600;
+  --error: #ff3b3b; --error-bg: #260808; --success: #00ff41;
+  --term-bg: #000600; --term-fg: #00ff41;
+  --glow: rgba(0, 255, 65, 0.45);
+  --font: var(--mono);
+}
+
+/* Tron — electric cyan on deep blue-black, geometric mono. */
+:root[data-theme='tron'] {
+  --bg: #01060d; --surface: #061420; --surface-2: #0a2030;
+  --text: #cdeeff; --text-2: #9bdcf5; --muted: #3a7d9c; --muted-2: #24576e;
+  --border: #0d3350; --border-strong: #145273;
+  --accent: #00e5ff; --accent-hover: #4df0ff; --accent-fg: #001014; --accent-tint: #08283a;
+  --warn-bg: #1a1200; --warn-border: #4d3800; --warn-text: #ffb300;
+  --error: #ff7043; --error-bg: #26120a; --success: #00e5ff;
+  --term-bg: #01060d; --term-fg: #00e5ff;
+  --glow: rgba(0, 229, 255, 0.45);
+  --font: var(--mono);
+}
+
+/* Blade Runner — neon-noir amber over rain-slick black, wide clean sans. */
+:root[data-theme='bladerunner'] {
+  --bg: #0a0806; --surface: #16100a; --surface-2: #201810;
+  --text: #ffd9a0; --text-2: #e0b878; --muted: #9c7a4a; --muted-2: #6b5330;
+  --border: #3a2a17; --border-strong: #543d20;
+  --accent: #ff7a1a; --accent-hover: #ff9440; --accent-fg: #1a0d00; --accent-tint: #2a1a08;
+  --warn-bg: #221600; --warn-border: #5c3d00; --warn-text: #ffb84d;
+  --error: #ff4d4d; --error-bg: #260a0a; --success: #2fd6c0;
+  --term-bg: #0a0806; --term-fg: #ff9440;
+  --glow: rgba(255, 122, 26, 0.42);
+  --font: 'Helvetica Neue', system-ui, -apple-system, sans-serif;
+}
+:root[data-theme='bladerunner'] .topbar h1,
+:root[data-theme='bladerunner'] .sv-title { letter-spacing: 0.14em; text-transform: uppercase; }
+
+/* Dune — Arrakis daylight: warm sand, burnt-spice accent, serif titles. */
+:root[data-theme='dune'] {
+  --bg: #c9b184; --surface: #dbc9a4; --surface-2: #c3ad84;
+  --text: #2e2213; --text-2: #4a3820; --muted: #6b5636; --muted-2: #8a7350;
+  --border: #a98f66; --border-strong: #93794f;
+  --accent: #a8451a; --accent-hover: #8a3712; --accent-fg: #fdf4e3; --accent-tint: #e3d3ae;
+  --warn-bg: #efdcb0; --warn-border: #c9a45c; --warn-text: #7a5312;
+  --error: #a3320f; --error-bg: #e8c9b8; --success: #6b6a1f;
+  --term-bg: #1a1206; --term-fg: #e8cfa0;
+  --glow: rgba(168, 69, 26, 0.3);
+}
+
+/* Nostromo — the Alien ship's amber monochrome CRT terminal. */
+:root[data-theme='nostromo'] {
+  --bg: #0d0a02; --surface: #181206; --surface-2: #221a08;
+  --text: #ffb000; --text-2: #d99400; --muted: #9c6f14; --muted-2: #6b4d0f;
+  --border: #4a3812; --border-strong: #63501a;
+  --accent: #ffb000; --accent-hover: #ffc740; --accent-fg: #0d0a02; --accent-tint: #2a2008;
+  --warn-bg: #221a08; --warn-border: #63501a; --warn-text: #ffc740;
+  --error: #ff5a2a; --error-bg: #260f06; --success: #ffb000;
+  --term-bg: #0d0a02; --term-fg: #ffb000;
+  --glow: rgba(255, 176, 0, 0.4);
+  --font: var(--mono);
+}
+
+/* ---- [data-neon]: accent glow on the interactive/brand surfaces ---- */
+:root[data-neon] button.primary,
+:root[data-neon] .cbtn.send,
+:root[data-neon] .composer-send,
+:root[data-neon] .micbtn,
+:root[data-neon] .voice-btn:not(.on),
+:root[data-neon] .cc-fab,
+:root[data-neon] .tk-enter { box-shadow: 0 0 16px var(--glow); }
+:root[data-neon] .topbar h1,
+:root[data-neon] .sv-title,
+:root[data-neon] .voice-title { text-shadow: 0 0 12px var(--glow); }
+:root[data-neon] .seg-btn.on,
+:root[data-neon] .tabstrip .tab.on,
+:root[data-neon] .chip.on,
+:root[data-neon] .mode-pill.mode-auto { text-shadow: 0 0 8px var(--glow); }
+:root[data-neon] input:focus,
+:root[data-neon] select:focus,
+:root[data-neon] textarea:focus { box-shadow: 0 0 0 3px var(--glow); }
+
+/* ---- [data-scan]: faint CRT scanlines over everything (never blocks taps) ---- */
+:root[data-scan] body::after {
+  content: '';
+  position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.22) 0, rgba(0, 0, 0, 0.22) 1px, transparent 1px, transparent 3px
+  );
+  opacity: 0.35;
+}
+
+/* ---- Theme picker (Settings) — a live palette swatch per skin ---- */
+.theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.theme-card {
+  display: flex; flex-direction: column; gap: 9px; text-align: left; padding: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--surface); box-shadow: none; color: var(--text);
+}
+.theme-card.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-tint); }
+.theme-sw {
+  position: relative; height: 56px; border-radius: var(--radius); border: 1px solid;
+  overflow: hidden; flex: 0 0 auto;
+}
+.theme-sw-dot { position: absolute; top: 9px; right: 9px; width: 15px; height: 15px; border-radius: 50%; }
+.theme-sw-bar { position: absolute; top: 11px; left: 10px; width: 42%; height: 7px; border-radius: 4px; }
+.theme-sw-line { position: absolute; left: 10px; height: 5px; border-radius: 3px; opacity: 0.85; }
+.theme-sw-line { top: 28px; width: 66%; }
+.theme-sw-line.short { top: 39px; width: 44%; opacity: 0.55; }
+.theme-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.theme-name { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: var(--text); }
+.theme-check { color: var(--accent); font-weight: 700; }
+.theme-tag { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

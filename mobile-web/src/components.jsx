@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { sessionScreen, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
 import { tapRecord, playUrl } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
+import { THEMES, getTheme, applyTheme } from './lib/theme.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
@@ -153,6 +154,38 @@ export function ElevenVoicePicker({ notify }) {
       <button type="button" onClick={preview} disabled={!voiceId || previewing} title="Hear this voice" style={{ flex: '0 0 auto' }}>
         {previewing ? '▶…' : '▶ Preview'}
       </button>
+    </div>
+  );
+}
+
+// Sci-fi movie skins. Each card shows a live swatch of that theme's palette; tapping
+// one repaints the whole app immediately (applyTheme flips the [data-theme] attribute)
+// and remembers it on this device. Purely visual, so no server round-trip.
+export function ThemePicker() {
+  const [theme, setTheme] = useState(getTheme);
+  const choose = (id) => setTheme(applyTheme(id));
+  return (
+    <div className="theme-grid">
+      {THEMES.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          className={'theme-card' + (t.id === theme ? ' on' : '')}
+          onClick={() => choose(t.id)}
+          aria-pressed={t.id === theme}
+        >
+          <span className="theme-sw" style={{ background: t.bg, borderColor: t.border }}>
+            <span className="theme-sw-dot" style={{ background: t.accent }} />
+            <span className="theme-sw-bar" style={{ background: t.accent }} />
+            <span className="theme-sw-line" style={{ background: t.text }} />
+            <span className="theme-sw-line short" style={{ background: t.muted }} />
+          </span>
+          <span className="theme-meta">
+            <span className="theme-name">{t.name}{t.id === theme && <span className="theme-check">✓</span>}</span>
+            <span className="theme-tag">{t.tag}</span>
+          </span>
+        </button>
+      ))}
     </div>
   );
 }

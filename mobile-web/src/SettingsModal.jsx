@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { SttModeToggle, SummariseToggle, ElevenVoicePicker } from './components.jsx';
+import { SttModeToggle, SummariseToggle, ElevenVoicePicker, ThemePicker } from './components.jsx';
 import { pushSupported, notificationsOn, enableNotifications, disableNotifications } from './lib/push.js';
 import { pushTest } from './lib/api.js';
 
@@ -14,6 +14,13 @@ export default function SettingsModal({ onClose, notify }) {
         <button className="ghost" onClick={onClose}>✕</button>
       </div>
       <div className="pm-sheet-list">
+        <div className="set-item">
+          <strong>Theme</strong>
+          <div className="muted">
+            Skin the app after a sci-fi film. Tap one to switch instantly — it sticks on this device.
+          </div>
+          <ThemePicker />
+        </div>
         <div className="set-item">
           <strong>Dictation</strong>
           <div className="muted">
