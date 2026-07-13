@@ -50,6 +50,10 @@ export const listSessions = () => jget('/api/sessions');
 export const recentSessions = () => jget('/api/sessions/recent');
 export const reindexArchive = () => jpost('/api/archive/reindex');
 export const createSession = (body) => jpost('/api/sessions', body);
+// Open Claude's background-agent view in a pty so the phone can attach to / peek a
+// live background agent (those reject --resume). cwd is where the view spawns.
+export const openAgentView = (cwd, label) => jpost('/api/sessions/agent-view', { cwd, label });
+export const sessionInfo = (id) => jget(`/api/sessions/${id}`);
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`);
 export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=1`);

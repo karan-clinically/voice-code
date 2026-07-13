@@ -22,6 +22,7 @@ import { isLocalhost } from '../auth.js';
 import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
 import { bridgeSuffixMap } from '../../services/claudeSessions.js';
 import { codeSessions } from '../../services/codeSessions.js';
+import { backgroundAgents } from '../../services/agentRegistry.js';
 import { getRemoteSlug } from '../../services/terminal.js';
 import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
@@ -138,6 +139,7 @@ function collapseGhosts(rows) {
 // and repo/branch + session id. Registered before '/:id'.
 router.get('/recent', (req, res) => {
   const bridges = bridgeSuffixMap(); // app session id -> local transcript, for resume
+  const bgList = [...backgroundAgents().values()]; // live background agents (reject --resume)
 
   // Disconnected sessions don't belong in this list — a session you can't reach
   // right now isn't "recent", it's history (resumable there instead).
@@ -153,21 +155,27 @@ router.get('/recent', (req, res) => {
       uuid = meta?.uuid || null;
     }
     const cwd = local?.cwd || meta?.cwd || null;
+    // A background agent rejects --resume, so it must be reached through the agent
+    // view instead. Match by transcript uuid, falling back to title (the agent's
+    // live name), and let bgAgent drive the tap rather than a doomed resume.
+    const bg = bgList.find((a) => (uuid && a.sessionId === uuid) || (s.title && a.name === s.title)) || null;
     return {
       key: 'c' + s.id,
       kind: 'code',
-      name: s.title || (uuid ? uuid.slice(0, 8) : s.suffix.slice(0, 8)),
+      name: bg?.name || s.title || (uuid ? uuid.slice(0, 8) : s.suffix.slice(0, 8)),
       connected: s.connected,
-      active: s.working,
+      active: bg ? bg.state === 'working' : s.working,
       unread: s.unread,
       origin: s.envKind === 'anthropic_cloud' ? 'cloud' : 'terminal',
-      originLabel: s.envKind === 'anthropic_cloud' ? 'Cloud' : 'Remote control',
-      repo: s.repo || repoSlug(cwd) || null,
+      originLabel: bg ? 'Background agent' : s.envKind === 'anthropic_cloud' ? 'Cloud' : 'Remote control',
+      repo: s.repo || repoSlug(bg?.cwd || cwd) || null,
       branch: s.branch || meta?.gitBranch || null,
-      cwd,
+      cwd: bg?.cwd || cwd,
       sessionId: uuid, // local transcript uuid, when this session ran on this PC
       ts: s.ts,
-      resumeUuid: meta?.cwdExists ? uuid : null,
+      bgAgent: !!bg, // route the tap to the agent view (attach/peek) not --resume
+      agentCwd: bg?.cwd || null,
+      resumeUuid: bg ? null : meta?.cwdExists ? uuid : null,
     };
   }));
 
@@ -227,9 +235,57 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Open Claude's background-agent view in a pty so the phone can attach to (or peek)
+// a live background agent — those reject `claude --resume`. The phone drives the view
+// with the ⋯ keys (↑/↓ to the row, Enter = attach, Space = peek); on Enter the same
+// pty becomes the agent's live session. cwd only sets where the view is spawned.
+router.post('/agent-view', async (req, res) => {
+  try {
+    const base = getConfig('mobile_base_dir', 'C:\\AI');
+    const rawCwd = (req.body?.cwd || '').trim().replace(/["']/g, '');
+    // The agent's own cwd may be a worktree that's since been removed; fall back to
+    // the projects base so the view still opens (it lists every agent regardless).
+    const cwd = rawCwd && existsSync(rawCwd) && statSync(rawCwd).isDirectory() ? resolve(rawCwd) : base;
+    const label = req.body?.label || null;
+    const origin = isLocalhost(req) ? 'harness' : 'remote';
+    const session = await createSession({ cwd, label, kind: 'claude', agentView: true, origin });
+    res.status(201).json(session);
+  } catch (err) {
+    log.error(`agent-view error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The label we stored when the session was opened is a snapshot: a new session gets
+// the folder name, a resumed one gets the archived transcript's title. Claude Code
+// re-titles a session as the conversation moves on, so that snapshot drifts and the
+// header ends up naming a session you're no longer in. Claude's own list carries the
+// current title — match this PTY to it through the bridge suffix -> transcript uuid.
+// codeSessions() is a cached, non-blocking read, so this is cheap enough to poll.
+function liveTitle(session) {
+  if (!session?.claude_session_id) return null;
+  const bridges = bridgeSuffixMap();
+  // A reconnect spawns a fresh app session over the SAME transcript, so one uuid can
+  // carry several titles — a stale folder name ("voice") alongside the current
+  // generated one. Take every code-session bridged to this transcript and pick the
+  // live one: connected first, then most recently active, so the header shows the
+  // title Claude is using right now rather than whichever happened to be listed first.
+  const matches = codeSessions().filter(
+    (s) => s.title && bridges.get(s.suffix)?.sessionId === session.claude_session_id
+  );
+  if (!matches.length) return null;
+  matches.sort((a, b) => (b.connected - a.connected) || (Date.parse(b.ts || 0) - Date.parse(a.ts || 0)));
+  return matches[0].title;
+}
+
 router.get('/:id', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
+  const title = liveTitle(session);
+  if (title && title !== session.label) {
+    renameSession(session.id, title); // persist, so the Sessions list agrees with the header
+    session.label = title;
+  }
   res.json(session);
 });
 

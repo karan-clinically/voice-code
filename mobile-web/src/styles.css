@@ -431,6 +431,31 @@ button.ghost:hover { background: var(--surface-2); }
 .cbtn.stop { background: var(--error); color: #fff; border-color: var(--error); }
 .cbtn.rec { color: var(--error); border-color: var(--error); background: var(--error-bg); animation: pulse 1.1s infinite; }
 
+/* Terminal key pad — replaces the composer for driving TUIs (agent view, pickers,
+   permission dialogs). Cursor cluster in the keyboard-standard inverted-T; Ctrl
+   chords + Enter/Esc/Tab/⌫ alongside. Every key writes a raw sequence to the pty. */
+.tkbd {
+  flex: 0 0 auto; min-width: 0; display: flex; flex-direction: column; gap: 8px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm); padding: 10px;
+}
+.tkbd-rows { display: flex; gap: 10px; align-items: center; }
+.tkbd-specials { flex: 1 1 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.tkbd-arrows { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 46px); grid-auto-rows: 46px; gap: 6px; }
+.tk {
+  height: 46px; padding: 0 6px; border-radius: 10px; font-size: 15px; font-family: var(--mono); font-weight: 500;
+  display: inline-flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); box-shadow: none;
+}
+.tk:active { background: var(--accent-tint); border-color: var(--accent); color: var(--accent); transform: translateY(1px); }
+.tkbd-arrows .tk { font-size: 21px; }
+.tk-cspan { grid-column: span 2; }
+.tkbd-wide { display: flex; gap: 8px; }
+.tk-space { flex: 1 1 auto; }
+.tk-enter { flex: 0 0 44%; background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.tk-enter:active { color: var(--accent-fg); }
+.tk-abc { width: 100%; height: 42px; font-family: inherit; color: var(--muted); background: var(--surface); }
+
 /* Saved-prompts sheet (phone) */
 .pm-sheet {
   position: fixed; inset: 0; z-index: 60; background: var(--bg); display: flex; flex-direction: column; gap: 10px;

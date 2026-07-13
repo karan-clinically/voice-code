@@ -68,10 +68,13 @@ function decorate(row) {
 // original directory or Claude reports "No conversation found". The correlation
 // token is injected as CVH_SESSION_ID so a Stop hook can map back to this session
 // (primary matching is by cwd).
-export async function createSession({ cwd, label = null, kind = 'claude', resumeId = null, origin = 'harness' } = {}) {
+export async function createSession({ cwd, label = null, kind = 'claude', resumeId = null, origin = 'harness', agentView = false } = {}) {
   const token = randomUUID();
   const isShell = kind === 'shell';
-  const claudeArgs = resumeId ? ['--resume', resumeId] : [];
+  // agentView launches Claude's background-agent view (`claude agents`) so the phone
+  // can attach to / peek a live background agent — those reject `--resume`. Once the
+  // user hits Enter on a row, the same pty becomes that agent's live session.
+  const claudeArgs = agentView ? ['agents'] : resumeId ? ['--resume', resumeId] : [];
   const view = terminal.spawnSession({
     cwd,
     label,
