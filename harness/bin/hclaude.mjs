@@ -38,6 +38,12 @@ if (attachMode) {
   const nxt = argv[argv.indexOf('--attach') + 1];
   if (nxt && /^\d+$/.test(nxt)) attachId = Number(nxt);
 }
+// Resume/continue routed here from the alias so the resumed session is harness-owned
+// (shareable with the phone) rather than a bare, un-attachable `--resume` fork.
+const ri = argv.indexOf('--resume');
+const resumeUuid = ri >= 0 && /^[0-9a-fA-F-]{36}$/.test(argv[ri + 1] || '') ? argv[ri + 1] : null;
+const continueMode = argv.includes('--continue') || argv.includes('-c');
+const fallbackOnError = !!resumeUuid || continueMode; // exit 3 -> alias runs the real CLI
 
 function request(method, path, body) {
   return new Promise((resolve, reject) => {
@@ -96,6 +102,16 @@ async function resolveTarget() {
     }
     return { ...(await pickSession()), reattach: true };
   }
+  if (resumeUuid) {
+    // `/resume` reuses an existing harness-owned resume of this transcript rather
+    // than forking a second `--resume`, so terminal + phone land on the same pty.
+    const session = await post(`/api/archive/${resumeUuid}/resume`, {});
+    return { id: session.id, cwd: session.cwd, name: session.label };
+  }
+  if (continueMode) {
+    const session = await post('/api/sessions', { kind: 'claude', cwd, continue: true });
+    return { id: session.id, cwd: session.cwd };
+  }
   const session = await post('/api/sessions', { kind: 'claude', cwd });
   return { id: session.id, cwd: session.cwd };
 }
@@ -104,7 +120,9 @@ let target;
 try {
   target = await resolveTarget();
 } catch (e) {
-  if (offline(e)) process.exit(3); // let the alias fall back to the real CLI
+  // Offline, or a resume/continue we couldn't service (e.g. transcript not indexed) —
+  // exit 3 so the alias falls back to the real CLI instead of leaving you stuck.
+  if (offline(e) || fallbackOnError) process.exit(3);
   stderr(`hclaude: ${e.message}\n`);
   process.exit(1);
 }

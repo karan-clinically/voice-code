@@ -73,6 +73,9 @@ export function liveClaudeSessions() {
       startedAt: j.startedAt || null,
       updatedAt: j.updatedAt || j.statusUpdatedAt || j.startedAt || null,
       bridged: !!j.bridgeSessionId,
+      // The remote-control suffix (API lists it as cse_<suffix>), so a code-session
+      // can be matched to its live process by suffix rather than a flaky title→uuid.
+      suffix: j.bridgeSessionId ? String(j.bridgeSessionId).replace(/^session_/, '') : null,
     });
   }
   return out;

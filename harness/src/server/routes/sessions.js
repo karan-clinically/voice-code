@@ -20,7 +20,7 @@ import {
 } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
 import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
-import { bridgeSuffixMap } from '../../services/claudeSessions.js';
+import { bridgeSuffixMap, liveClaudeSessions } from '../../services/claudeSessions.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
 import { getRemoteSlug } from '../../services/terminal.js';
@@ -175,9 +175,19 @@ router.get('/recent', (req, res) => {
   const bridges = bridgeSuffixMap(); // app session id -> local transcript, for resume
   const bgList = [...backgroundAgents().values()]; // live background agents (reject --resume)
 
-  // Disconnected sessions don't belong in this list — a session you can't reach
-  // right now isn't "recent", it's history (resumable there instead).
-  const remote = collapseGhosts(codeSessions().filter((s) => s.connected).map((s) => {
+  // The API leaves stale "connected" records after a bridge dies (no clean teardown),
+  // so it over-reports live sessions. The reliable signal is a running claude.exe:
+  // liveClaudeSessions() cross-checks each session's pid against tasklist. Keep a
+  // session only when a live process backs it — matched by bridge suffix (survives a
+  // flaky title→uuid), OR by resolved transcript uuid (catches a live-but-unbridged
+  // session that has no suffix). Cloud sessions and live background agents are exempt.
+  const live = liveClaudeSessions();
+  const liveSuffixes = new Set(live.filter((x) => x.suffix).map((x) => x.suffix));
+  const liveUuids = new Set(live.map((x) => x.sessionId).filter(Boolean));
+
+  const remote = collapseGhosts(codeSessions()
+    .filter((s) => s.connected)
+    .map((s) => {
     const local = bridges.get(s.suffix) || null;
     let uuid = local?.sessionId || null;
     let meta = uuid ? getArchiveMeta(uuid) : null;
@@ -193,6 +203,16 @@ router.get('/recent', (req, res) => {
     // view instead. Match by transcript uuid, falling back to title (the agent's
     // live name), and let bgAgent drive the tap rather than a doomed resume.
     const bg = bgList.find((a) => (uuid && a.sessionId === uuid) || (s.title && a.name === s.title)) || null;
+    // A background agent is only worth a row while it's still running AND unfinished.
+    // Drop the ones that have completed ('done') or whose process is gone — otherwise
+    // the bg exemption below would keep showing them long after they stopped mattering.
+    if (bg && (bg.state === 'done' || !bg.sessionId || !liveUuids.has(bg.sessionId))) return null;
+    // Drop the API's dead "connected" ghosts: keep only sessions a live process backs.
+    // A bg agent that reached here is live+unfinished, so it's exempt (its own transient
+    // agent-view pty may have exited even though the agent itself is running).
+    if (!(s.envKind === 'anthropic_cloud' || bg || liveSuffixes.has(s.suffix) || (uuid && liveUuids.has(uuid)))) {
+      return null;
+    }
     return {
       key: 'c' + s.id,
       kind: 'code',
@@ -211,7 +231,7 @@ router.get('/recent', (req, res) => {
       agentCwd: bg?.cwd || null,
       resumeUuid: bg ? null : meta?.cwdExists ? uuid : null,
     };
-  }));
+  }).filter(Boolean));
 
   // A harness PTY that has bridged also appears in the remote list under the same
   // uuid; both go into the pool and dedupeByConversation keeps the live harness one.
@@ -260,10 +280,13 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: `folder not found: ${cwd}` });
     }
     const label = req.body?.label || null;
+    // `claude --continue` (from the hclaude alias) → a harness-owned session that
+    // resumes the most-recent conversation in cwd, so terminal + phone share it.
+    const continueSession = req.body?.continue === true;
     // A localhost request is the desktop app on the PC (in the harness); anything
     // else reached us over Tailscale with a bearer token (remote control).
     const origin = isLocalhost(req) ? 'harness' : 'remote';
-    const session = await createSession({ cwd, label, kind, origin });
+    const session = await createSession({ cwd, label, kind, continueSession, origin });
     res.status(201).json(session);
   } catch (err) {
     log.error(`create session error: ${err.message}`);
