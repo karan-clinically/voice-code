@@ -12,6 +12,8 @@
     "node": ">=20"
   },
   "scripts": {
+    "setup": "node harness/bin/setup.mjs",
+    "build:mobile": "npm run build --workspace mobile-web",
     "harness": "npm start --workspace harness",
     "desktop": "npm start --workspace desktop"
   }

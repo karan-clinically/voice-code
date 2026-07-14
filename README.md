@@ -63,7 +63,27 @@ Phone (Phase 2) ──Tailscale + bearer token──────────► 
 git clone <this repo>
 cd "voice harness"
 npm install        # installs harness + desktop workspaces (builds native node-pty / better-sqlite3)
+npm run setup      # builds the phone app, installs the `claude` alias + Stop hook, generates VAPID keys
 ```
+
+`npm run setup` is what makes the harness actually *work* — it does the four things nothing else
+does for you, shows you exactly what it will change, and asks before writing:
+
+| It installs | Why you need it |
+|---|---|
+| **`mobile-web/dist`** (builds it) | `dist/` is git-ignored, so a fresh clone serves **nothing** at `/m`. |
+| **the `claude` PowerShell alias** | Without it a terminal session is a bare, un-attachable process — opening it on the phone can only `--resume` it into a **fork**. See [`hclaude`](#sharing-a-terminal-session-with-your-phone-hclaude). |
+| **the Claude Code Stop hook** | Without it the harness never learns a turn finished and waits out the 10-minute output-stabilization timeout. |
+| **VAPID keys** | `push.js` reads them from `.env`; nothing else generates them, so push notifications silently never fire. |
+
+It's idempotent (safe to re-run — it upgrades an existing install in place) and reversible with
+`npm run setup -- --uninstall`. It backs up `~/.claude/settings.json` before touching it, and
+`--yes` skips the prompt for scripted installs.
+
+> After it runs, open a **new** PowerShell window so the profile loads. Don't `. $PROFILE` —
+> that's `Microsoft.PowerShell_profile.ps1`, a *different* file that often doesn't exist, so
+> dot-sourcing it silently does nothing. The alias lives in `profile.ps1` (all-hosts), which
+> auto-loads on every new shell.
 
 ---
 
@@ -90,29 +110,41 @@ Launch the desktop app (below). The **setup wizard** walks you through:
 > For headless/CLI testing before the wizard, you can instead create `harness/.env`
 > (git-ignored) from `harness/.env.example` and put your keys there.
 
-### 2. Add the Claude Code Stop hook (recommended)
+### 2. The Claude Code Stop hook
 
-Add this to `~/.claude/settings.json` so the harness learns the instant Claude finishes and can read
-back the exact response. It uses `curl.exe` (not the PowerShell `curl` alias) and reads Claude's JSON
-from stdin:
+**`npm run setup` installs this for you** (merging it into `~/.claude/settings.json` without
+disturbing your other hooks or settings, after taking a backup). This section is just what it
+writes, for reference or if you'd rather do it by hand.
+
+The hook is how the harness learns the instant Claude finishes and can read back the exact
+response. It uses `curl.exe` (not the PowerShell `curl` alias) and reads Claude's JSON from stdin:
 
 ```json
 {
   "hooks": {
     "Stop": [
       {
-        "type": "command",
-        "command": "curl.exe",
-        "args": ["-s", "-X", "POST", "http://127.0.0.1:4620/api/hooks/stop",
-                 "-H", "Content-Type: application/json", "-d", "@-"],
-        "timeout": 5
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl.exe",
+            "args": ["-s", "-X", "POST", "http://127.0.0.1:4620/api/hooks/stop",
+                     "-H", "Content-Type: application/json", "-d", "@-"],
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-Without the hook, the harness still works via output-stabilization detection — just a little slower.
+> ⚠️ Note the **nested `"hooks"` array** — each `Stop` entry wraps its commands in one. A flat
+> entry (command directly under `Stop`) parses fine but **never fires**, so turn-completion
+> silently falls back to the slow path with no error to tell you why.
+
+Without the hook the harness still works, via output-stabilization detection — but every turn
+waits out a timeout instead of completing the moment Claude is done.
 
 ---
 
