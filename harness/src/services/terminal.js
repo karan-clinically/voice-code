@@ -63,18 +63,29 @@ function deriveName(cwd, id) {
 }
 
 // The harness is usually launched FROM a Claude Code session, so its environment
-// carries that parent's child-session markers (CLAUDECODE, CLAUDE_CODE_SESSION_ID,
-// CLAUDE_CODE_BRIDGE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION, …). Inheriting those makes
-// every claude we spawn believe it is a NESTED child: it then never registers in
-// ~/.claude/sessions and never opens a remote-control bridge, so the app/phone can't
-// see it and `remoteControlAtStartup` is silently ignored. Strip them so each harness
-// session boots as a proper top-level session (and therefore auto-connects RC).
-// CLAUDE_PATH / CLAUDE_EFFORT are user config, not session markers — keep them.
+// carries that parent's child-session markers. Inheriting those makes every claude we
+// spawn believe it is a NESTED child: it then never registers in ~/.claude/sessions
+// and never opens a remote-control bridge, so the app/phone can't see it and
+// `remoteControlAtStartup` is silently ignored. Strip ONLY those markers so each
+// session boots as a proper top-level session (and auto-connects RC).
+//
+// This is an explicit denylist, NOT a `CLAUDE_CODE_*` prefix sweep, on purpose: that
+// sweep also deleted CLAUDE_CODE_OAUTH_TOKEN — the long-lived `claude setup-token`
+// token — forcing every session back onto the shared, rotating ~/.claude/.credentials
+// file, whose single-use refresh token races across concurrent sessions and logs them
+// out. Auth and user config (…_OAUTH_TOKEN, …_USE_BEDROCK/VERTEX, CLAUDE_PATH,
+// CLAUDE_EFFORT, ANTHROPIC_*) must pass through untouched.
+const SESSION_MARKERS = new Set([
+  'CLAUDECODE',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_BRIDGE_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+]);
 function topLevelEnv() {
   const e = { ...process.env };
-  for (const k of Object.keys(e)) {
-    if (k === 'CLAUDECODE' || /^CLAUDE_CODE_/i.test(k)) delete e[k];
-  }
+  for (const k of SESSION_MARKERS) delete e[k];
   return e;
 }
 
