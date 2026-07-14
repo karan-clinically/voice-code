@@ -117,6 +117,25 @@ export function getSession(id) {
   return decorate(selOne.get(Number(id)));
 }
 
+// Reuse map so tapping a Sessions-list row that would SPAWN a session (a resume,
+// a background-agent view) returns the one you already opened instead of piling
+// up duplicates. Keyed by open-identity (`resume:<uuid>`, `agent:<cwd>`); in-
+// memory because the sessions it points at are live PTYs that die with the
+// harness anyway. `reusableSession` returns the live session for a key (dropping
+// the entry once it's dead), `recordReuse` registers a freshly opened one.
+const reuseByKey = new Map();
+export function reusableSession(key) {
+  const id = reuseByKey.get(key);
+  if (id == null) return null;
+  const s = getSession(id);
+  if (s && s.alive) return s;
+  reuseByKey.delete(key);
+  return null;
+}
+export function recordReuse(key, id) {
+  reuseByKey.set(key, Number(id));
+}
+
 // Internal terminal id for a DB session id (used by the command pipeline).
 export function getPtyId(id) {
   return ptyIdByDb.get(Number(id)) || null;

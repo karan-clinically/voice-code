@@ -16,7 +16,7 @@ import { getConfig } from '../../config.js';
 import {
   listSessions, getSession, createSession, killSession, renameSession,
   sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, setKind,
-  getPtyId, markState,
+  getPtyId, markState, reusableSession, recordReuse,
 } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
 import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
@@ -93,6 +93,8 @@ function repoSlug(cwd) {
 }
 
 const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
+// Normalised path for equality (Windows: case-insensitive, no trailing slash).
+const norm = (p) => (p ? resolve(p) : '').replace(/[\\/]+$/, '').toLowerCase();
 
 // The remote-control bridge can reconnect a session without a clean handoff,
 // leaving the OLD connection's record stuck reporting connection_status
@@ -252,7 +254,25 @@ router.post('/agent-view', async (req, res) => {
     const cwd = rawCwd && existsSync(rawCwd) && statSync(rawCwd).isDirectory() ? resolve(rawCwd) : base;
     const label = req.body?.label || null;
     const origin = isLocalhost(req) ? 'harness' : 'remote';
+
+    // Reuse an agent view you already opened for this agent instead of spawning
+    // another every tap. Keyed by cwd — a background agent runs in its own
+    // worktree, so cwd uniquely identifies it. Falls back to adopting the freshest
+    // live session already at that cwd (taps made before this dedup existed).
+    const key = `agent:${norm(cwd)}`;
+    let existing = reusableSession(key);
+    if (!existing) {
+      existing = listSessions()
+        .filter((s) => s.alive && s.kind === 'claude' && norm(s.cwd) === norm(cwd))
+        .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0] || null;
+    }
+    if (existing) {
+      recordReuse(key, existing.id);
+      return res.json(existing);
+    }
+
     const session = await createSession({ cwd, label, kind: 'claude', agentView: true, origin });
+    recordReuse(key, session.id);
     res.status(201).json(session);
   } catch (err) {
     log.error(`agent-view error: ${err.message}`);

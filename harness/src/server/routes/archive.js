@@ -15,7 +15,7 @@ import { Router } from 'express';
 import {
   searchArchive, getArchivePrompts, getArchiveMeta, listProjects, reindex,
 } from '../../services/archiveIndex.js';
-import { createSession } from '../../services/sessionManager.js';
+import { createSession, reusableSession, recordReuse } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
 import { backfillFromTranscript } from '../../services/conversation.js';
 import { makeLogger } from '../../util/logger.js';
@@ -68,6 +68,11 @@ router.post('/:uuid/resume', async (req, res) => {
   if (!existsSync(meta.cwd)) {
     return res.status(409).json({ error: `original folder is gone: ${meta.cwd}` });
   }
+  // Tapping the same archive row again returns the session you already resumed
+  // rather than forking a second `claude --resume` on the same transcript.
+  const reuseKey = `resume:${meta.uuid}`;
+  const open = reusableSession(reuseKey);
+  if (open) return res.json(open);
   try {
     const session = await createSession({
       cwd: meta.cwd,
@@ -76,6 +81,7 @@ router.post('/:uuid/resume', async (req, res) => {
       resumeId: meta.uuid,
       origin: isLocalhost(req) ? 'harness' : 'remote',
     });
+    recordReuse(reuseKey, session.id);
     // Seed the Chat view with the prior conversation from the on-disk transcript
     // (best-effort; the live session itself won't rewrite it).
     backfillFromTranscript(session.id, meta.uuid).catch(() => {});
