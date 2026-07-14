@@ -24,7 +24,6 @@ import { bridgeSuffixMap } from '../../services/claudeSessions.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
 import { getRemoteSlug } from '../../services/terminal.js';
-import { findTranscriptPath } from '../../services/transcript.js';
 import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
 import { getLiveConversation, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
@@ -97,27 +96,35 @@ const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 // Normalised path for equality (Windows: case-insensitive, no trailing slash).
 const norm = (p) => (p ? resolve(p) : '').replace(/[\\/]+$/, '').toLowerCase();
 
-// Claude's session registry can leave an entry stuck reporting connection_status
-// "connected" long after the session is actually gone (a stale ghost). Treat a
-// connected code session with no activity for this long as disconnected, so
-// day-old ghosts drop off the Sessions list instead of lingering forever.
-const GHOST_STALE_MS = 12 * 60 * 60 * 1000;
-const liveCodeSession = (s) =>
-  s.connected && (!s.ts || Date.now() - Date.parse(s.ts) < GHOST_STALE_MS);
-
-// A session whose transcript is being written right now is the one you're actively
-// driving at a keyboard — don't clutter the phone list with a card for the session
-// you're already sitting in (tapping it would only fork it). It reappears once you
-// step away (transcript idle) so you can pick it back up on the phone.
-const ACTIVE_DRIVE_MS = 5 * 60 * 1000;
-function activelyDriven(uuid) {
-  if (!uuid) return false;
-  try {
-    const p = findTranscriptPath(uuid);
-    return !!p && Date.now() - statSync(p).mtimeMs < ACTIVE_DRIVE_MS;
-  } catch {
-    return false;
+// Collapse rows that are the SAME conversation (same Claude transcript uuid) into
+// one. The remote registry can list a conversation under a drifted title, and a
+// resumed conversation can appear as both its live harness PTY and its remote-
+// control card — either way it's one conversation. Keep the best row: prefer the
+// live harness PTY (tapping opens it in place instead of forking a --resume),
+// otherwise the most recently active. Rows with no uuid can't be matched, so they
+// pass through untouched.
+function preferRow(a, b) {
+  const liveHarness = (r) => r.kind === 'harness' && r.alive;
+  if (liveHarness(a) !== liveHarness(b)) return liveHarness(a) ? a : b;
+  return Date.parse(b.ts || 0) > Date.parse(a.ts || 0) ? b : a;
+}
+function dedupeByConversation(rows) {
+  const byUuid = new Map();
+  const passthrough = [];
+  for (const r of rows) {
+    if (!r.sessionId) { passthrough.push(r); continue; }
+    const prev = byUuid.get(r.sessionId);
+    byUuid.set(r.sessionId, prev ? preferRow(prev, r) : r);
   }
+  const deduped = [...passthrough, ...byUuid.values()];
+  // A live harness viewer opened for a background agent sits in that agent's
+  // worktree and carries no (or a different) uuid, so it slips past the uuid pass.
+  // It's the same work as the agent's own row — drop the viewer, keep the agent row
+  // (whose tap already reuses that viewer).
+  const agentCwds = new Set(deduped.filter((r) => r.bgAgent && r.agentCwd).map((r) => norm(r.agentCwd)));
+  return agentCwds.size
+    ? deduped.filter((r) => !(r.kind === 'harness' && r.cwd && agentCwds.has(norm(r.cwd))))
+    : deduped;
 }
 
 // The remote-control bridge can reconnect a session without a clean handoff,
@@ -170,7 +177,7 @@ router.get('/recent', (req, res) => {
 
   // Disconnected sessions don't belong in this list — a session you can't reach
   // right now isn't "recent", it's history (resumable there instead).
-  const remote = collapseGhosts(codeSessions().filter(liveCodeSession).map((s) => {
+  const remote = collapseGhosts(codeSessions().filter((s) => s.connected).map((s) => {
     const local = bridges.get(s.suffix) || null;
     let uuid = local?.sessionId || null;
     let meta = uuid ? getArchiveMeta(uuid) : null;
@@ -204,12 +211,12 @@ router.get('/recent', (req, res) => {
       agentCwd: bg?.cwd || null,
       resumeUuid: bg ? null : meta?.cwdExists ? uuid : null,
     };
-  })).filter((r) => r.bgAgent || !activelyDriven(r.sessionId));
+  }));
 
-  // A harness PTY that has bridged also appears in the API list — don't list twice.
-  const seen = new Set(remote.map((r) => r.sessionId).filter(Boolean));
+  // A harness PTY that has bridged also appears in the remote list under the same
+  // uuid; both go into the pool and dedupeByConversation keeps the live harness one.
   const harness = listSessions()
-    .filter((s) => s.alive && !(s.claude_session_id && seen.has(s.claude_session_id)))
+    .filter((s) => s.alive)
     .map((s) => ({
       key: 'h' + s.id,
       kind: 'harness',
@@ -232,10 +239,9 @@ router.get('/recent', (req, res) => {
       muted: isMutedById(s.id),
     }));
 
-  // Newest activity first — the client buckets by day, like the app. Every row
-  // reaching here is connected by construction, but filter explicitly so that
-  // invariant holds even if a future source doesn't pre-filter.
-  const sessions = [...harness, ...remote]
+  // One row per conversation (dedupe by uuid), all connected, newest first — the
+  // client buckets by day like the Claude app.
+  const sessions = dedupeByConversation([...harness, ...remote])
     .filter((s) => s.connected)
     .sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0));
   res.json({ sessions });
