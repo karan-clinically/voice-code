@@ -148,7 +148,16 @@ export default function ChatView({ session, notify }) {
           )}
         </div>
       )}
-      <ChatComposer session={session} onSubmit={submit} lastAssistantText={lastAssistantText} notify={notify} />
+      {/* `busy` must come from the live poll: `session` is a snapshot from when the
+          view opened, so session.state never flips and the ■ Stop button would never
+          appear while Claude works. */}
+      <ChatComposer
+        session={session}
+        onSubmit={submit}
+        lastAssistantText={lastAssistantText}
+        notify={notify}
+        busy={working}
+      />
     </>
   );
 }

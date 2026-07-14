@@ -68,6 +68,11 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   // The composer needs it: mid-question the session still reads as busy, but its
   // button must offer Enter (answer) rather than Esc (interrupt).
   const [promptPending, setPromptPending] = useState(false);
+  // The session is now shared — the terminal or Claude remote control can start a turn
+  // this view never saw. The local `state` below only tracks turns THIS phone sent, so
+  // without the server's own state the ■ Stop button would never appear for a turn
+  // driven from elsewhere, leaving no way to interrupt it from the phone.
+  const [srvState, setSrvState] = useState(session.state || 'idle');
   useEffect(() => {
     setLabel(session.label);
     muteLoaded.current = false;
@@ -76,6 +81,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       .then((s) => {
         if (stop) return;
         if (s?.label) setLabel(s.label);
+        if (s?.state) setSrvState(s.state);
         if (!muteLoaded.current && typeof s?.muted === 'boolean') {
           muteLoaded.current = true;
           setMuted(s.muted);
@@ -337,6 +343,11 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
               onSubmit={sendText}
               lastAssistantText={lastReply}
               notify={notify}
+              // Busy = a turn this phone sent (instant) OR one the server reports from
+              // any other driver (terminal / remote control). `session.state` alone is
+              // a snapshot from when the view opened and never flips, so relying on it
+              // meant the send button could never become ■ Stop.
+              busy={state === 'working…' || srvState === 'busy'}
               plainText
               allowEmptySend
               promptPending={promptPending}
