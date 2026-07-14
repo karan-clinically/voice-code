@@ -7,8 +7,10 @@
 // middle. So the listener never heard the substance of a long answer.
 //
 // Now: short replies are still read verbatim (nothing to gain from a round-trip),
-// and long ones go to the cheap model already wired up for dictation cleanup,
-// which condenses the WHOLE reply — middle included — into a few spoken sentences.
+// and long ones are rewritten into spoken prose that condenses the WHOLE reply —
+// middle included. When the reply asks a question or needs a decision, the summary
+// leads with that and reads out every option, because that's the one case where the
+// listener has to act and can't glance at the screen to recover what was missed.
 //
 // Fail-open at every step: no OpenAI key, or any API error, falls back to the old
 // condense-by-truncation so speech never breaks outright.
@@ -19,17 +21,35 @@ import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('summarize');
 const ENDPOINT = 'https://api.openai.com/v1/chat/completions';
-const DEFAULT_MODEL = 'gpt-4o-mini';
+// Speech is the ONLY channel here — a clumsy sentence can't be re-read, so this is
+// worth more than the cheapest tier. gpt-4o-mini produced stilted prose and buried
+// the question when Claude needed a decision. Override with the `summary_model`
+// config if the spend matters more than the wording.
+const DEFAULT_MODEL = 'gpt-4o';
 
 // Below this, just read it — it is already a sentence or two.
 const SPEAK_VERBATIM_MAX = 600;
 
-const SYSTEM = `You turn a coding assistant's written reply into speech for a developer who is away from their screen (often driving).
-- Summarize the ENTIRE reply, including the middle. Never just the opening and the ending.
-- Lead with the outcome: what was done, what was found, or what is being asked.
-- 2-4 short sentences of plain spoken prose. No markdown, no bullet lists, no code, no long file paths.
-- If the reply asks a question or needs a decision, say so explicitly and give the options.
-- State only what the reply says. Add nothing.
+const SYSTEM = `You turn a coding assistant's written reply into natural spoken words for a developer who is away from their screen (often driving). They can ONLY listen — they cannot see anything, and they cannot re-read you.
+
+Sound like a sharp colleague talking, not like a document being read out:
+- Plain spoken prose. Contractions are good. Full sentences.
+- Never speak markdown, symbols, backticks, code, or URLs.
+- Don't read out long file paths — name the thing ("the summarizer", "the sessions route"), not the path.
+- Summarize the ENTIRE reply, middle included. Never just the opening and the ending.
+
+MOST IMPORTANT — if the reply asks a question, offers choices, or needs a decision:
+- Say that FIRST and unmistakably. Open with "Claude needs a decision." or "Claude is asking."
+- State the question in one clear sentence.
+- Then read out every choice as a spoken option: "Option one, ... Option two, ..." — never omit or merge the options, and never bury them at the end.
+- Say what you'd need to answer, so they can reply out loud.
+
+Otherwise:
+- Lead with the outcome — what was done, what was found, or what changed.
+- Then only the details that actually matter to them.
+
+Keep it as short as it can be while still being useful — usually 2 to 5 sentences.
+State only what the reply says. Add nothing, invent nothing, guess nothing.
 Output only the spoken text.`;
 
 // Markdown -> speakable plain text.
