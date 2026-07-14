@@ -4,10 +4,12 @@ import App from './App.jsx';
 import { initAudio } from './lib/audio.js';
 import { registerSW, syncPushSubscription } from './lib/push.js';
 import { applyTheme, getTheme } from './lib/theme.js';
+import { startUpdater } from './lib/updater.js';
 import './styles.css';
 
 applyTheme(getTheme()); // paint the saved sci-fi skin before first render (no flash)
 initAudio();
 registerSW(); // make the app installable + ready the push machinery (idempotent)
 syncPushSubscription(); // re-assert this device's push subscription so a rotated/pruned endpoint keeps receiving
+startUpdater(); // reload when a new frontend build ships, so the phone never sits on a stale bundle
 createRoot(document.getElementById('root')).render(<App />);

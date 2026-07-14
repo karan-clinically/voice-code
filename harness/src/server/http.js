@@ -2,7 +2,7 @@
 // Auth is applied to all /api/* routes (localhost bypass OR bearer token).
 
 import express from 'express';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { authMiddleware } from './auth.js';
@@ -51,8 +51,29 @@ export function buildApp() {
   // Auth gate for the whole API surface.
   app.use('/api', authMiddleware);
 
+  // Hash of the JS bundle we're currently serving. An installed PWA keeps its loaded
+  // page in memory across backgrounding and the service worker caches nothing, so a
+  // rebuilt frontend can otherwise sit unseen on the phone for hours. The client
+  // compares this against the bundle IT loaded and reloads on a mismatch. Cached on
+  // index.html's mtime so /health stays a cheap call.
+  const distIndex = join(__dirname, '../../../mobile-web/dist/index.html');
+  let buildCache = { mtime: 0, id: null };
+  function buildId() {
+    try {
+      const mtime = statSync(distIndex).mtimeMs;
+      if (mtime !== buildCache.mtime) {
+        const m = readFileSync(distIndex, 'utf8').match(/assets\/index-([A-Za-z0-9_-]+)\.js/);
+        buildCache = { mtime, id: m ? m[1] : null };
+      }
+      return buildCache.id;
+    } catch {
+      return null; // not built yet — the client just skips the check
+    }
+  }
+
   app.get('/api/health', (req, res) => {
-    res.json({ ok: true, version: pkg.version });
+    res.setHeader('Cache-Control', 'no-store'); // never let a proxy pin the build id
+    res.json({ ok: true, version: pkg.version, build: buildId() });
   });
 
   // Mobile web client (served shell; its API calls are gated normally). Reached
