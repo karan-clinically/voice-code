@@ -62,6 +62,22 @@ function deriveName(cwd, id) {
   return b || id;
 }
 
+// The harness is usually launched FROM a Claude Code session, so its environment
+// carries that parent's child-session markers (CLAUDECODE, CLAUDE_CODE_SESSION_ID,
+// CLAUDE_CODE_BRIDGE_SESSION_ID, CLAUDE_CODE_CHILD_SESSION, …). Inheriting those makes
+// every claude we spawn believe it is a NESTED child: it then never registers in
+// ~/.claude/sessions and never opens a remote-control bridge, so the app/phone can't
+// see it and `remoteControlAtStartup` is silently ignored. Strip them so each harness
+// session boots as a proper top-level session (and therefore auto-connects RC).
+// CLAUDE_PATH / CLAUDE_EFFORT are user config, not session markers — keep them.
+function topLevelEnv() {
+  const e = { ...process.env };
+  for (const k of Object.keys(e)) {
+    if (k === 'CLAUDECODE' || /^CLAUDE_CODE_/i.test(k)) delete e[k];
+  }
+  return e;
+}
+
 // Spawn a new session. Defaults to launching Claude Code; pass `command`/`args`
 // to run something else (used by tests).
 export function spawnSession({
@@ -85,7 +101,7 @@ export function spawnSession({
       cols,
       rows,
       cwd,
-      env: { ...process.env, ...env },
+      env: { ...topLevelEnv(), ...env },
     });
   } catch (err) {
     log.error(`spawn failed for ${cmd}: ${err.message}`);

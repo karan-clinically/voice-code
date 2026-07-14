@@ -159,6 +159,20 @@ export function signalStop({ sessionId, cwd, lastAssistantMessage, stopReason, t
     }
   }
 
+  // A turn typed straight into the terminal never goes through executeCommand, so
+  // nothing ever marks the session busy/response_ready — notify.js sees no
+  // transition and no "finished" push fires. The Stop hook IS the completion signal
+  // for those turns, so drive the state machine here. We mark busy→response_ready
+  // (not just response_ready) because notify dedupes on the last kind it sent and
+  // only re-arms on 'busy' — without it, only the FIRST terminal turn would notify.
+  // Sessions with a command in flight are skipped: awaitReply owns their state, and
+  // it alone can tell a plain completion from one that stopped on a prompt.
+  const doneId = findSessionForBroadcast(sessionId, cwd);
+  if (doneId != null && !pending.has(doneId)) {
+    sessions.markState(doneId, 'busy');
+    sessions.markState(doneId, 'response_ready');
+  }
+
   if (pending.size === 0) return false;
 
   let dbId = null;

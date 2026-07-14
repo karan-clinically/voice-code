@@ -96,37 +96,6 @@ const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 // Normalised path for equality (Windows: case-insensitive, no trailing slash).
 const norm = (p) => (p ? resolve(p) : '').replace(/[\\/]+$/, '').toLowerCase();
 
-// Collapse rows that are the SAME conversation (same Claude transcript uuid) into
-// one. The remote registry can list a conversation under a drifted title, and a
-// resumed conversation can appear as both its live harness PTY and its remote-
-// control card — either way it's one conversation. Keep the best row: prefer the
-// live harness PTY (tapping opens it in place instead of forking a --resume),
-// otherwise the most recently active. Rows with no uuid can't be matched, so they
-// pass through untouched.
-function preferRow(a, b) {
-  const liveHarness = (r) => r.kind === 'harness' && r.alive;
-  if (liveHarness(a) !== liveHarness(b)) return liveHarness(a) ? a : b;
-  return Date.parse(b.ts || 0) > Date.parse(a.ts || 0) ? b : a;
-}
-function dedupeByConversation(rows) {
-  const byUuid = new Map();
-  const passthrough = [];
-  for (const r of rows) {
-    if (!r.sessionId) { passthrough.push(r); continue; }
-    const prev = byUuid.get(r.sessionId);
-    byUuid.set(r.sessionId, prev ? preferRow(prev, r) : r);
-  }
-  const deduped = [...passthrough, ...byUuid.values()];
-  // A live harness viewer opened for a background agent sits in that agent's
-  // worktree and carries no (or a different) uuid, so it slips past the uuid pass.
-  // It's the same work as the agent's own row — drop the viewer, keep the agent row
-  // (whose tap already reuses that viewer).
-  const agentCwds = new Set(deduped.filter((r) => r.bgAgent && r.agentCwd).map((r) => norm(r.agentCwd)));
-  return agentCwds.size
-    ? deduped.filter((r) => !(r.kind === 'harness' && r.cwd && agentCwds.has(norm(r.cwd))))
-    : deduped;
-}
-
 // The remote-control bridge can reconnect a session without a clean handoff,
 // leaving the OLD connection's record stuck reporting connection_status
 // "connected" server-side (the API exposes no lineage field to link a
@@ -163,83 +132,44 @@ function collapseGhosts(rows) {
   return out;
 }
 
-// Connected + active sessions for the phone's Sessions tab, styled like the
-// Claude Code app: one list (the client buckets it by day) of every session whose
-// process is live right now — no time-window filter. Two sources:
-//   • harness-spawned PTYs that are alive → origin 'Phone' / 'This PC'.
-//   • live Claude sessions from ~/.claude/sessions/*.json (other terminals driven
-//     from claude.ai remote control) → origin 'Remote control'.
-// Each row carries a friendly name, whether it's Working (busy) or just Connected,
-// and repo/branch + session id. Registered before '/:id'.
+// The phone's Sessions list. Every row is one of two kinds, and the difference is
+// the whole architecture:
+//
+//   ATTACHABLE — a harness-owned pty. The harness owns the claude process, so the
+//     phone, the terminal (hclaude) and Claude remote control all drive the SAME
+//     session (a harness pty registers itself with claude.ai as a `bridge` too).
+//     Tapping it ATTACHES in place. No fork, ever.
+//   ELSEWHERE — a session the harness does NOT own (started outside hclaude, a cloud
+//     session, a background agent). It can't be attached to; the only lever is
+//     `claude --resume`, which BRANCHES into a new conversation. The client makes
+//     that explicit rather than forking silently.
+//
+// Identity rule (learned the hard way): the bridge-suffix -> transcript-uuid map is a
+// real 1:1 link and is the ONLY thing allowed to decide identity, dedupe or liveness.
+// Matching a session by TITLE is a guess — a folder full of sessions named "voice"
+// all collapse onto one transcript — so a title match may only enrich openability,
+// where being wrong offers a bad resume target instead of deleting a live session.
 router.get('/recent', (req, res) => {
-  const bridges = bridgeSuffixMap(); // app session id -> local transcript, for resume
+  const bridges = bridgeSuffixMap(); // bridge suffix -> local transcript (EXACT link)
   const bgList = [...backgroundAgents().values()]; // live background agents (reject --resume)
 
-  // The API leaves stale "connected" records after a bridge dies (no clean teardown),
-  // so it over-reports live sessions. The reliable signal is a running claude.exe:
-  // liveClaudeSessions() cross-checks each session's pid against tasklist. Keep a
-  // session only when a live process backs it — matched by bridge suffix (survives a
-  // flaky title→uuid), OR by resolved transcript uuid (catches a live-but-unbridged
-  // session that has no suffix). Cloud sessions and live background agents are exempt.
+  // The API leaves stale "connected" records behind after a bridge dies, so it
+  // over-reports. The reliable signal is a running claude.exe (pid vs tasklist).
   const live = liveClaudeSessions();
   const liveSuffixes = new Set(live.filter((x) => x.suffix).map((x) => x.suffix));
   const liveUuids = new Set(live.map((x) => x.sessionId).filter(Boolean));
 
-  const remote = collapseGhosts(codeSessions()
-    .filter((s) => s.connected)
-    .map((s) => {
-    const local = bridges.get(s.suffix) || null;
-    let uuid = local?.sessionId || null;
-    let meta = uuid ? getArchiveMeta(uuid) : null;
-    // The pid registry only maps each terminal's CURRENT session; recover older
-    // ones by title against the local transcript archive so they stay openable.
-    // Cloud sessions are excluded — they have no local transcript at all.
-    if (!uuid && s.envKind !== 'anthropic_cloud' && s.title) {
-      meta = findArchiveByTitle(s.title);
-      uuid = meta?.uuid || null;
-    }
-    const cwd = local?.cwd || meta?.cwd || null;
-    // A background agent rejects --resume, so it must be reached through the agent
-    // view instead. Match by transcript uuid, falling back to title (the agent's
-    // live name), and let bgAgent drive the tap rather than a doomed resume.
-    const bg = bgList.find((a) => (uuid && a.sessionId === uuid) || (s.title && a.name === s.title)) || null;
-    // A background agent is only worth a row while it's still running AND unfinished.
-    // Drop the ones that have completed ('done') or whose process is gone — otherwise
-    // the bg exemption below would keep showing them long after they stopped mattering.
-    if (bg && (bg.state === 'done' || !bg.sessionId || !liveUuids.has(bg.sessionId))) return null;
-    // Drop the API's dead "connected" ghosts: keep only sessions a live process backs.
-    // A bg agent that reached here is live+unfinished, so it's exempt (its own transient
-    // agent-view pty may have exited even though the agent itself is running).
-    if (!(s.envKind === 'anthropic_cloud' || bg || liveSuffixes.has(s.suffix) || (uuid && liveUuids.has(uuid)))) {
-      return null;
-    }
-    return {
-      key: 'c' + s.id,
-      kind: 'code',
-      name: bg?.name || s.title || (uuid ? uuid.slice(0, 8) : s.suffix.slice(0, 8)),
-      connected: s.connected,
-      active: bg ? bg.state === 'working' : s.working,
-      unread: s.unread,
-      origin: s.envKind === 'anthropic_cloud' ? 'cloud' : 'terminal',
-      originLabel: bg ? 'Background agent' : s.envKind === 'anthropic_cloud' ? 'Cloud' : 'Remote control',
-      repo: s.repo || repoSlug(bg?.cwd || cwd) || null,
-      branch: s.branch || meta?.gitBranch || null,
-      cwd: bg?.cwd || cwd,
-      sessionId: uuid, // local transcript uuid, when this session ran on this PC
-      ts: s.ts,
-      bgAgent: !!bg, // route the tap to the agent view (attach/peek) not --resume
-      agentCwd: bg?.cwd || null,
-      resumeUuid: bg ? null : meta?.cwdExists ? uuid : null,
-    };
-  }).filter(Boolean));
-
-  // A harness PTY that has bridged also appears in the remote list under the same
-  // uuid; both go into the pool and dedupeByConversation keeps the live harness one.
+  // ---- ATTACHABLE: harness-owned PTYs (the source of truth; tap = attach) ----
+  // A pty opened to peek a background agent lives in that agent's worktree; it's the
+  // same work as the agent's own row (whose tap reuses this very pty), so skip it.
+  const agentCwds = new Set(bgList.filter((a) => a.cwd).map((a) => norm(a.cwd)));
   const harness = listSessions()
     .filter((s) => s.alive)
+    .filter((s) => !(s.cwd && agentCwds.has(norm(s.cwd))))
     .map((s) => ({
       key: 'h' + s.id,
       kind: 'harness',
+      attachable: true, // drivable from phone + terminal + Claude remote control
       name: s.label || baseName(s.cwd) || `Session ${s.id}`,
       connected: true,
       active: s.state === 'busy',
@@ -257,13 +187,72 @@ router.get('/recent', (req, res) => {
       // Sticky badge: which ping this session is waiting on you for, until opened.
       attention: getAttention(s.id)?.kind || null,
       muted: isMutedById(s.id),
-    }));
+    }))
+    // Two harness PTYs can land on the SAME conversation — e.g. the phone resumed it
+    // and a terminal `claude -c` continued it. That's one conversation, so show one
+    // row (the most recently active). A session with no uuid yet can't be matched, so
+    // it passes through. The duplicate PROCESS is prevented in POST / below; this just
+    // keeps the list honest if one slips through.
+    .reduce((acc, r) => {
+      if (!r.sessionId) return acc.concat(r);
+      const prev = acc.find((x) => x.sessionId === r.sessionId);
+      if (!prev) return acc.concat(r);
+      if (Date.parse(r.ts || 0) > Date.parse(prev.ts || 0)) Object.assign(prev, r);
+      return acc;
+    }, []);
+  const harnessUuids = new Set(harness.map((h) => h.sessionId).filter(Boolean));
 
-  // One row per conversation (dedupe by uuid), all connected, newest first — the
-  // client buckets by day like the Claude app.
-  const sessions = dedupeByConversation([...harness, ...remote])
+  // ---- ELSEWHERE: sessions the harness doesn't own (tap = explicit branch) ----
+  const remote = collapseGhosts(codeSessions()
     .filter((s) => s.connected)
-    .sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0));
+    .map((s) => {
+      // EXACT identity only. No title guessing on this path.
+      const local = bridges.get(s.suffix) || null;
+      const linkUuid = local?.sessionId || null;
+
+      const bg = bgList.find((a) => (linkUuid && a.sessionId === linkUuid) || (s.title && a.name === s.title)) || null;
+      // A background agent is only worth a row while it's still running AND unfinished.
+      if (bg && (bg.state === 'done' || !bg.sessionId || !liveUuids.has(bg.sessionId))) return null;
+
+      // Openability enrichment — a title match is allowed here ONLY. Being wrong costs
+      // a bad resume target; it can never remove a live row.
+      let meta = linkUuid ? getArchiveMeta(linkUuid) : null;
+      if (!meta && s.envKind !== 'anthropic_cloud' && s.title) meta = findArchiveByTitle(s.title);
+      const openUuid = linkUuid || meta?.uuid || null;
+
+      // Liveness gate: keep only what a running claude.exe backs. Suffix (exact) first;
+      // openUuid can only ADD a live-but-unbridged session back, never remove one.
+      if (!(s.envKind === 'anthropic_cloud' || bg || liveSuffixes.has(s.suffix) || (openUuid && liveUuids.has(openUuid)))) {
+        return null;
+      }
+      // The harness already owns this conversation and lists it as ATTACHABLE — drop
+      // the redundant API twin so one session is one row.
+      if (openUuid && harnessUuids.has(openUuid)) return null;
+
+      const cwd = local?.cwd || meta?.cwd || null;
+      return {
+        key: 'c' + s.id,
+        kind: 'code',
+        attachable: false, // harness can't attach — opening it BRANCHES the conversation
+        name: bg?.name || s.title || (openUuid ? openUuid.slice(0, 8) : s.suffix.slice(0, 8)),
+        connected: s.connected,
+        active: bg ? bg.state === 'working' : s.working,
+        unread: s.unread,
+        origin: s.envKind === 'anthropic_cloud' ? 'cloud' : 'terminal',
+        originLabel: bg ? 'Background agent' : s.envKind === 'anthropic_cloud' ? 'Cloud' : 'Remote control',
+        repo: s.repo || repoSlug(bg?.cwd || cwd) || null,
+        branch: s.branch || meta?.gitBranch || null,
+        cwd: bg?.cwd || cwd,
+        sessionId: openUuid,
+        ts: s.ts,
+        bgAgent: !!bg, // route the tap to the agent view (attach/peek) not --resume
+        agentCwd: bg?.cwd || null,
+        resumeUuid: bg ? null : meta?.cwdExists ? openUuid : null,
+      };
+    }).filter(Boolean));
+
+  // Newest first — the client buckets by day like the Claude app.
+  const sessions = [...harness, ...remote].sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0));
   res.json({ sessions });
 });
 
@@ -283,6 +272,17 @@ router.post('/', async (req, res) => {
     // `claude --continue` (from the hclaude alias) → a harness-owned session that
     // resumes the most-recent conversation in cwd, so terminal + phone share it.
     const continueSession = req.body?.continue === true;
+    // `claude -c` means "continue the work here". If the harness ALREADY owns a live
+    // claude session in this cwd, that IS the conversation — attach to it rather than
+    // spawning a second process, which would silently diverge from it (the fork
+    // problem again, just from the terminal side). Matched on a normalised cwd, so a
+    // casing difference (C:\ai\… vs C:\AI\…) can't miss.
+    if (continueSession) {
+      const open = listSessions()
+        .filter((s) => s.alive && s.kind === 'claude' && s.cwd && norm(s.cwd) === norm(cwd))
+        .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
+      if (open) return res.json(open); // 200 = reused, not created
+    }
     // A localhost request is the desktop app on the PC (in the harness); anything
     // else reached us over Tailscale with a bearer token (remote control).
     const origin = isLocalhost(req) ? 'harness' : 'remote';
