@@ -1,15 +1,15 @@
 // GET /api/fs/list?path=<dir> — list subdirectories for the phone folder picker.
-// Localhost-only. path='' or 'drives' returns the drive letters. Directories
-// only; per-entry and per-dir errors are swallowed so inaccessible folders
-// don't break browsing.
+// Behind the global /api authMiddleware (localhost OR tailnet peer OR valid pairing
+// token), so the phone's folder browser works over the funnel while unauthenticated
+// internet is still refused. It only ever returns directory *names*, never file
+// contents. path='' or 'drives' returns the drive letters. Directories only; per-
+// entry and per-dir errors are swallowed so inaccessible folders don't break browsing.
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, parse } from 'node:path';
 import { Router } from 'express';
-import { localhostOnly } from '../auth.js';
 
 const router = Router();
-router.use(localhostOnly);
 
 const MAX_ENTRIES = 1000;
 
