@@ -24,6 +24,7 @@ import { bridgeSuffixMap } from '../../services/claudeSessions.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
 import { getRemoteSlug } from '../../services/terminal.js';
+import { findTranscriptPath } from '../../services/transcript.js';
 import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
 import { getLiveConversation, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
@@ -96,6 +97,29 @@ const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 // Normalised path for equality (Windows: case-insensitive, no trailing slash).
 const norm = (p) => (p ? resolve(p) : '').replace(/[\\/]+$/, '').toLowerCase();
 
+// Claude's session registry can leave an entry stuck reporting connection_status
+// "connected" long after the session is actually gone (a stale ghost). Treat a
+// connected code session with no activity for this long as disconnected, so
+// day-old ghosts drop off the Sessions list instead of lingering forever.
+const GHOST_STALE_MS = 12 * 60 * 60 * 1000;
+const liveCodeSession = (s) =>
+  s.connected && (!s.ts || Date.now() - Date.parse(s.ts) < GHOST_STALE_MS);
+
+// A session whose transcript is being written right now is the one you're actively
+// driving at a keyboard — don't clutter the phone list with a card for the session
+// you're already sitting in (tapping it would only fork it). It reappears once you
+// step away (transcript idle) so you can pick it back up on the phone.
+const ACTIVE_DRIVE_MS = 5 * 60 * 1000;
+function activelyDriven(uuid) {
+  if (!uuid) return false;
+  try {
+    const p = findTranscriptPath(uuid);
+    return !!p && Date.now() - statSync(p).mtimeMs < ACTIVE_DRIVE_MS;
+  } catch {
+    return false;
+  }
+}
+
 // The remote-control bridge can reconnect a session without a clean handoff,
 // leaving the OLD connection's record stuck reporting connection_status
 // "connected" server-side (the API exposes no lineage field to link a
@@ -146,7 +170,7 @@ router.get('/recent', (req, res) => {
 
   // Disconnected sessions don't belong in this list — a session you can't reach
   // right now isn't "recent", it's history (resumable there instead).
-  const remote = collapseGhosts(codeSessions().filter((s) => s.connected).map((s) => {
+  const remote = collapseGhosts(codeSessions().filter(liveCodeSession).map((s) => {
     const local = bridges.get(s.suffix) || null;
     let uuid = local?.sessionId || null;
     let meta = uuid ? getArchiveMeta(uuid) : null;
@@ -180,7 +204,7 @@ router.get('/recent', (req, res) => {
       agentCwd: bg?.cwd || null,
       resumeUuid: bg ? null : meta?.cwdExists ? uuid : null,
     };
-  }));
+  })).filter((r) => r.bgAgent || !activelyDriven(r.sessionId));
 
   // A harness PTY that has bridged also appears in the API list — don't list twice.
   const seen = new Set(remote.map((r) => r.sessionId).filter(Boolean));
