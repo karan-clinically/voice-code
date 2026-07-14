@@ -200,13 +200,16 @@ app (`mobile-web/` workspace) styled to the MDpearls design system.
    the desktop pairing QR / hash-link.
 2. On the phone, open `https://<your-machine>.<tailnet>.ts.net/m` (pair once if using funnel).
 
-The Home screen has a **Start | Sessions** tab strip, a **☰ Settings** sheet (Dictation mode + the
-ElevenLabs voice picker), a **💲 spend tally**, and **🕘 History**. Entirely from the phone you can:
-- **Start Claude in a folder** — type/speak a path, or **📁 Browse** the PC's folders to pick one.
+The Home screen **is** the connected-sessions list (a **☰ Settings** sheet with Dictation/Rewrite +
+theme + the ElevenLabs voice picker, a **💲 spend tally**, and **🕘 History** live in the header). A
+floating **＋ New session** button opens a sheet where you can:
+- **Start Claude in a folder** — type/speak a path, or **📁 Browse** the PC's folders to pick one
+  (works over the funnel now).
 - **Start a shell to navigate** — PowerShell in your projects base (`C:\AI` by default, via the
-  `mobile_base_dir` config key). `cd`/`ls` by typing or voice, **🔊 Where am I** to hear the current
-  directory, then **🚀 Launch Claude** to hand off.
-- **Sessions tab** — a Claude-Code-app-style, day-bucketed list of every *connected* session
+  `mobile_base_dir` config key). `cd`/`ls` by typing or voice, then **🚀 Launch Claude** to hand off.
+
+The list itself is:
+- A Claude-Code-app-style, day-bucketed list of every *connected* session
   (harness PTYs marked Phone/This PC, external terminals marked Remote control, cloud ones Cloud),
   each showing a friendly name, Working/Connected status, and folder · repo. Tap to open or resume.
   **Background agents** (which reject `claude --resume`) show a **🤖** tag and open into Claude's
@@ -251,7 +254,7 @@ transcript lands in the command box on that device, you can edit it, and only **
 in the shell view) types it into the pty. There is no auto-send path — `/api/command` is text-only,
 and the two audio endpoints (`/api/transcribe`, `/ws/stt`) return text and nothing else.
 
-Two modes, toggled in desktop **Settings (⚙)** or on the phone's **Home** screen. The setting is
+Two modes, toggled in desktop **Settings (⚙)** or the phone's **Settings** sheet. The setting is
 stored harness-side (`stt_mode`), so both devices share it and it survives restarts.
 
 | Mode | How it feels | What happens |
@@ -269,6 +272,11 @@ Notes:
   so an idle stream is never billed.
 - The Deepgram key never leaves the harness — the phone streams audio to *your PC*, which talks to
   Deepgram.
+- **Rewrite (Settings → Rewrite):** a **Clean up | Summarise** toggle controls how much a dictated
+  instruction is rewritten before it lands in the box. *Clean up* (default) fixes filler/grammar
+  near-verbatim; *Summarise* condenses rambling speech into a tight instruction while keeping every
+  file name/path/code identifier. Runs through `refine.js` (gpt-4o-mini) and needs an OpenAI key —
+  without one it's a no-op (raw ASR). It's review-before-send either way.
 
 ## Voice (text-to-speech)
 
@@ -296,6 +304,7 @@ sends to the live session.
 
 - On desktop the terminal stays mounted under the chat overlay, so the PTY and
   scrollback survive toggling back and forth.
+- **Terminal** shows the full scrollback (up to ~4000 lines), like a real terminal.
 - The reply appears formatted as the turn completes.
 
 The chat input is a **"code container"** (like the Claude Code app): an auto-grow
@@ -310,14 +319,14 @@ text field with a control row underneath —
   the stored path — Claude reads local paths), and
 - a context **send / stop** button (Stop sends Esc to interrupt Claude mid-turn).
 
-> **How the chat log is built.** Harness-spawned Claude sessions don't persist a
-> transcript to disk while running (verified), so the harness records the
-> conversation itself: **assistant** turns come from the Stop hook (so this view
-> needs the hook installed), **user** turns from the chat box / voice command, and
-> a **resumed** session is seeded once from its on-disk transcript. A prompt typed
-> directly into the raw terminal isn't captured (its reply still shows) — and
-> interactive moments (permission prompts, plan approval, slash-menus) only render
-> in the Terminal view.
+> **How the chat log is built.** Claude Code writes each session's transcript
+> `.jsonl` to disk as it runs, so **Chat reads that transcript live** — the whole
+> conversation, every turn, updating in place (even a session you're driving from
+> another device, no mirror needed; `getLiveConversation` returns it with
+> `full:true`). When no transcript resolves for the session's Claude uuid it falls
+> back to the harness's own recorded log: **assistant** turns from the Stop hook,
+> **user** turns from the chat box / voice command. Interactive moments (permission
+> prompts, plan approval, slash-menus) render in the Terminal view.
 
 ## Session Archive & Resume
 
@@ -341,6 +350,22 @@ logging is added; it reads what Claude Code already records.
 > Resume needs the session's **original working directory** to still exist —
 > Claude resolves `--resume <id>` per-project, so a moved/deleted folder shows
 > "Folder gone" instead of a Resume button.
+
+## Sharing a terminal session with your phone (`hclaude`)
+
+A Claude session you start in a **bare terminal** is a single-owner TUI — no other device can attach
+to it, so opening it on the phone could only `--resume` it into a *second, forked* process.
+`harness/bin/hclaude.mjs` fixes that: it asks the harness to **spawn** the session (so the harness
+owns the pty) and pipes your real terminal to it over `/ws/term`. The same session is then drivable
+from the terminal, the phone, and the desktop app — no forks.
+
+- **`claude`** (aliased in your PowerShell `$PROFILE`) — a plain launch starts a harness-owned,
+  shareable session; every other invocation (`-p`, `--resume`, `--version`, subcommands) passes
+  through to the real CLI. Harness offline → falls back to the real CLI so you're never blocked.
+- **`Ctrl-\`** detaches, leaving the session running for the phone; **`claude --attach`** reattaches
+  a terminal to a running harness session (or `--attach <id>`).
+- The alias needs PowerShell's execution policy to allow local scripts
+  (`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` if a new terminal shows nothing on load).
 
 ## Keeping the harness running
 
@@ -380,13 +405,14 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 |---|---|---|
 | `/api/health` | GET | `{ok, version}` |
 | `/api/sessions` | GET/POST | list / spawn (`{cwd,label,kind}`; kind `claude`\|`shell`) |
-| `/api/sessions/recent` | GET | connected sessions for the phone Sessions tab — harness PTYs + live Claude sessions from Claude's own API (`api.anthropic.com/v1/code/sessions`); disconnected/ghost/duplicate ones filtered out |
-| `/api/sessions/:id` | GET | one session |
+| `/api/sessions/recent` | GET | connected sessions for the phone home screen — harness PTYs + live Claude sessions from Claude's own API (`api.anthropic.com/v1/code/sessions`); disconnected ones filtered, **deduped to one row per conversation** (by transcript uuid; prefers the live harness PTY so a tap opens in place, not a `--resume` fork) |
+| `/api/sessions/:id` | GET | one session (includes `muted`) |
 | `/api/sessions/:id/history` | GET | interactions |
-| `/api/sessions/:id/screen` | GET | rendered terminal (`?full=1&color=1` for colored HTML) |
+| `/api/sessions/:id/screen` | GET | rendered terminal (`?full=1&color=1` for colored HTML; `full` returns up to ~4000 lines of scrollback) |
+| `/api/sessions/:id/mute` | POST | silence phone push for one session `{muted}` (badge still shows; persisted) |
 | `/api/sessions/:id/input` | POST | raw shell input `{text}` |
 | `/api/sessions/:id/launch-claude` | POST | run `claude` in a shell session |
-| `/api/sessions/:id/messages` | GET | Chat-view conversation log (`?after=<id>` for incremental) |
+| `/api/sessions/:id/messages` | GET | Chat-view conversation log — prefers the live on-disk transcript (whole conversation, `full:true`); else the harness table (`?after=<id>` incremental) |
 | `/api/sessions/:id/chat` | POST | Chat-view send: record `{text}` + submit it to the live session |
 | `/api/sessions/:id/key` | POST | Composer control key `{key}` — `cycle-mode` (Shift+Tab) or `stop` (Esc) |
 | `/api/sessions/:id/mode` | GET | Current permission mode read off the TUI (`ask`\|`auto`\|`plan`\|`bypass`) |
@@ -394,7 +420,7 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/prompts` | GET/POST | Saved-prompt snippets (list / create) for the "/" picker |
 | `/api/prompts/:id` | DELETE | Delete a saved prompt |
 | `/api/sessions/:id/kill` `/rename` | POST | manage |
-| `/api/fs/list` | GET | list subdirs/drives for the folder picker (localhost only) |
+| `/api/fs/list` | GET | list subdirs/drives for the folder picker — behind standard auth (works over the funnel with the pairing token); returns directory names only |
 | `/api/archive` | GET | search past sessions (`?q=` FTS, `?project=` filter; recent when no `q`) |
 | `/api/archive/projects` | GET | distinct projects (filter facet) |
 | `/api/archive/:uuid` | GET | one archived session + first prompts (preview) |
