@@ -41,7 +41,7 @@ function dayBucket(ts) {
 }
 
 export default function Home({ onOpen, onHistory, notify }) {
-  const [tab, setTab] = useState('start'); // start | sessions
+  const [showNew, setShowNew] = useState(false); // "New session" sheet
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
   const [sessions, setSessions] = useState([]);
   const [picking, setPicking] = useState(false);
@@ -67,11 +67,11 @@ export default function Home({ onOpen, onHistory, notify }) {
     };
   }, []);
 
-  // Freshen the transcript archive when the tab opens so externally-run (remote-
-  // controlled) sessions show up promptly — reindex is incremental, so it's cheap.
+  // Freshen the transcript archive on open so externally-run (remote-controlled)
+  // sessions show up promptly — reindex is incremental, so it's cheap.
   useEffect(() => {
-    if (tab === 'sessions') reindexArchive().catch(() => {});
-  }, [tab]);
+    reindexArchive().catch(() => {});
+  }, []);
 
   async function startClaude() {
     try {
@@ -146,72 +146,66 @@ export default function Home({ onOpen, onHistory, notify }) {
       {showSpend && <SpendModal onClose={() => setShowSpend(false)} />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} notify={notify} />}
 
-      <div className="tabstrip">
-        <button className={'tab' + (tab === 'start' ? ' on' : '')} onClick={() => setTab('start')}>Start</button>
-        <button className={'tab' + (tab === 'sessions' ? ' on' : '')} onClick={() => setTab('sessions')}>
-          Sessions
-          {sessions.length > 0 && <span className="tab-n">{sessions.length}</span>}
-        </button>
-      </div>
-
-      {tab === 'start' && (
-        <>
-          <div className="card stack">
-            <h2>Start Claude in a folder</h2>
-            <div className="row">
-              <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\AI\voice harness" style={{ flex: 1 }} />
-              <MicButton
-                className="micbtn"
-                onBlob={async (blob, ext) => {
-                  try {
-                    // No cleanup here — this is a folder path, not an instruction; the
-                    // dictation rewrite would happily mangle it.
-                    setPath(await transcribe(blob, ext, { cleanup: false }));
-                  } catch (e) {
-                    notify(e.message);
-                  }
-                }}
-                notify={notify}
-              />
+      {sessions.length === 0 ? (
+        <div className="card">
+          <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
+            No connected sessions. Tap ＋ New session below, or run Claude in any terminal and it'll
+            appear here. Past sessions live in 🕘 History.
+          </p>
+        </div>
+      ) : (
+        BUCKETS.map((b) => {
+          const rows = sessions.filter((s) => dayBucket(s.ts) === b);
+          if (rows.length === 0) return null;
+          return (
+            <div key={b} className="cc-group">
+              <div className="cc-group-head">{b}</div>
+              <div className="cc-list">{rows.map(sessionRow)}</div>
             </div>
-            <div className="row">
-              <button style={{ flex: 1 }} onClick={() => setPicking(true)}>📁 Browse…</button>
-              <button className="primary" style={{ flex: 1 }} onClick={startClaude}>Start Claude here</button>
-            </div>
-          </div>
-
-          <div className="card stack">
-            <h2>Start a shell to navigate</h2>
-            <p className="muted">Opens PowerShell in your projects base. cd/ls to the right folder, hear where you are, then Launch Claude.</p>
-            <button onClick={startShell}>Start shell</button>
-          </div>
-        </>
+          );
+        })
       )}
 
-      {tab === 'sessions' && (
-        sessions.length === 0 ? (
-          <div className="card">
-            <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
-              No connected sessions. Start one from the Start tab, or run Claude in any terminal and it'll appear here.
-              Past sessions live in 🕘 History.
-            </p>
+      <button className="cc-fab" onClick={() => setShowNew(true)}>＋ New session</button>
+
+      {showNew && (
+        <div className="pm-sheet">
+          <div className="pm-sheet-head">
+            <div className="sv-title">New session</div>
+            <button className="ghost" onClick={() => setShowNew(false)}>✕</button>
           </div>
-        ) : (
-          BUCKETS.map((b) => {
-            const rows = sessions.filter((s) => dayBucket(s.ts) === b);
-            if (rows.length === 0) return null;
-            return (
-              <div key={b} className="cc-group">
-                <div className="cc-group-head">{b}</div>
-                <div className="cc-list">{rows.map(sessionRow)}</div>
+          <div className="pm-sheet-list">
+            <div className="card stack">
+              <h2>Start Claude in a folder</h2>
+              <div className="row">
+                <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\AI\voice harness" style={{ flex: 1 }} />
+                <MicButton
+                  className="micbtn"
+                  onBlob={async (blob, ext) => {
+                    try {
+                      // No cleanup here — this is a folder path, not an instruction; the
+                      // dictation rewrite would happily mangle it.
+                      setPath(await transcribe(blob, ext, { cleanup: false }));
+                    } catch (e) {
+                      notify(e.message);
+                    }
+                  }}
+                  notify={notify}
+                />
               </div>
-            );
-          })
-        )
-      )}
+              <div className="row">
+                <button style={{ flex: 1 }} onClick={() => setPicking(true)}>📁 Browse…</button>
+                <button className="primary" style={{ flex: 1 }} onClick={startClaude}>Start Claude here</button>
+              </div>
+            </div>
 
-      {tab === 'sessions' && (
-        <button className="cc-fab" onClick={() => setTab('start')}>＋ New session</button>
+            <div className="card stack">
+              <h2>Start a shell to navigate</h2>
+              <p className="muted">Opens PowerShell in your projects base. cd/ls to the right folder, hear where you are, then Launch Claude.</p>
+              <button onClick={startShell}>Start shell</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {picking && (
