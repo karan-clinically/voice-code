@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { recentSessions } from './lib/api.js';
 import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
+import { ATTENTION_TITLE, ATTENTION_SHORT, attentionOf } from './lib/attention.js';
 
 const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '☁️' };
 
@@ -37,6 +38,7 @@ export default function SessionSwitcher({ session, onOpen, onClose, onHome, noti
           {openable.length === 0 && <div className="muted" style={{ padding: '14px 12px' }}>No other connected sessions.</div>}
           {openable.map((it) => {
             const here = it.harnessId === session.id;
+            const att = attentionOf(it);
             return (
               <button key={it.key} className={'sw-item' + (here ? ' current' : '')} onClick={() => pick(it)}>
                 <span className="sw-ic">{it.bgAgent ? '🤖' : ORIGIN_ICON[it.origin] || '⌨️'}</span>
@@ -47,6 +49,9 @@ export default function SessionSwitcher({ session, onOpen, onClose, onHome, noti
                     {it.active ? 'Working' : 'Connected'} · {it.originLabel}
                   </span>
                 </span>
+                {att && !here && (
+                  <span className={'sw-att cc-att-' + att} title={ATTENTION_TITLE[att]}>{ATTENTION_SHORT[att]}</span>
+                )}
                 {here && <span className="sw-here">Here</span>}
               </button>
             );

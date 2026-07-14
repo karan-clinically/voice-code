@@ -16,6 +16,12 @@ self.addEventListener('push', (event) => {
     body: data.body || '',
     tag: data.tag || 'harness',
     renotify: true,
+    // Ask for an *alerting* notification: sound + vibration, not a silent tray drop.
+    // `silent: false` is the default, but stating it guards against a UA that would
+    // otherwise coalesce a same-tag replacement quietly. `vibrate` drives the haptic
+    // on Android (iOS ignores it, but plays its default sound for a non-silent push).
+    silent: false,
+    vibrate: [200, 100, 200],
     icon: '/m/icon.svg',
     badge: '/m/icon.svg',
     data: { sessionId: data.sessionId || null, kind: data.kind || null },

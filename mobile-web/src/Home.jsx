@@ -1,21 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { createSession, transcribe, usageSummary, recentSessions, reindexArchive } from './lib/api.js';
 import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
+import { ATTENTION_TITLE, attentionOf } from './lib/attention.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
 
-// Avatar glyph by where a session was started.
-const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '☁️' };
-
-// What a session is waiting on you for — a sticky badge until you open it. Remote
-// sessions carry Claude's own 'unread'; harness ones carry a specific kind.
-const ATTENTION_TITLE = {
-  input: 'Needs your input',
-  finished: 'Finished — result waiting',
-  failed: 'Last turn errored',
-  unread: 'Unread activity',
-};
+// Where a session was started, as a short text tag (RC = remote control — a Claude
+// running in a terminal, driven from the app). Reads at a glance without decoding a
+// glyph; the full label stays as the tag's title.
+const ORIGIN_TAG = { phone: 'Phone', pc: 'PC', terminal: 'RC', cloud: 'Cloud' };
 
 // Compact relative time, like the Claude Code app ("now", "4m", "8h", "3d").
 function shortAgo(ts) {
@@ -106,11 +100,11 @@ export default function Home({ onOpen, onHistory, notify }) {
       .filter(Boolean)
       .join('  ·  ');
     const openable = canOpen(it);
-    const att = it.attention || (it.unread ? 'unread' : null);
+    const att = attentionOf(it);
     return (
       <button key={it.key} className="cc-item" onClick={openable ? () => openItem(it) : undefined} disabled={!openable}>
-        <span className={'cc-avatar cc-' + it.origin}>
-          {it.bgAgent ? '🤖' : ORIGIN_ICON[it.origin] || '⌨️'}
+        <span className={'cc-tag cc-' + it.origin} title={it.originLabel}>
+          {it.bgAgent ? 'Agent' : ORIGIN_TAG[it.origin] || 'RC'}
           {att && <span className={'cc-unread cc-att-' + att} title={ATTENTION_TITLE[att] || 'Wants attention'} />}
         </span>
         <span className="cc-body">
@@ -122,8 +116,6 @@ export default function Home({ onOpen, onHistory, notify }) {
           <span className="cc-status">
             <span className={'cc-dot ' + (it.active ? 'busy' : 'on')} />
             <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>{it.active ? 'Working' : 'Connected'}</span>
-            <span className="cc-sep">·</span>
-            <span className="cc-origin">{it.originLabel}</span>
           </span>
           {sub && <span className="cc-sub">{sub}</span>}
         </span>

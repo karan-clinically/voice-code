@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession } from './lib/api.js';
+import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions } from './lib/api.js';
+import { ATTENTION_SHORT, isAlert } from './lib/attention.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
-import { DictationMic, Terminal, basename } from './components.jsx';
+import { Terminal, basename } from './components.jsx';
 import ChatView from './ChatView.jsx';
+import ChatComposer from './ChatComposer.jsx';
 import VoiceView from './VoiceView.jsx';
-import SlashCommands from './SlashCommands.jsx';
 import TerminalKeypad from './TerminalKeypad.jsx';
 import SessionSwitcher from './SessionSwitcher.jsx';
 import { normalizeSpokenSlash } from './lib/slashCommands.js';
@@ -23,18 +24,25 @@ function promptSpeech(p) {
 // or one that changed) is announced the moment you land on the screen.
 const announcedPrompts = new Set();
 
+// The three ways to drive a session, picked from the ⋯ menu. Voice is an overlay on
+// top of whichever of the other two you were last in, so leaving it drops you back.
+const VIEWS = [
+  { id: 'terminal', label: 'Terminal', ico: '▮' },
+  { id: 'chat', label: 'Chat', ico: '💬' },
+  { id: 'voice', label: 'Voice (hands-free)', ico: '🎧' },
+];
+
 // Full-screen Claude session — terminal is the main view. Voice dictates into the
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
 // code is retained in lib/audio.js but not surfaced here.
 export default function SessionView({ session, onBack, onOpen, notify }) {
-  const [text, setText] = useState('');
-  const taRef = useRef(null);
   const [state, setState] = useState(session.state || 'idle');
+  const [lastReply, setLastReply] = useState(''); // for the composer's 🔊/📖 replay buttons
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
   const [voice, setVoice] = useState(false); // hands-free overlay
   const [keysMode, setKeysMode] = useState(false); // terminal key-pad replaces the composer input
-  const [showCmds, setShowCmds] = useState(false); // slash-command picker
   const [showSwitch, setShowSwitch] = useState(false); // left session-switcher drawer
+  const [showMenu, setShowMenu] = useState(false); // ⋯ overflow: speak-replies + notifications
   // Speak replies aloud? Off = a normal, silent coding session. Persisted so the
   // choice sticks across sessions. TTS renders lazily on first fetch, so muting
   // also means no synthesis is billed for skipped replies.
@@ -56,6 +64,10 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   // clobber an optimistic flip.
   const [muted, setMuted] = useState(false);
   const muteLoaded = useRef(false);
+  // A question/permission dialog is on screen right now (from the prompt poll below).
+  // The composer needs it: mid-question the session still reads as busy, but its
+  // button must offer Enter (answer) rather than Esc (interrupt).
+  const [promptPending, setPromptPending] = useState(false);
   useEffect(() => {
     setLabel(session.label);
     muteLoaded.current = false;
@@ -85,7 +97,29 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       notify?.(e.message);
     }
   }
-  const title = 'Claude · ' + (label || basename(session.cwd));
+
+  // The same list the home screen and the switcher render. Two jobs here: name the
+  // header exactly as the row you tapped is named, and notice when a DIFFERENT session
+  // finishes, errors or hits a question — the banner below is how you hear about it
+  // while you're heads-down in this one.
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    let stop = false;
+    const load = () => recentSessions().then((d) => !stop && setRows(d.sessions || [])).catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => { stop = true; clearInterval(t); };
+  }, []);
+  const here = rows.find((r) => r.harnessId === session.id);
+  const title = here?.name || label || basename(session.cwd);
+  const alerts = rows.filter((r) => r.harnessId !== session.id && isAlert(r));
+
+  const view = voice ? 'voice' : mode;
+  function pickView(id) {
+    setShowMenu(false);
+    setVoice(id === 'voice');
+    if (id !== 'voice') setMode(id);
+  }
 
   // Announce Claude's questions & bash-permission prompts aloud via ElevenLabs, once
   // each, on whatever view you're in. Deduped by content so a prompt that sits on
@@ -113,6 +147,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       try {
         const { prompt: p } = await sessionPrompt(session.id);
         if (stop) return;
+        setPromptPending(!!p);
         if (p) announcePrompt(p);
         // Prompt gone — forget this session's spoken prompts so a genuinely new one
         // (even with the same text) is announced again next time it appears.
@@ -132,6 +167,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       const d = await promise;
       setState('ready');
       ding('success'); // turn landed — audible even when spoken replies are muted
+      if (d.responseText) setLastReply(d.responseText);
       // Read via the ref — the reply may land minutes after Send, and the user
       // may have muted in between. When the turn ended on a question/permission,
       // announce that (deduped) instead of the reply summary, so it isn't spoken twice.
@@ -143,11 +179,11 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       notify(e.message);
     }
   }
-  function sendText(override) {
+  function sendText(t) {
     // Voice can't speak "/", so a dictated (or typed) "slash compact" / "forward
     // slash compact" becomes "/compact" — but only when it names a real command.
-    const t = normalizeSpokenSlash((typeof override === 'string' ? override : text).trim());
-    if (!t) {
+    const norm = normalizeSpokenSlash((t || '').trim());
+    if (!norm) {
       // Bare Enter with nothing typed = confirm what Claude is asking on screen (a
       // numbered picker, a permission dialog, a "press Enter to continue"). Send a
       // raw carriage return to the pty instead of dropping it — the same thing the
@@ -155,18 +191,17 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       sendRaw('\r');
       return;
     }
-    setText('');
     // Slash commands drive Claude Code's own TUI menu. The prompt pipeline
     // (/api/command) mishandles that menu, so send them as raw keystrokes over
     // /ws/term (exactly like the desktop terminal): type it, then Enter once the
     // menu has filtered. The screen poll shows the result.
     ding('sent'); // immediate "it went through" cue on every send
-    if (t.startsWith('/')) {
-      sendRaw(t);
+    if (norm.startsWith('/')) {
+      sendRaw(norm);
       setTimeout(() => sendRaw('\r'), 200);
       return;
     }
-    runResult(commandText(session.id, t));
+    runResult(commandText(session.id, norm));
   }
 
   // Raw-key channel for answering the TUI's interactive prompts (permission
@@ -208,23 +243,6 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
     else notify('Key channel not ready — try again');
   };
 
-  // Picker: drop the chosen command into the box for review. 'args' commands get a
-  // trailing space (cursor ready for arguments); 'menu' ones open a selector after
-  // Send — the ⋯ keys then navigate it. Everything reaches the pty via Send.
-  function pickCommand(c) {
-    setShowCmds(false);
-    setText(c.bucket === 'args' ? c.cmd + ' ' : c.cmd);
-    setTimeout(() => { const ta = taRef.current; if (ta) { ta.focus(); const n = ta.value.length; ta.setSelectionRange(n, n); } }, 0);
-  }
-
-  // Auto-grow the command box (like the chat composer).
-  useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
-  }, [text, mode]);
-
   const stateCls = 'sv-state' + (state === 'working…' ? ' busy' : state === 'ready' ? ' ready' : '');
 
   return (
@@ -235,28 +253,64 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
           <span className="sv-title-txt">{title}</span>
           <span className="sv-caret">⌄</span>
         </button>
+        {/* One ⋯ owns the whole bar: which of the three views you're in, plus the two
+            on/off settings. Keeps the top bar to back · title · ⋯ on a narrow phone. */}
         <button
-          className="ghost"
-          onClick={toggleSpeak}
-          title={speak ? 'Replies are read aloud — tap for a silent coding session' : 'Silent — tap to read replies aloud'}
-          aria-label={speak ? 'Mute spoken replies' : 'Unmute spoken replies'}
+          className="ghost sv-more"
+          onClick={() => setShowMenu((v) => !v)}
+          aria-label="View and options"
+          aria-expanded={showMenu}
         >
-          {speak ? '🔊' : '🔇'}
+          ⋯
         </button>
-        <button
-          className="ghost"
-          onClick={toggleMute}
-          title={muted ? 'Push notifications silenced for this session — tap to unmute' : 'Get phone notifications for this session — tap to silence'}
-          aria-label={muted ? 'Unmute notifications for this session' : 'Mute notifications for this session'}
-        >
-          {muted ? '🔕' : '🔔'}
-        </button>
-        <button className="ghost" onClick={() => setVoice(true)} title="Hands-free voice session">🎧</button>
-        <div className="seg">
-          <button className={'seg-btn' + (mode !== 'chat' ? ' on' : '')} onClick={() => setMode('terminal')}>Terminal</button>
-          <button className={'seg-btn' + (mode === 'chat' ? ' on' : '')} onClick={() => setMode('chat')}>Chat</button>
-        </div>
+
+        {showMenu && (
+          <>
+            <div className="sv-menu-backdrop" onClick={() => setShowMenu(false)} />
+            <div className="sv-menu" role="menu">
+              <div className="sv-menu-head">View</div>
+              {VIEWS.map((v) => (
+                <button
+                  key={v.id}
+                  className="sv-menu-item"
+                  role="menuitemradio"
+                  aria-checked={view === v.id}
+                  onClick={() => pickView(v.id)}
+                >
+                  <span className="sv-menu-ico">{v.ico}</span>
+                  <span className="sv-menu-label">{v.label}</span>
+                  {view === v.id && <span className="sv-menu-state on">✓</span>}
+                </button>
+              ))}
+              <div className="sv-menu-sep" />
+              <button className="sv-menu-item" role="menuitemcheckbox" aria-checked={speak} onClick={toggleSpeak}>
+                <span className="sv-menu-ico">{speak ? '🔊' : '🔇'}</span>
+                <span className="sv-menu-label">Speak replies</span>
+                <span className={'sv-menu-state' + (speak ? ' on' : '')}>{speak ? 'On' : 'Off'}</span>
+              </button>
+              <button className="sv-menu-item" role="menuitemcheckbox" aria-checked={!muted} onClick={toggleMute}>
+                <span className="sv-menu-ico">{muted ? '🔕' : '🔔'}</span>
+                <span className="sv-menu-label">Notifications</span>
+                <span className={'sv-menu-state' + (!muted ? ' on' : '')}>{muted ? 'Off' : 'On'}</span>
+              </button>
+            </div>
+          </>
+        )}
       </div>
+
+      {/* Another session wants you — it finished, errored, or is sitting on a question.
+          Tapping opens the switcher so you can go straight to it. */}
+      {alerts.length > 0 && (
+        <button className="sv-alert" onClick={() => setShowSwitch(true)}>
+          <span className={'sv-alert-dot cc-att-' + alerts[0].attention} />
+          <span className="sv-alert-txt">
+            {alerts.length === 1
+              ? `${alerts[0].name} — ${ATTENTION_SHORT[alerts[0].attention].toLowerCase()}`
+              : `${alerts.length} other sessions want you`}
+          </span>
+          <span className="sv-alert-go">Switch ›</span>
+        </button>
+      )}
 
       {voice && <VoiceView session={session} onBack={() => setVoice(false)} notify={notify} />}
 
@@ -278,40 +332,17 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
           {keysMode ? (
             <TerminalKeypad sendRaw={sendRaw} onClose={() => setKeysMode(false)} />
           ) : (
-            <div className="composer">
-              <textarea
-                ref={taRef}
-                className="composer-input"
-                rows={1}
-                enterKeyHint="send"
-                autoCapitalize="none"
-                autoCorrect="off"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="Type a command…"
-                value={text}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  // The phone keyboard's Enter inserts a newline (and often skips
-                  // keydown) — treat a trailing newline as Send.
-                  if (/\n$/.test(v)) sendText(v.replace(/\n+$/, ''));
-                  else setText(v);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendText();
-                  }
-                }}
-              />
-              <div className="composer-bar">
-                <DictationMic className="cbtn" text={text} setText={setText} notify={notify} />
-                <button type="button" className="cbtn" onClick={() => setShowCmds(true)} aria-label="Slash commands">/</button>
-                <div className="composer-spacer" />
-                <button type="button" className="cbtn" onClick={() => setKeysMode(true)} aria-label="Terminal keys" title="Terminal key pad — cursors, Enter, Esc, Ctrl">⌨</button>
-                <button className="composer-send" onClick={() => sendText()}>Send</button>
-              </div>
-            </div>
+            <ChatComposer
+              session={session}
+              onSubmit={sendText}
+              lastAssistantText={lastReply}
+              notify={notify}
+              plainText
+              allowEmptySend
+              promptPending={promptPending}
+              slashMode="commands"
+              onKeypad={() => setKeysMode(true)}
+            />
           )}
           <div className={stateCls}>
             {state === 'working…' ? (
@@ -325,7 +356,6 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
               state
             )}
           </div>
-          {showCmds && <SlashCommands onPick={pickCommand} onClose={() => setShowCmds(false)} />}
         </>
       )}
     </div>
