@@ -1,11 +1,15 @@
-// Conversation store for the Chat view. Harness-spawned sessions don't persist a
-// transcript to disk while live (verified), so the harness records the running
-// conversation into the `messages` table:
-//   - assistant turns  -> from the Stop hook (claudeCode.signalStop)
-//   - user turns        -> from the chat box (/chat) and the voice pipeline (/command)
-//   - resumed sessions  -> one-time backfill of prior history from the on-disk
-//                          transcript (which the user's original CLI run wrote)
+// Conversation store for the Chat view. Two sources:
+//   1. The LIVE on-disk transcript (.jsonl) — Claude Code writes it as it runs
+//      (every text block, every turn), so `getLiveConversation` reads it directly
+//      for the complete, current conversation, even one driven from another device.
+//      Preferred whenever the session's Claude uuid resolves to a transcript file.
+//   2. The harness `messages` table — fallback when no transcript is available
+//      (uuid not yet known / not written). Recorded from:
+//        - assistant turns -> the Stop hook (claudeCode.signalStop)
+//        - user turns       -> the chat box (/chat) and the voice pipeline (/command)
+//        - resumed sessions -> one-time backfill of prior history from the transcript
 
+import { statSync } from 'node:fs';
 import db from '../db.js';
 import { findTranscriptPath, parseMessages } from './transcript.js';
 import { makeLogger } from '../util/logger.js';
@@ -40,6 +44,50 @@ export function recordAssistantMessage(sessionId, text) {
 // Messages after a given id (0 = all), for incremental polling.
 export function getMessages(sessionId, afterId = 0) {
   return selAfter.all(Number(sessionId), Number(afterId) || 0);
+}
+
+// Collapse consecutive same-role entries into one bubble (an assistant turn can
+// emit several text blocks around tool calls — show them as one message).
+function mergeConsecutive(rows) {
+  const out = [];
+  for (const m of rows) {
+    const prev = out[out.length - 1];
+    if (prev && prev.role === m.role) prev.text += '\n\n' + m.text;
+    else out.push({ role: m.role, text: m.text });
+  }
+  return out;
+}
+
+// Re-parse the transcript only when its .jsonl actually changes (mtime + size),
+// so a 1.6s chat poll doesn't re-read a multi-MB file every time.
+const transcriptCache = new Map(); // uuid -> { mtimeMs, size, messages }
+
+// The full LIVE conversation for a session. Claude Code writes the transcript
+// .jsonl to disk as it runs (every text block, every turn), so reading it shows
+// EVERYTHING — including a turn driven from another device — with no mirror pty.
+// Falls back to the harness-recorded `messages` table when there is no transcript
+// yet (uuid unknown / not written). `full:true` tells the client this is a whole-
+// conversation snapshot to replace, not an incremental append.
+export async function getLiveConversation(session, afterId = 0) {
+  const uuid = session?.claude_session_id;
+  const path = uuid ? findTranscriptPath(uuid) : null;
+  if (path) {
+    try {
+      const st = statSync(path);
+      let cached = transcriptCache.get(uuid);
+      if (!cached || cached.mtimeMs !== st.mtimeMs || cached.size !== st.size) {
+        const parsed = mergeConsecutive(await parseMessages(path));
+        cached = { mtimeMs: st.mtimeMs, size: st.size, messages: parsed.map((m, i) => ({ id: i + 1, role: m.role, text: m.text })) };
+        transcriptCache.set(uuid, cached);
+      }
+      return { messages: cached.messages, lastId: cached.messages.length, full: true };
+    } catch (err) {
+      log.warn(`live transcript read failed for ${uuid?.slice(0, 8)}: ${err.message}`);
+    }
+  }
+  const rows = getMessages(session.id, afterId);
+  const lastId = rows.length ? rows[rows.length - 1].id : afterId;
+  return { messages: rows, lastId, full: false };
 }
 
 // Parse a resumed session's on-disk transcript once and seed the conversation with

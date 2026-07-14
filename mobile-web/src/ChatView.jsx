@@ -13,13 +13,14 @@ export default function ChatView({ session, notify }) {
   const [working, setWorking] = useState(false);
   const [prompt, setPrompt] = useState(null); // interactive picker Claude is waiting on
   const lastId = useRef(0);
+  const lastSig = useRef(''); // change-signature for the full-transcript path
   const scrollRef = useRef(null);
   const pinned = useRef(true);
   const firstPoll = useRef(true); // don't chime for the backfilled history on open
 
   const poll = useCallback(async () => {
     try {
-      const { messages: fresh, lastId: last, state } = await sessionMessages(session.id, lastId.current);
+      const { messages: fresh, lastId: last, state, full } = await sessionMessages(session.id, lastId.current);
       // Prefer the server's busy state (once deployed); until then, clear the
       // indicator when the assistant's reply lands.
       if (state !== undefined) setWorking(state === 'busy');
@@ -30,7 +31,23 @@ export default function ChatView({ session, notify }) {
       } else {
         setPrompt(null);
       }
-      if (fresh.length) {
+      if (full) {
+        // Live transcript snapshot: the whole conversation each poll. Replace only
+        // when it actually changed (avoids needless re-render/scroll), keeping any
+        // optimistic local- user turn that hasn't reached the transcript yet.
+        const lastMsg = fresh[fresh.length - 1];
+        const sig = fresh.length + '|' + (lastMsg ? lastMsg.text.slice(-48) : '');
+        if (sig !== lastSig.current) {
+          setMessages((prev) => {
+            const locals = prev.filter(
+              (m) => String(m.id).startsWith('local-') && !fresh.some((f) => f.role === 'user' && f.text === m.text)
+            );
+            return [...fresh.map((f) => ({ ...f, id: 't' + f.id })), ...locals];
+          });
+          if (!firstPoll.current && lastMsg && lastMsg.role === 'assistant') ding('success');
+          lastSig.current = sig;
+        }
+      } else if (fresh.length) {
         lastId.current = last;
         setMessages((prev) => {
           // Drop the optimistic local copies of any user turns the server now returns.

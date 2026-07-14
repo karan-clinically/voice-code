@@ -25,7 +25,7 @@ import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
 import { getRemoteSlug } from '../../services/terminal.js';
 import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
-import { getMessages, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
+import { getLiveConversation, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt } from '../../services/prompt.js';
 import { buildReplyResponse, recordUserInteraction } from '../../services/reply.js';
@@ -339,16 +339,18 @@ router.get('/:id/history', (req, res) => {
   res.json({ interactions });
 });
 
-// Chat-view conversation log. ?after=<id> returns only newer messages so the
-// client can poll incrementally.
-router.get('/:id/messages', (req, res) => {
+// Chat-view conversation log. Prefers the LIVE on-disk transcript (the complete
+// record Claude Code writes as it runs — every text block, every turn, even one
+// driven from another device) and falls back to the harness `messages` table.
+// `full:true` marks a whole-conversation snapshot the client replaces; otherwise
+// ?after=<id> returns only newer table rows for incremental append.
+router.get('/:id/messages', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   const after = Number(req.query.after) || 0;
-  const messages = getMessages(req.params.id, after);
-  const lastId = messages.length ? messages[messages.length - 1].id : after;
+  const conv = await getLiveConversation(session, after);
   // `state` lets the chat show a "working…" indicator while Claude is busy.
-  res.json({ messages, lastId, state: session.state });
+  res.json({ ...conv, state: session.state });
 });
 
 // Chat-view send: record the user turn and run it through the completion pipeline
@@ -511,7 +513,8 @@ router.get('/:id/screen', async (req, res) => {
     const color = req.query.color === '1' || req.query.color === 'true';
     const screen = await readScreen(req.params.id, { full });
     const resp = { screen, promptCwd: parsePromptCwd(screen) };
-    if (color) resp.html = await readScreenColored(req.params.id, { full });
+    // Full view = a real terminal's worth of scrollback, not just the last screen.
+    if (color) resp.html = await readScreenColored(req.params.id, { full, maxLines: full ? 4000 : 600 });
     res.json(resp);
   } catch (err) {
     res.status(500).json({ error: err.message });
