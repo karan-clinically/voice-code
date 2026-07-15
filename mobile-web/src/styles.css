@@ -87,6 +87,20 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   background: var(--surface); box-shadow: var(--shadow-sm); color: var(--text); min-width: 0;
 }
 .cc-item:disabled { opacity: 0.6; }
+
+/* Swipe-to-kill for local (bare-terminal) sessions. The row sits above a red Kill
+   button; a left swipe slides the row aside to reveal it. */
+.cc-row { position: relative; border-radius: var(--radius-lg); overflow: hidden; }
+.cc-row .cc-item { position: relative; z-index: 1; }
+.cc-item.swipeable { touch-action: pan-y; user-select: none; -webkit-user-select: none; transition: transform 0.18s ease; }
+.cc-item.revealed { transform: translateX(-92px); }
+.cc-kill {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 92px; z-index: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 0; box-shadow: none;
+  background: var(--error); color: #fff; font-size: 15px; font-weight: 600;
+}
+.cc-kill:active { filter: brightness(0.9); }
 /* Where the session was started, as a text tag rather than a glyph. Kept neutral
    and uniform across origins — it's a category, not a state, so it gets a muted
    label and a plain border, not colour. Also the anchor for the attention dot. */
@@ -121,6 +135,23 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 .cc-conn.busy { color: #b45309; font-weight: 600; }
 .cc-sub { font-size: 12.5px; color: var(--muted); font-family: var(--mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+/* Reachability from claude.ai remote control — a plain muted label, not a state
+   colour: on-remote reads slightly stronger, local-only stays quiet. */
+.cc-sep { flex: 0 0 auto; color: var(--muted-2); }
+.cc-rc { flex: 0 0 auto; font-size: 12.5px; color: var(--muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.cc-rc.on { color: var(--muted); }
+/* Tappable "turn on remote control" action — an inline pill, only on harness-owned
+   sessions that aren't bridged yet. Accent-tinted so it reads as the one interactive
+   thing on an otherwise quiet row. */
+.cc-rc-btn {
+  flex: 0 0 auto; cursor: pointer; padding: 2px 8px; border-radius: 999px;
+  color: var(--accent); background: var(--accent-tint); border: 1px solid var(--accent);
+  font-weight: 600; white-space: nowrap; overflow: visible;
+}
+.cc-rc-btn:active { filter: brightness(0.96); }
+/* Why a phone-only session isn't on claude.ai — full-width, wraps to two lines. */
+.cc-rc-reason { font-size: 11.5px; line-height: 1.35; color: var(--muted-2); max-width: 100%; }
 
 /* Floating "New session" button (jumps to the Start tab) */
 .cc-fab {

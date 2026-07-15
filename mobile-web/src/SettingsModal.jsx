@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { SttModeToggle, SummariseToggle, ElevenVoicePicker, ThemePicker } from './components.jsx';
+import { SttModeToggle, SummariseToggle, ElevenVoicePicker, ThemePicker, KeepAwakeToggle } from './components.jsx';
 import { pushSupported, notificationsOn, enableNotifications, disableNotifications } from './lib/push.js';
 import { pushTest } from './lib/api.js';
 
@@ -41,6 +41,14 @@ export default function SettingsModal({ onClose, notify }) {
           <strong>Voice</strong>
           <div className="muted">Which ElevenLabs voice reads replies aloud. Tap Preview to hear it.</div>
           <ElevenVoicePicker notify={notify} />
+        </div>
+        <div className="set-item">
+          <strong>Keep screen awake</strong>
+          <div className="muted">
+            Hold the screen on during a hands-free voice session so the spoken reply plays instead of the phone
+            sleeping mid-turn. Only while hands-free is running; releases when you stop or leave.
+          </div>
+          <KeepAwakeToggle />
         </div>
         <div className="set-item">
           <strong>Notifications</strong>

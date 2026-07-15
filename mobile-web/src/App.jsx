@@ -4,7 +4,8 @@ import SessionView from './SessionView.jsx';
 import ShellView from './ShellView.jsx';
 import History from './History.jsx';
 import PlaybackControls from './PlaybackControls.jsx';
-import { sessionInfo } from './lib/api.js';
+import { sessionInfo, sayUrl, replyUrl } from './lib/api.js';
+import { playUrl } from './lib/audio.js';
 
 export default function App() {
   const [route, setRoute] = useState('home'); // home | shell | claude | history
@@ -24,15 +25,46 @@ export default function App() {
     setRoute((s.kind || 'claude') === 'shell' ? 'shell' : 'claude');
   };
 
-  // Deep link: a tapped push notification opens /m?s=<id> — jump straight into
-  // that session, then clean the URL so a refresh doesn't reopen it.
+  // Speak a session's latest reply — or the question it's waiting on, when the service
+  // worker passes one. This is what the notification's ▶ Play button ends up calling,
+  // from wherever you are in the app.
+  const speak = (sessionId, say) => {
+    try {
+      playUrl(say ? sayUrl(say) : replyUrl(sessionId, 'summary'));
+    } catch (e) {
+      notify(e.message);
+    }
+  };
+  const jumpTo = (id, play) =>
+    sessionInfo(id)
+      .then((s) => {
+        if (s?.id && s.alive !== false) openSession(s);
+        if (play) speak(id, null);
+      })
+      .catch(() => {});
+
+  // Deep link: the app was launched (cold) by a tapped notification — /m?s=<id>, plus
+  // &play=1 when it was the Play button. Clean the URL so a refresh doesn't replay it.
   useEffect(() => {
-    const id = new URLSearchParams(location.search).get('s');
+    const q = new URLSearchParams(location.search);
+    const id = q.get('s');
     if (!id) return;
     history.replaceState(null, '', location.pathname);
-    sessionInfo(id)
-      .then((s) => { if (s?.id && s.alive !== false) openSession(s); })
-      .catch(() => {});
+    jumpTo(id, q.get('play') === '1');
+  }, []);
+
+  // The app was already running when the notification was tapped — the worker messages us
+  // rather than reloading, so a tap switches session in place and Play speaks without
+  // leaving the screen you're on.
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return undefined;
+    const onMsg = (e) => {
+      const d = e.data || {};
+      if (d.type === 'open-session' && d.sessionId) jumpTo(d.sessionId, d.play);
+      else if (d.type === 'speak' && d.sessionId) speak(d.sessionId, d.say);
+    };
+    navigator.serviceWorker.addEventListener('message', onMsg);
+    return () => navigator.serviceWorker.removeEventListener('message', onMsg);
   }, []);
 
   return (

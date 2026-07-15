@@ -8,6 +8,7 @@
 // tmux model where sessions were discovered from an external multiplexer.
 
 import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { resolve, join, extname } from 'node:path';
 import { Router } from 'express';
 import multer from 'multer';
@@ -95,6 +96,11 @@ function repoSlug(cwd) {
 const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 // Normalised path for equality (Windows: case-insensitive, no trailing slash).
 const norm = (p) => (p ? resolve(p) : '').replace(/[\\/]+$/, '').toLowerCase();
+const AGENT_LABELS = { claude: 'Claude', hermes: 'Hermes/Grok', shell: 'Shell' };
+
+function normalizeKind(raw) {
+  return raw === 'shell' || raw === 'hermes' ? raw : 'claude';
+}
 
 // The remote-control bridge can reconnect a session without a clean handoff,
 // leaving the OLD connection's record stuck reporting connection_status
@@ -159,6 +165,13 @@ router.get('/recent', (req, res) => {
   const liveSuffixes = new Set(live.filter((x) => x.suffix).map((x) => x.suffix));
   const liveUuids = new Set(live.map((x) => x.sessionId).filter(Boolean));
 
+  // "Reachable from claude.ai remote control" has ONE reliable signal: the running
+  // claude registered a bridge (`bridgeSessionId`) with claude.ai. A plain `claude`
+  // in a terminal has no bridge, so the harness surfaces it here but claude.ai can't
+  // see it. The phone drives every row it lists regardless; this flag only says
+  // whether the SAME session also appears in claude.ai remote control.
+  const bridgedUuids = new Set(live.filter((x) => x.bridged && x.sessionId).map((x) => x.sessionId));
+
   // ---- ATTACHABLE: harness-owned PTYs (the source of truth; tap = attach) ----
   // A pty opened to peek a background agent lives in that agent's worktree; it's the
   // same work as the agent's own row (whose tap reuses this very pty), so skip it.
@@ -177,6 +190,8 @@ router.get('/recent', (req, res) => {
       origin: s.origin === 'remote' ? 'phone' : 'pc',
       originLabel: s.origin === 'remote' ? 'Phone' : 'This PC',
       shell: s.kind === 'shell',
+      agentKind: s.kind || 'claude',
+      agentLabel: AGENT_LABELS[s.kind || 'claude'] || s.kind || 'Claude',
       repo: repoSlug(s.cwd) || s.git_repo || null,
       branch: s.git_branch || null,
       cwd: s.cwd || null,
@@ -184,6 +199,17 @@ router.get('/recent', (req, res) => {
       ts: s.last_seen_at,
       harnessId: s.id,
       alive: true,
+      // On claude.ai only once its Claude has bridged. Shell/Hermes sessions are
+      // local harness PTYs and are reachable through Voice Harness/Tailscale only.
+      remote: s.kind === 'claude' && !!(s.claude_session_id && bridgedUuids.has(s.claude_session_id)),
+      remoteReason:
+        s.kind === 'shell'
+          ? 'A shell runs only on this PC — remote control is for Claude sessions.'
+          : s.kind === 'hermes'
+          ? 'Hermes/Grok runs inside this harness PTY and is reachable from the phone via Voice Harness/Tailscale, not claude.ai remote control.'
+          : s.claude_session_id && bridgedUuids.has(s.claude_session_id)
+          ? null
+          : 'Started on this PC and not yet bridged to claude.ai, so it only shows here. You can drive it from the app; it appears in claude.ai remote control once its bridge connects.',
       // Sticky badge: which ping this session is waiting on you for, until opened.
       attention: getAttention(s.id)?.kind || null,
       muted: isMutedById(s.id),
@@ -248,17 +274,90 @@ router.get('/recent', (req, res) => {
         bgAgent: !!bg, // route the tap to the agent view (attach/peek) not --resume
         agentCwd: bg?.cwd || null,
         resumeUuid: bg ? null : meta?.cwdExists ? openUuid : null,
+        // These come FROM the claude.ai API, so they're on remote control by
+        // definition (a bridged terminal or a cloud session).
+        remote: true,
+        remoteReason: null,
       };
     }).filter(Boolean));
 
+  // ---- LOCAL: a live claude nobody else surfaced ----
+  // A claude running in a terminal that is neither harness-owned NOR bridged to remote
+  // control appears in neither source above, so it's invisible — and a session
+  // "vanishes" the moment its bridge drops even though the process is still running.
+  // Surface those from the pid-backed live list so a running session is always shown.
+  // Not attachable (the harness doesn't own it), so a tap branches like any other
+  // remote row. Deduped against everything already shown, by transcript uuid.
+  const shownUuids = new Set([...harness, ...remote].map((r) => r.sessionId).filter(Boolean));
+  const local = live
+    .filter((s) => s.sessionId && !shownUuids.has(s.sessionId))
+    .filter((s) => !(s.cwd && agentCwds.has(norm(s.cwd)))) // skip agent-worktree peeks
+    // Two processes can share a uuid (a fork's leftover); show one, freshest.
+    .reduce((acc, s) => {
+      const prev = acc.find((x) => x.sessionId === s.sessionId);
+      if (!prev) return acc.concat(s);
+      if ((s.updatedAt || 0) > (prev.updatedAt || 0)) acc[acc.indexOf(prev)] = s;
+      return acc;
+    }, [])
+    .map((s) => {
+      const meta = getArchiveMeta(s.sessionId);
+      const cwd = s.cwd || meta?.cwd || null;
+      return {
+        key: 'l' + s.pid,
+        kind: 'code',
+        local: true, // a bare terminal claude — killable by pid via /kill-local
+        pid: s.pid,
+        attachable: false, // not harness-owned — opening it BRANCHES the conversation
+        name: meta?.title || s.name || s.sessionId.slice(0, 8),
+        connected: true,
+        active: s.status === 'busy',
+        unread: false,
+        origin: 'terminal',
+        originLabel: 'Terminal',
+        repo: repoSlug(cwd) || null,
+        branch: meta?.gitBranch || null,
+        cwd,
+        sessionId: s.sessionId,
+        ts: new Date(s.updatedAt || Date.now()).toISOString(),
+        bgAgent: false,
+        agentCwd: null,
+        resumeUuid: meta?.cwdExists ? s.sessionId : null,
+        // A bridged terminal would have surfaced in the API bucket above; anything
+        // landing here is a plain `claude` with no bridge, so claude.ai can't see it.
+        remote: !!s.bridged,
+        remoteReason: s.bridged
+          ? null
+          : "This Claude is running in a terminal without remote control connected, so it only appears here. Start it through the harness (hclaude), or turn on remote control in that terminal, to reach it from claude.ai.",
+      };
+    });
+
   // Newest first — the client buckets by day like the Claude app.
-  const sessions = [...harness, ...remote].sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0));
+  const sessions = [...harness, ...remote, ...local].sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0));
   res.json({ sessions });
+});
+
+// Kill a bare-terminal ("local") claude by pid — the phone's swipe-to-kill on a
+// local session row. The harness doesn't own these, so /:id/kill can't reach them.
+// Two guards make this safe: the pid must be one the live registry currently reports
+// as a running claude (never an arbitrary process), and it must be UNbridged — a
+// bridged session is one you're actively driving (incl. this very conversation), so
+// it's off-limits. /T tears down the session's own child processes with it.
+router.post('/kill-local', (req, res) => {
+  const pid = Number(req.body?.pid) | 0;
+  if (!pid) return res.status(400).json({ error: 'pid required' });
+  const sess = liveClaudeSessions().find((s) => s.pid === pid);
+  if (!sess) return res.status(404).json({ error: 'no live claude session with that pid' });
+  if (sess.bridged) return res.status(409).json({ error: 'session is bridged/active — not killable here' });
+  execFile('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true }, (err) => {
+    if (err) return res.status(500).json({ error: `taskkill failed: ${err.message}` });
+    log.info(`killed local claude pid ${pid} (${sess.cwd || '?'})`);
+    res.json({ ok: true, pid });
+  });
 });
 
 router.post('/', async (req, res) => {
   try {
-    const kind = req.body?.kind === 'shell' ? 'shell' : 'claude';
+    const kind = normalizeKind(req.body?.kind);
     const base = getConfig('mobile_base_dir', 'C:\\AI');
     // cwd optional: defaults to the projects base (handy for phone shell sessions).
     // Strip quotes (Windows paths can't contain them) — users often type/dictate
@@ -279,7 +378,7 @@ router.post('/', async (req, res) => {
     // casing difference (C:\ai\… vs C:\AI\…) can't miss.
     if (continueSession) {
       const open = listSessions()
-        .filter((s) => s.alive && s.kind === 'claude' && s.cwd && norm(s.cwd) === norm(cwd))
+        .filter((s) => s.alive && s.kind === kind && s.cwd && norm(s.cwd) === norm(cwd))
         .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
       if (open) return res.json(open); // 200 = reused, not created
     }
@@ -582,6 +681,22 @@ router.post('/:id/launch-claude', async (req, res) => {
   try {
     await sendInput(req.params.id, 'claude', { submit: true });
     setKind(req.params.id, 'claude');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Launch Hermes Agent (OpenRouter Grok 4.5) inside a shell session, then treat
+// it as a Hermes session. This mirrors launch-claude but keeps model/provider
+// explicit so the phone always starts the intended coding agent.
+router.post('/:id/launch-hermes', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  try {
+    await sendInput(req.params.id, 'hermes chat --provider openrouter -m x-ai/grok-4.5 --source voice-harness', { submit: true });
+    setKind(req.params.id, 'hermes');
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

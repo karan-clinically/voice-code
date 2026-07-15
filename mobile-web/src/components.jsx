@@ -3,6 +3,7 @@ import { sessionScreen, sessionResize, termWsUrl, fsList, getSttMode, setSttMode
 import { tapRecord, playUrl } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 import { THEMES, getTheme, applyTheme } from './lib/theme.js';
+import { keepAwakeEnabled, setKeepAwake } from './lib/wakeLock.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
@@ -74,6 +75,20 @@ export function SummariseToggle({ notify }) {
     <div className="seg" title="How much your speech is rewritten before it lands in the box">
       <button className={'seg-btn' + (!on ? ' on' : '')} onClick={() => choose(false)}>Clean up</button>
       <button className={'seg-btn' + (on ? ' on' : '')} onClick={() => choose(true)}>Summarise</button>
+    </div>
+  );
+}
+
+// Per-device toggle for holding the screen awake during a hands-free voice session.
+// localStorage-backed (like the theme), since it's about this phone's screen, not a
+// shared harness pref.
+export function KeepAwakeToggle() {
+  const [on, setOn] = useState(keepAwakeEnabled);
+  const choose = (want) => { setKeepAwake(want); setOn(want); };
+  return (
+    <div className="seg" title="Keep the screen on during a hands-free voice session">
+      <button className={'seg-btn' + (!on ? ' on' : '')} onClick={() => choose(false)}>Off</button>
+      <button className={'seg-btn' + (on ? ' on' : '')} onClick={() => choose(true)}>On</button>
     </div>
   );
 }

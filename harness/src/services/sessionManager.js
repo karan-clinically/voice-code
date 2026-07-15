@@ -61,9 +61,17 @@ function decorate(row) {
   return { ...row, ptyId, alive };
 }
 
+const HERMES_GROK_ARGS = [
+  'chat',
+  '--provider', 'openrouter',
+  '-m', 'x-ai/grok-4.5',
+  '--source', 'voice-harness',
+];
+
 // Spawn a new session and register it in the DB. kind 'claude' launches Claude
-// Code directly; kind 'shell' launches PowerShell (for phone navigate-then-
-// launch-claude). Pass `resumeId` (a Claude session UUID) to reopen a past
+// Code directly; kind 'hermes' launches Hermes Agent on OpenRouter Grok 4.5;
+// kind 'shell' launches PowerShell (for phone navigate-then-launch-agent).
+// Pass `resumeId` (a Claude session UUID) to reopen a past
 // conversation via `claude --resume <id>` — the cwd MUST be that transcript's
 // original directory or Claude reports "No conversation found". The correlation
 // token is injected as CVH_SESSION_ID so a Stop hook can map back to this session
@@ -71,6 +79,7 @@ function decorate(row) {
 export async function createSession({ cwd, label = null, kind = 'claude', resumeId = null, continueSession = false, origin = 'harness', agentView = false } = {}) {
   const token = randomUUID();
   const isShell = kind === 'shell';
+  const isHermes = kind === 'hermes';
   // agentView launches Claude's background-agent view (`claude agents`) so the phone
   // can attach to / peek a live background agent — those reject `--resume`. Once the
   // user hits Enter on a row, the same pty becomes that agent's live session.
@@ -81,8 +90,8 @@ export async function createSession({ cwd, label = null, kind = 'claude', resume
     cwd,
     label,
     env: { CVH_SESSION_ID: token },
-    command: isShell ? 'powershell.exe' : undefined,
-    args: isShell ? ['-NoLogo', '-NoExit'] : claudeArgs,
+    command: isShell ? 'powershell.exe' : isHermes ? 'hermes' : undefined,
+    args: isShell ? ['-NoLogo', '-NoExit'] : isHermes ? HERMES_GROK_ARGS : claudeArgs,
   });
   const git = await terminal.getGitInfo(view.cwd);
   const now = new Date().toISOString();

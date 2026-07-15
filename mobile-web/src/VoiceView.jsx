@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { transcribe, commandText, mediaUrl, replyUrl, selectPromptOption, sessionMessages } from './lib/api.js';
 import { HandsFree } from './lib/handsfree.js';
+import { useWakeLock, keepAwakeEnabled } from './lib/wakeLock.js';
 import { basename } from './components.jsx';
 
 // Hands-free voice session. One button starts it; after that you just talk, and
@@ -62,6 +63,11 @@ export default function VoiceView({ session, onBack, notify }) {
 
   // Never leave the mic open behind us.
   useEffect(() => () => hfRef.current?.stop(), []);
+
+  // Keep the screen awake while hands-free is running, so the spoken reply plays
+  // out instead of the phone sleeping between "you asked" and "Claude answers".
+  // Gated on the per-device Settings toggle (default on).
+  useWakeLock(state !== 'idle' && keepAwakeEnabled());
 
   async function toggle() {
     if (hfRef.current) {

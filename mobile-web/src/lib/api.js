@@ -32,6 +32,9 @@ async function parse(r) {
 
 export const apiBase = () => base;
 export const authHeaders = () => H;
+// The service worker can't read localStorage, so it's handed this on load — it needs
+// it to answer a prompt (POST /select) straight from a notification button.
+export const authToken = () => token;
 export const jget = async (p) => parse(await fetch(base + p, { headers: H }));
 export const jpost = async (p, b) =>
   parse(await fetch(base + p, { method: 'POST', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }));
@@ -55,12 +58,14 @@ export const createSession = (body) => jpost('/api/sessions', body);
 export const openAgentView = (cwd, label) => jpost('/api/sessions/agent-view', { cwd, label });
 export const sessionInfo = (id) => jget(`/api/sessions/${id}`);
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
+export const killLocal = (pid) => jpost('/api/sessions/kill-local', { pid });
 export const muteSession = (id, muted) => jpost(`/api/sessions/${id}/mute`, { muted });
 export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`);
 export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=1`);
 export const sessionInput = (id, text) => jpost(`/api/sessions/${id}/input`, { text });
 export const sessionResize = (id, cols, rows) => jpost(`/api/sessions/${id}/resize`, { cols, rows });
 export const launchClaudeIn = (id) => jpost(`/api/sessions/${id}/launch-claude`);
+export const launchHermesIn = (id) => jpost(`/api/sessions/${id}/launch-hermes`);
 export const fsList = (path) => jget('/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : ''));
 // cleanup=true runs the Wispr-style dictation pass server-side (fillers, false
 // starts, phrasing) so the phone gets the same tidied text the desktop does — it

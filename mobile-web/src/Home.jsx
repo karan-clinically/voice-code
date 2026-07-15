@@ -1,14 +1,17 @@
-import React, { useEffect, useState } from 'react';
-import { createSession, transcribe, usageSummary, recentSessions, reindexArchive } from './lib/api.js';
+import React, { useEffect, useRef, useState } from 'react';
+import { useSwipeable } from 'react-swipeable';
+import { createSession, transcribe, usageSummary, recentSessions, reindexArchive, killLocal, killSession, sessionInput } from './lib/api.js';
 import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
 import { ATTENTION_TITLE, attentionOf } from './lib/attention.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
 
-// Where a session was started, as a short text tag (RC = remote control — a Claude
-// running in a terminal, driven from the app). Reads at a glance without decoding a
-// glyph; the full label stays as the tag's title.
+// Where a session was started, as a short text tag. RC = remote control (a terminal
+// Claude reachable via claude.ai); "Local" (set below, off it.local) is the same kind
+// of terminal Claude but NOT bridged — the harness can only offer to kill it, so it
+// gets its own tag to set it apart from an RC row. Reads at a glance without decoding
+// a glyph; the full label stays as the tag's title.
 const ORIGIN_TAG = { phone: 'Phone', pc: 'PC', terminal: 'RC', cloud: 'Cloud' };
 
 // Compact relative time, like the Claude Code app ("now", "4m", "8h", "3d").
@@ -32,6 +35,120 @@ function dayBucket(ts) {
   if (t >= startToday) return 'Today';
   if (t >= startToday - 86400000) return 'Yesterday';
   return 'Earlier';
+}
+
+// One session row, styled like the Claude Code app. Local (bare-terminal) sessions —
+// a claude the harness doesn't own, running in some terminal — get iOS-style
+// swipe-left-to-reveal a red Kill button, so you can clear the ones cluttering the
+// list. A left swipe reveals; a right swipe or a tap on the row hides it; tapping an
+// un-revealed row opens it as usual. Only `local` rows expose Kill (the backend
+// guards the pid), so you can't accidentally nuke an owned/active session.
+function SessionRow({ it, openable, onOpen, onKill, notify }) {
+  const [revealed, setRevealed] = useState(false);
+  const [rcSent, setRcSent] = useState(false);
+  const swiped = useRef(false);
+  // Swipe-to-kill covers anything the harness can actually end: an orphan bare-terminal
+  // claude (by pid) OR a harness-OWNED session (by id). Sessions the harness neither
+  // owns nor can pid-kill — cloud/remote-control rows from claude.ai — stay unkillable.
+  const canKill = !!((it.local && it.pid) || (it.kind === 'harness' && it.harnessId));
+  // Only a harness-OWNED (non-shell) session that hasn't bridged yet can have remote
+  // control turned on from here: the harness owns its pty, so it can type /rc into it.
+  // Orphan "Local" rows can't — the harness has no keyboard channel to them.
+  const canRc = it.kind === 'harness' && !it.shell && it.remote === false;
+
+  // Send /rc into the session's pty to start the claude.ai remote-control bridge.
+  // Optimistically flip to a "connecting" hint; the 5s poll re-fetches and, once the
+  // bridge is up, the row's own `remote` flag flips and the action drops away. Reset
+  // after a grace window so a bridge that never connects re-shows the button.
+  async function enableRc() {
+    setRcSent(true);
+    try {
+      await sessionInput(it.harnessId, '/rc');
+      setTimeout(() => setRcSent(false), 30000);
+    } catch (e) {
+      setRcSent(false);
+      notify?.(e.message);
+    }
+  }
+
+  // react-swipeable owns the swipe-vs-tap distinction: only a horizontal drag past
+  // `delta` fires onSwiped*, and on touch a swipe emits no click — so taps fall
+  // through to onClick untouched, keeping both gestures on the one row.
+  const swipe = useSwipeable({
+    onSwipedLeft: () => { if (canKill) { swiped.current = true; setRevealed(true); } },
+    onSwipedRight: () => { if (canKill) { swiped.current = true; setRevealed(false); } },
+    trackMouse: true,
+    delta: 40,
+  });
+  const onClick = () => {
+    if (swiped.current) { swiped.current = false; return; } // ignore the click a mouse-drag can emit
+    if (revealed) { setRevealed(false); return; }           // tap-to-close the reveal
+    if (openable) onOpen(it);
+  };
+
+  const repo = it.repo ? (it.branch ? `${it.repo} · ${it.branch}` : it.repo) : '';
+  const folder = it.cwd ? basename(it.cwd) : '';
+  const sub = [repo.toLowerCase().includes(folder.toLowerCase()) ? '' : folder, repo].filter(Boolean).join('  ·  ');
+  const att = attentionOf(it);
+
+  return (
+    <div className="cc-row">
+      {canKill && (
+        <button className="cc-kill" onClick={() => onKill(it)} aria-label={'Kill ' + it.name}>Kill</button>
+      )}
+      <button
+        {...(canKill ? swipe : {})}
+        className={'cc-item' + (revealed ? ' revealed' : '') + (canKill ? ' swipeable' : '')}
+        onClick={onClick}
+        disabled={!openable && !canKill}
+      >
+        <span className={'cc-tag cc-' + it.origin} title={it.originLabel}>
+          {it.bgAgent ? 'Agent' : it.local ? 'Local' : ORIGIN_TAG[it.origin] || 'RC'}
+          {att && <span className={'cc-unread cc-att-' + att} title={ATTENTION_TITLE[att] || 'Wants attention'} />}
+        </span>
+        <span className="cc-body">
+          <span className="cc-line1">
+            <span className="cc-name">{it.name}</span>
+            {it.muted && <span className="cc-muted" title="Notifications silenced">🔕</span>}
+            <span className="cc-time">{shortAgo(it.ts)}</span>
+          </span>
+          <span className="cc-status">
+            <span className={'cc-dot ' + (it.active ? 'busy' : 'on')} />
+            <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>{it.active ? 'Working' : 'Connected'}</span>
+            {'remote' in it && (
+              <>
+                <span className="cc-sep">·</span>
+                {canRc && !it.remote ? (
+                  rcSent ? (
+                    <span className="cc-rc">⏳ Turning on remote…</span>
+                  ) : (
+                    <span
+                      className="cc-rc cc-rc-btn"
+                      role="button"
+                      tabIndex={0}
+                      title="Send /rc to turn on claude.ai remote control"
+                      onClick={(e) => { e.stopPropagation(); enableRc(); }}
+                    >
+                      🖥 Enable remote control
+                    </span>
+                  )
+                ) : (
+                  <span
+                    className={'cc-rc' + (it.remote ? ' on' : '')}
+                    title={it.remote ? 'Also on claude.ai remote control' : it.remoteReason || ''}
+                  >
+                    {it.remote ? '☁ Remote control' : '🖥 Local only'}
+                  </span>
+                )}
+              </>
+            )}
+          </span>
+          {sub && <span className="cc-sub">{sub}</span>}
+          {'remote' in it && !it.remote && it.remoteReason && <span className="cc-rc-reason">{it.remoteReason}</span>}
+        </span>
+      </button>
+    </div>
+  );
 }
 
 export default function Home({ onOpen, onHistory, notify }) {
@@ -77,6 +194,16 @@ export default function Home({ onOpen, onHistory, notify }) {
       notify(e.message);
     }
   }
+  async function startHermes() {
+    try {
+      const p = path.trim().replace(/["']/g, '');
+      const s = await createSession({ kind: 'hermes', cwd: p || undefined, label: p ? basename(p) + ' · Hermes/Grok' : 'Hermes/Grok' });
+      if (p) localStorage.setItem('cvh_lastpath', p);
+      onOpen(s);
+    } catch (e) {
+      notify(e.message);
+    }
+  }
   async function startShell() {
     try {
       onOpen(await createSession({ kind: 'shell' }));
@@ -89,39 +216,21 @@ export default function Home({ onOpen, onHistory, notify }) {
   const canOpen = canOpenRow;
   const openItem = (it) => openSessionRow(it, onOpen, notify);
 
-  // One session row, styled like the Claude Code app: avatar, name + time, a
-  // connection status with where it was started, then folder + repo/branch.
-  const sessionRow = (it) => {
-    const repo = it.repo ? (it.branch ? `${it.repo} · ${it.branch}` : it.repo) : '';
-    const folder = it.cwd ? basename(it.cwd) : '';
-    // Skip the folder when the repo line already carries the same name (e.g.
-    // folder "pearls" inside karan-clinically/pearls) — one clean line, no echo.
-    const sub = [repo.toLowerCase().includes(folder.toLowerCase()) ? '' : folder, repo]
-      .filter(Boolean)
-      .join('  ·  ');
-    const openable = canOpen(it);
-    const att = attentionOf(it);
-    return (
-      <button key={it.key} className="cc-item" onClick={openable ? () => openItem(it) : undefined} disabled={!openable}>
-        <span className={'cc-tag cc-' + it.origin} title={it.originLabel}>
-          {it.bgAgent ? 'Agent' : ORIGIN_TAG[it.origin] || 'RC'}
-          {att && <span className={'cc-unread cc-att-' + att} title={ATTENTION_TITLE[att] || 'Wants attention'} />}
-        </span>
-        <span className="cc-body">
-          <span className="cc-line1">
-            <span className="cc-name">{it.name}</span>
-            {it.muted && <span className="cc-muted" title="Notifications silenced">🔕</span>}
-            <span className="cc-time">{shortAgo(it.ts)}</span>
-          </span>
-          <span className="cc-status">
-            <span className={'cc-dot ' + (it.active ? 'busy' : 'on')} />
-            <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>{it.active ? 'Working' : 'Connected'}</span>
-          </span>
-          {sub && <span className="cc-sub">{sub}</span>}
-        </span>
-      </button>
-    );
-  };
+  // Kill a session from the swipe action. An orphan bare-terminal claude goes by pid
+  // (taskkill); a harness-owned session goes by id (ends its pty) — the latter also
+  // drops any terminal + claude.ai bridge on it, so confirm first. Optimistically drop
+  // the row, then hit the backend; on failure, re-sync from the server.
+  async function killItem(it) {
+    const owned = it.kind === 'harness';
+    if (owned && !window.confirm(`End "${it.name}"?\n\nThis stops the session everywhere — the phone, any terminal driving it, and claude.ai remote control.`)) return;
+    setSessions((prev) => prev.filter((x) => x.key !== it.key));
+    try {
+      await (owned ? killSession(it.harnessId) : killLocal(it.pid));
+    } catch (e) {
+      notify('Kill failed: ' + e.message);
+      recentSessions().then((d) => setSessions(d.sessions || [])).catch(() => {});
+    }
+  }
 
   return (
     <div>
@@ -152,7 +261,11 @@ export default function Home({ onOpen, onHistory, notify }) {
           return (
             <div key={b} className="cc-group">
               <div className="cc-group-head">{b}</div>
-              <div className="cc-list">{rows.map(sessionRow)}</div>
+              <div className="cc-list">
+                {rows.map((it) => (
+                  <SessionRow key={it.key} it={it} openable={canOpen(it)} onOpen={openItem} onKill={killItem} notify={notify} />
+                ))}
+              </div>
             </div>
           );
         })
@@ -168,7 +281,7 @@ export default function Home({ onOpen, onHistory, notify }) {
           </div>
           <div className="pm-sheet-list">
             <div className="card stack">
-              <h2>Start Claude in a folder</h2>
+              <h2>Start an agent in a folder</h2>
               <div className="row">
                 <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\AI\voice harness" style={{ flex: 1 }} />
                 <MicButton

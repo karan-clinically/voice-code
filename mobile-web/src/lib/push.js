@@ -1,10 +1,23 @@
 // PWA + Web Push wiring for the phone. Registers the service worker (making the app
 // installable), and subscribes/unsubscribes this device for background notifications.
 
-import { pushVapid, pushSubscribe, pushUnsubscribe } from './api.js';
+import { pushVapid, pushSubscribe, pushUnsubscribe, authToken } from './api.js';
 
 const SCOPE = '/m/';
 const SW_URL = '/m/sw.js';
+
+// Hand the worker our auth token. It answers permission prompts (POST /select) from the
+// notification's buttons, and can't reach localStorage to find the token itself. Re-sent
+// on every load so a rotated token lands; harmless when there's no token (localhost).
+async function shareToken() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sw = reg.active || navigator.serviceWorker.controller;
+    if (sw) sw.postMessage({ type: 'auth', token: authToken() });
+  } catch {
+    /* no worker yet — the next load shares it */
+  }
+}
 
 export function pushSupported() {
   return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
@@ -15,7 +28,9 @@ export function pushSupported() {
 export async function registerSW() {
   if (!('serviceWorker' in navigator)) return null;
   try {
-    return await navigator.serviceWorker.register(SW_URL, { scope: SCOPE });
+    const reg = await navigator.serviceWorker.register(SW_URL, { scope: SCOPE });
+    shareToken();
+    return reg;
   } catch {
     return null;
   }

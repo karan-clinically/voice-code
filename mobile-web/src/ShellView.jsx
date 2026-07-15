@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { sessionScreenPlain, sessionInput, launchClaudeIn, sayUrl } from './lib/api.js';
+import { sessionScreenPlain, sessionInput, launchClaudeIn, launchHermesIn, sayUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { DictationMic, Terminal } from './components.jsx';
 
 // Shell session: navigate with cd/ls (type or voice), hear the current
-// directory, then launch Claude in place.
+// directory, then launch an agent in place.
 export default function ShellView({ session, onLaunched, onBack, notify }) {
   const [cmd, setCmd] = useState('');
   const [cwd, setCwd] = useState(session.cwd || '');
@@ -45,13 +45,14 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
       notify(e.message);
     }
   }
-  async function launch() {
+  async function launch(agent = 'claude') {
     setLaunching(true);
     try {
-      await launchClaudeIn(session.id);
+      if (agent === 'hermes') await launchHermesIn(session.id);
+      else await launchClaudeIn(session.id);
       setTimeout(() => {
         setLaunching(false);
-        onLaunched({ ...session, kind: 'claude', cwd });
+        onLaunched({ ...session, kind: agent, cwd });
       }, 3000);
     } catch (e) {
       setLaunching(false);
@@ -70,7 +71,8 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
         <button onClick={() => run('ls')}>ls</button>
         <button onClick={() => run('cd ..')}>cd ..</button>
         <button onClick={whereami}>🔊 Where am I</button>
-        <button className="primary" onClick={launch} disabled={launching}>🚀 Launch Claude</button>
+        <button className="primary" onClick={() => launch('hermes')} disabled={launching}>🚀 Launch Hermes/Grok</button>
+        <button onClick={() => launch('claude')} disabled={launching}>Launch Claude</button>
       </div>
       <div className="sv-bar">
         <DictationMic className="micbtn" text={cmd} setText={setCmd} notify={notify} />
@@ -89,7 +91,7 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
         />
         <button className="primary sv-send" onClick={() => run(cmd.trim())}>Run</button>
       </div>
-      <div className={'sv-state' + (launching ? ' busy' : '')}>{launching ? 'launching Claude…' : cwd}</div>
+      <div className={'sv-state' + (launching ? ' busy' : '')}>{launching ? 'launching agent…' : cwd}</div>
     </div>
   );
 }
