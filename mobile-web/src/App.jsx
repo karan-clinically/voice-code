@@ -12,9 +12,12 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [error, setError] = useState('');
 
-  const notify = (m) => {
-    setError(m);
-    setTimeout(() => setError(''), 6000);
+  // App-wide toast. Everything funnels through here as an error by default;
+  // pass kind 'info' for neutral notices (e.g. the permission-mode switcher) so
+  // they don't dress up as failures — info also clears faster.
+  const notify = (m, kind = 'err') => {
+    setError({ text: m, kind });
+    setTimeout(() => setError(''), kind === 'err' ? 6000 : 2500);
   };
   const goHome = () => {
     setSession(null);
@@ -70,8 +73,11 @@ export default function App() {
   return (
     <>
       {error && (
-        <div className="banner err" style={{ position: 'fixed', top: 8, left: 12, right: 12, zIndex: 100, margin: 0 }}>
-          {error}
+        <div
+          className={'banner ' + (error.kind === 'info' ? 'info' : 'err')}
+          style={{ position: 'fixed', top: 8, left: 12, right: 12, zIndex: 100, margin: 0 }}
+        >
+          {error.text}
         </div>
       )}
       {route === 'home' && <Home onOpen={openSession} onHistory={() => setRoute('history')} notify={notify} />}

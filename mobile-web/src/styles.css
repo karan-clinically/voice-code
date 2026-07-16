@@ -224,6 +224,7 @@ button.ghost:hover { background: var(--surface-2); }
 .banner { border-radius: var(--radius); padding: 11px 14px; font-size: 14px; margin-top: 12px;
   background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text); }
 .banner.err { background: var(--error-bg); border-color: #fecaca; color: #b91c1c; }
+.banner.info { background: var(--accent-tint); border-color: var(--accent); color: var(--accent); }
 
 /* session cards grid */
 .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
@@ -575,6 +576,11 @@ button.ghost:hover { background: var(--surface-2); }
 .cbtn.send { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .cbtn.stop { background: var(--error); color: #fff; border-color: var(--error); }
 .cbtn.rec { color: var(--error); border-color: var(--error); background: var(--error-bg); animation: pulse 1.1s infinite; }
+/* Permission-mode switcher in the row — same palette as the mode pill so the tint
+   itself says which mode is active (Ask stays neutral like its siblings). */
+.cbtn.cbtn-mode.mode-auto   { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); }
+.cbtn.cbtn-mode.mode-plan   { color: #1d4ed8; border-color: #93c5fd; background: #eff6ff; }
+.cbtn.cbtn-mode.mode-bypass { color: #b91c1c; border-color: #fecaca; background: var(--error-bg); }
 
 /* ⋯ overflow in the composer bar — holds the permission-mode pill + read-aloud so
    the bar fits on a narrow phone. Popover opens upward, right-aligned to the ⋯. */

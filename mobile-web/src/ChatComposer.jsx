@@ -7,11 +7,21 @@ import SlashCommands from './SlashCommands.jsx';
 
 const MODES = ['ask', 'auto', 'plan', 'bypass'];
 const MODE_LABEL = { ask: 'Ask', auto: 'Auto', plan: 'Plan', bypass: 'Bypass' };
+// Row-button glyphs — the mode switcher sits in the control row (the phone's
+// Shift+Tab), so each mode needs a shape you can tell apart at a glance.
+const MODE_ICON = { ask: '🛡', auto: '✏️', plan: '🗺', bypass: '⚡' };
+const MODE_TOAST = {
+  ask: 'Ask — confirms before acting',
+  auto: 'Auto — accepts edits',
+  plan: 'Plan — read-only, plans first',
+  bypass: 'Bypass — no permission prompts',
+};
 
 // The "code container" input (phone): rounded card with the text field on top and
-// a control row — mic · "/" · attach · ⋯ · send/stop. The less-used controls
-// (permission mode pill + 🔊/📖 read-aloud) live behind the ⋯ overflow so the bar
-// fits a narrow phone. Shared by Chat and Terminal so both views are identical.
+// a control row — mic · "/" · attach · mode · ⋯ · send/stop. The mode button is the
+// phone's Shift+Tab (tap to cycle permission modes, toast on switch); less-used
+// controls (🔊/📖 read-aloud) live behind the ⋯ overflow so the bar fits a narrow
+// phone. Shared by Chat and Terminal so both views are identical.
 // Terminal adds one extra button (⌨ keypad, via onKeypad) that Chat doesn't have.
 export default function ChatComposer({
   session,
@@ -74,7 +84,9 @@ export default function ChatComposer({
   }
 
   async function cycleMode() {
-    setMode((m) => MODES[(MODES.indexOf(m) + 1) % MODES.length]); // optimistic
+    const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+    setMode(next); // optimistic; the 400ms re-read corrects if the TUI landed elsewhere
+    notify(`${MODE_ICON[next]} ${MODE_TOAST[next]}`, 'info');
     try {
       await sessionKey(session.id, 'cycle-mode');
       setTimeout(refreshMode, 400);
@@ -173,8 +185,23 @@ export default function ChatComposer({
             ⌨
           </button>
         )}
-        {/* Less-used controls (permission mode + read-aloud) tuck behind ⋯ so the bar
-            fits on a narrow phone. */}
+        {/* Permission-mode switcher — the phone's Shift+Tab. One tap cycles
+            Ask → Auto → Plan → Bypass; the glyph + tint show the current mode and a
+            toast announces each switch. First-class in the row (not in ⋯) because
+            mode changes are frequent mid-conversation. */}
+        {!(isGrok || isCodex) && (
+          <button
+            type="button"
+            className={'cbtn cbtn-mode mode-' + mode}
+            onClick={cycleMode}
+            aria-label={`Permission mode: ${MODE_LABEL[mode]} — tap to cycle`}
+            title={`${MODE_LABEL[mode]} mode — tap to cycle (Shift+Tab)`}
+          >
+            {MODE_ICON[mode]}
+          </button>
+        )}
+        {/* Less-used controls (read-aloud) tuck behind ⋯ so the bar fits a narrow
+            phone. */}
         <div className="composer-more-wrap">
           <button
             type="button"
@@ -189,11 +216,7 @@ export default function ChatComposer({
             <>
               <div className="composer-more-backdrop" onClick={() => setShowMore(false)} />
               <div className="composer-more" role="menu">
-                {!(isGrok || isCodex) ? (
-                  <button className={'mode-pill mode-' + mode} onClick={cycleMode}>
-                    <span className="mode-zap">⚡</span> {MODE_LABEL[mode]}
-                  </button>
-                ) : (
+                {(isGrok || isCodex) && (
                   <div className="mode-pill" title={`${agentLabel} terminal session`}>{agentLabel}</div>
                 )}
                 <button
