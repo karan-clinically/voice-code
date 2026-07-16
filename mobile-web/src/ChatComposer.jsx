@@ -51,9 +51,14 @@ export default function ChatComposer({
   // A pending prompt still reads as "busy", so it has to override the stop state.
   const showStop = allowEmptySend ? isBusy && !promptPending && !text.trim() : isBusy;
 
+  // True while a tap's mode switch awaits server confirmation. The 4s poll keeps
+  // running during that window, and a poll that left BEFORE the key landed comes
+  // back carrying the old mode — letting it setMode would stomp the switch right
+  // back (the "toggles then reverts" bug). Gate it out while cycling.
+  const cycling = useRef(false);
   const refreshMode = useCallback(() => {
-    if (isGrok || isCodex) return; // non-Claude agents have no Claude permission-mode footer
-    sessionMode(session.id).then((r) => r?.mode && setMode(r.mode)).catch(() => {});
+    if (isGrok || isCodex || cycling.current) return; // non-Claude agents have no mode footer
+    sessionMode(session.id).then((r) => { if (!cycling.current && r?.mode) setMode(r.mode); }).catch(() => {});
   }, [session.id, isGrok, isCodex]);
 
   useEffect(() => {
@@ -83,16 +88,30 @@ export default function ChatComposer({
     insert(c.bucket === 'args' ? c.cmd + ' ' : c.cmd);
   }
 
+  // Confirmed, not optimistic: send the key, then poll until the TUI footer
+  // actually reports a different mode (idle and busy sessions both flip within
+  // ~300ms), and only then move the icon + toast. An optimistic flip here lied
+  // whenever an in-flight background poll raced the tap and reverted it.
   async function cycleMode() {
-    const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
-    setMode(next); // optimistic; the 400ms re-read corrects if the TUI landed elsewhere
-    notify(`${MODE_ICON[next]} ${MODE_TOAST[next]}`, 'info');
+    if (cycling.current) return; // one confirmed step per tap
+    cycling.current = true;
+    const prev = mode;
     try {
       await sessionKey(session.id, 'cycle-mode');
-      setTimeout(refreshMode, 400);
+      for (const wait of [350, 450, 700]) {
+        await new Promise((r) => setTimeout(r, wait));
+        const m = (await sessionMode(session.id))?.mode;
+        if (m && m !== prev) {
+          setMode(m);
+          notify(`${MODE_ICON[m]} ${MODE_TOAST[m]}`, 'info');
+          return;
+        }
+      }
+      notify('Mode didn’t switch — try again in a moment');
     } catch (e) {
       notify(e.message);
-      refreshMode();
+    } finally {
+      cycling.current = false;
     }
   }
 
