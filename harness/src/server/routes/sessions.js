@@ -10,6 +10,7 @@
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { resolve, join, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Router } from 'express';
 import multer from 'multer';
 import db, { UPLOADS_DIR } from '../../db.js';
@@ -17,13 +18,15 @@ import { getConfig } from '../../config.js';
 import {
   listSessions, getSession, createSession, killSession, renameSession,
   sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, setKind,
-  getPtyId, markState, reusableSession, recordReuse,
+  getPtyId, markState, reusableSession, recordReuse, setModel, latestSessionByClaudeId,
 } from '../../services/sessionManager.js';
+import { MODEL_OPTIONS } from '../../services/models.js';
 import { isLocalhost } from '../auth.js';
 import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
 import { bridgeSuffixMap, liveClaudeSessions } from '../../services/claudeSessions.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
+import { listGrokConversations, getGrokMeta, deleteGrokConversation, isGrokConvId } from '../../services/grokArchive.js';
 import { getRemoteSlug } from '../../services/terminal.js';
 import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
 import { getLiveConversation, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
@@ -31,6 +34,7 @@ import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt } from '../../services/prompt.js';
 import { buildReplyResponse, recordUserInteraction } from '../../services/reply.js';
 import { makeLogger } from '../../util/logger.js';
+import { getAdapter } from '../../agents/registry.js';
 
 const log = makeLogger('sessions-route');
 const router = Router();
@@ -96,10 +100,14 @@ function repoSlug(cwd) {
 const baseName = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
 // Normalised path for equality (Windows: case-insensitive, no trailing slash).
 const norm = (p) => (p ? resolve(p) : '').replace(/[\\/]+$/, '').toLowerCase();
-const AGENT_LABELS = { claude: 'Claude', hermes: 'Hermes/Grok', shell: 'Shell' };
+const AGENT_LABELS = { claude: 'Claude', grok: 'Grok', codex: 'Codex', shell: 'Shell' };
+const GROK_AGENT = fileURLToPath(new URL('../../agents/grokAgent.js', import.meta.url));
+const psQuote = (s) => String(s).replace(/`/g, '``').replace(/"/g, '`"');
 
 function normalizeKind(raw) {
-  return raw === 'shell' || raw === 'hermes' ? raw : 'claude';
+  const id = String(raw || 'claude').trim().toLowerCase();
+  if (!getAdapter(id)) throw new Error(`unknown AI CLI provider: ${id}`);
+  return id;
 }
 
 // The remote-control bridge can reconnect a session without a clean handoff,
@@ -178,7 +186,11 @@ router.get('/recent', (req, res) => {
   const agentCwds = new Set(bgList.filter((a) => a.cwd).map((a) => norm(a.cwd)));
   const harness = listSessions()
     .filter((s) => s.alive)
-    .filter((s) => !(s.cwd && agentCwds.has(norm(s.cwd))))
+    // Only hide Claude agent-view peek PTYs that duplicate a background-agent row.
+    // Native Grok sessions can share a cwd with those worktrees and must remain
+    // visible/attachable; otherwise a successfully-resumed Grok conversation still
+    // appears as a stale "Saved" row and looks like resume failed.
+    .filter((s) => !(s.kind === 'claude' && s.cwd && agentCwds.has(norm(s.cwd))))
     .map((s) => ({
       key: 'h' + s.id,
       kind: 'harness',
@@ -199,14 +211,16 @@ router.get('/recent', (req, res) => {
       ts: s.last_seen_at,
       harnessId: s.id,
       alive: true,
-      // On claude.ai only once its Claude has bridged. Shell/Hermes sessions are
+      // On claude.ai only once its Claude has bridged. Shell/Grok sessions are
       // local harness PTYs and are reachable through Voice Harness/Tailscale only.
       remote: s.kind === 'claude' && !!(s.claude_session_id && bridgedUuids.has(s.claude_session_id)),
       remoteReason:
         s.kind === 'shell'
           ? 'A shell runs only on this PC — remote control is for Claude sessions.'
-          : s.kind === 'hermes'
-          ? 'Hermes/Grok runs inside this harness PTY and is reachable from the phone via Voice Harness/Tailscale, not claude.ai remote control.'
+          : s.kind === 'grok'
+          ? 'Grok runs inside this harness PTY using Voice Harness tools and is reachable from the phone via Voice Harness/Tailscale, not claude.ai remote control.'
+          : s.kind === 'codex'
+          ? 'Codex runs inside this harness PTY using the OpenAI Codex CLI and is reachable from the phone via Voice Harness/Tailscale, not claude.ai remote control.'
           : s.claude_session_id && bridgedUuids.has(s.claude_session_id)
           ? null
           : 'Started on this PC and not yet bridged to claude.ai, so it only shows here. You can drive it from the app; it appears in claude.ai remote control once its bridge connects.',
@@ -256,16 +270,27 @@ router.get('/recent', (req, res) => {
       if (openUuid && harnessUuids.has(openUuid)) return null;
 
       const cwd = local?.cwd || meta?.cwd || null;
+      // A conversation the harness itself started (phone/PC) can reappear on this
+      // path purely via its still-live claude.ai bridge after its PTY died. Recognise
+      // it by UUID so it keeps the Phone/PC badge and its real title instead of
+      // reading as an anonymous "Remote control" row — otherwise you can't pick your
+      // own sessions out of the list. Not for background agents (they own their badge).
+      const owned = !bg && openUuid ? latestSessionByClaudeId(openUuid) : null;
+      const ownedOrigin = owned && owned.origin === 'remote' ? 'phone'
+        : owned && owned.origin === 'harness' ? 'pc' : null;
       return {
         key: 'c' + s.id,
         kind: 'code',
         attachable: false, // harness can't attach — opening it BRANCHES the conversation
-        name: bg?.name || s.title || (openUuid ? openUuid.slice(0, 8) : s.suffix.slice(0, 8)),
+        name: bg?.name || (ownedOrigin && owned.label) || s.title || (openUuid ? openUuid.slice(0, 8) : s.suffix.slice(0, 8)),
         connected: s.connected,
         active: bg ? bg.state === 'working' : s.working,
         unread: s.unread,
-        origin: s.envKind === 'anthropic_cloud' ? 'cloud' : 'terminal',
-        originLabel: bg ? 'Background agent' : s.envKind === 'anthropic_cloud' ? 'Cloud' : 'Remote control',
+        origin: ownedOrigin || (s.envKind === 'anthropic_cloud' ? 'cloud' : 'terminal'),
+        originLabel: bg ? 'Background agent'
+          : ownedOrigin === 'phone' ? 'Phone'
+          : ownedOrigin === 'pc' ? 'This PC'
+          : s.envKind === 'anthropic_cloud' ? 'Cloud' : 'Remote control',
         repo: s.repo || repoSlug(bg?.cwd || cwd) || null,
         branch: s.branch || meta?.gitBranch || null,
         cwd: bg?.cwd || cwd,
@@ -331,8 +356,39 @@ router.get('/recent', (req, res) => {
       };
     });
 
+  // ---- SAVED GROK: a native Grok conversation whose PTY is gone ----
+  // Grok isn't a Claude transcript, so it never appears in History; its saved
+  // context file is the only record. Surface each one that isn't currently live as a
+  // resumable row (tap = reopen a Grok PTY with its memory restored). A live Grok
+  // session already shows in the harness bucket (its conv id is in harnessUuids).
+  const grokSaved = listGrokConversations()
+    .filter((c) => !harnessUuids.has(c.id))
+    .map((c) => ({
+      key: 'g' + c.id,
+      kind: 'grok-saved',
+      attachable: false, // harness spawns a fresh PTY that loads the saved context
+      resumeGrok: c.id,
+      name: c.title,
+      connected: false,
+      active: false,
+      unread: false,
+      origin: 'saved',
+      originLabel: 'Saved Grok conversation',
+      agentKind: 'grok',
+      agentLabel: 'Grok',
+      repo: repoSlug(c.cwd) || null,
+      branch: null,
+      cwd: c.cwd,
+      sessionId: c.id,
+      ts: c.updatedAt,
+      remote: false,
+      remoteReason: 'A saved Grok conversation — tap to resume it here with its memory restored.',
+    }));
+
   // Newest first — the client buckets by day like the Claude app.
-  const sessions = [...harness, ...remote, ...local].sort((a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0));
+  const sessions = [...harness, ...remote, ...local, ...grokSaved].sort(
+    (a, b) => Date.parse(b.ts || 0) - Date.parse(a.ts || 0)
+  );
   res.json({ sessions });
 });
 
@@ -342,6 +398,20 @@ router.get('/recent', (req, res) => {
 // as a running claude (never an arbitrary process), and it must be UNbridged — a
 // bridged session is one you're actively driving (incl. this very conversation), so
 // it's off-limits. /T tears down the session's own child processes with it.
+// Forget a saved Grok conversation. A `grok-saved` row is backed by a context file,
+// not a process, so /:id/kill and swipe-to-kill can't touch it — without this it is a
+// card you can never clear. Refuses while the conversation is live: its PTY owns the
+// file and would write it straight back. Registered before '/:id' so that route (a
+// numeric db id) can't swallow the path.
+router.delete('/grok/:id', (req, res) => {
+  const id = req.params.id;
+  if (!isGrokConvId(id)) return res.status(400).json({ error: 'not a conversation id' });
+  const live = listSessions().find((s) => s.alive && s.kind === 'grok' && s.claude_session_id === id);
+  if (live) return res.status(409).json({ error: 'conversation is live — close its session first' });
+  if (!deleteGrokConversation(id)) return res.status(404).json({ error: 'saved conversation not found' });
+  res.json({ ok: true, id });
+});
+
 router.post('/kill-local', (req, res) => {
   const pid = Number(req.body?.pid) | 0;
   if (!pid) return res.status(400).json({ error: 'pid required' });
@@ -357,8 +427,33 @@ router.post('/kill-local', (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const kind = normalizeKind(req.body?.kind);
+    const kind = normalizeKind(req.body?.providerId || req.body?.kind);
     const base = getConfig('mobile_base_dir', 'C:\\AI');
+
+    // Resume a saved Grok conversation: reopen a Grok PTY bound to the same conv id
+    // so the agent reloads its context file. Reuse a live/already-opened one instead
+    // of stacking PTYs. The cwd comes from the saved conversation.
+    const resumeGrok = (req.body?.resumeGrok || '').trim() || null;
+    if (resumeGrok) {
+      const meta = getGrokMeta(resumeGrok);
+      if (!meta) return res.status(404).json({ error: 'saved Grok conversation not found' });
+      const openLive = listSessions().find(
+        (s) => s.alive && s.kind === 'grok' && s.claude_session_id === resumeGrok
+      );
+      if (openLive) return res.json(openLive); // already live — attach in place
+      const reuseKey = `grok:${resumeGrok}`;
+      const existing = reusableSession(reuseKey);
+      if (existing) return res.json(existing);
+      // The saved cwd may have been moved/deleted since; node-pty throws on a missing
+      // spawn dir, so fall back to the projects base (the conversation still resumes).
+      const savedCwd = resolve((meta.cwd || base).replace(/["']/g, ''));
+      const grokCwd = existsSync(savedCwd) && statSync(savedCwd).isDirectory() ? savedCwd : resolve(base);
+      const origin = isLocalhost(req) ? 'harness' : 'remote';
+      const session = await createSession({ cwd: grokCwd, label: meta.title, kind: 'grok', grokConv: resumeGrok, origin });
+      recordReuse(reuseKey, session.id);
+      return res.status(201).json(session);
+    }
+
     // cwd optional: defaults to the projects base (handy for phone shell sessions).
     // Strip quotes (Windows paths can't contain them) — users often type/dictate
     // a shell-style quoted path like C:\AI\'voice harness'.
@@ -371,21 +466,33 @@ router.post('/', async (req, res) => {
     // `claude --continue` (from the hclaude alias) → a harness-owned session that
     // resumes the most-recent conversation in cwd, so terminal + phone share it.
     const continueSession = req.body?.continue === true;
-    // `claude -c` means "continue the work here". If the harness ALREADY owns a live
-    // claude session in this cwd, that IS the conversation — attach to it rather than
-    // spawning a second process, which would silently diverge from it (the fork
-    // problem again, just from the terminal side). Matched on a normalised cwd, so a
-    // casing difference (C:\ai\… vs C:\AI\…) can't miss.
-    if (continueSession) {
-      const open = listSessions()
-        .filter((s) => s.alive && s.kind === kind && s.cwd && norm(s.cwd) === norm(cwd))
-        .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
-      if (open) return res.json(open); // 200 = reused, not created
-    }
+    // If the harness ALREADY owns a live session for this agent in this cwd, that IS
+    // the working terminal — attach to it rather than silently spawning a second PTY.
+    // This is mandatory for Grok/Codex because the phone's "Start <agent> here"
+    // button feels like "go into that agent for this folder", not "create a
+    // parallel PTY every tap".
+    // Claude included: a second Claude PTY in a folder that already has a live one
+    // is never what the tap meant, and it actively breaks the session list. Both
+    // PTYs can converge on one conversation (the newer one resumes it), but a row's
+    // UUID only refreshes for whichever row the Stop hook binds to — so the other
+    // row keeps a stale UUID, escapes the by-UUID dedupe, and shows up as a second
+    // card that resumes an older fork of the same chat.
+    const open = listSessions()
+      .filter((s) => s.alive && s.kind === kind && s.cwd && norm(s.cwd) === norm(cwd))
+      .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
+    if (open) return res.json(open); // 200 = reused, not created
     // A localhost request is the desktop app on the PC (in the harness); anything
     // else reached us over Tailscale with a bearer token (remote control).
     const origin = isLocalhost(req) ? 'harness' : 'remote';
-    const session = await createSession({ cwd, label, kind, continueSession, origin });
+    const session = await createSession({
+      cwd,
+      label,
+      providerId: kind,
+      externalSessionId: req.body?.externalSessionId || null,
+      credentialRef: req.body?.credentialRef || null,
+      continueSession,
+      origin,
+    });
     res.status(201).json(session);
   } catch (err) {
     log.error(`create session error: ${err.message}`);
@@ -528,7 +635,12 @@ router.post('/:id/key', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
-  const seq = KEY_SEQS[req.body?.key];
+  // Named key, or a short raw sequence — the phone's fallback when its /ws/term key
+  // channel is down (harness restart, zombie socket), so answering a prompt still
+  // works instead of the keystroke silently vanishing. Same trust level as the raw
+  // WS channel: both arrive through auth.js (localhost or bearer token).
+  const raw = typeof req.body?.seq === 'string' && req.body.seq.length > 0 && req.body.seq.length <= 32;
+  const seq = KEY_SEQS[req.body?.key] || (raw ? req.body.seq : null);
   if (!seq) return res.status(400).json({ error: 'unknown key' });
   try {
     sendRawKey(req.params.id, seq);
@@ -612,6 +724,25 @@ router.post('/:id/resize', (req, res) => {
   }
 });
 
+// Switch the session's model. `session.model` (from listSessions/getSession)
+// already carries the current value — set optimistically here, then corrected
+// once Claude's own confirmation line lands (see sessionManager.js).
+router.post('/:id/model', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  if (session.kind !== 'claude') return res.status(400).json({ error: 'model switching is Claude-only' });
+  const opt = MODEL_OPTIONS.find((m) => m.alias === req.body?.alias);
+  if (!opt) return res.status(400).json({ error: 'unknown model' });
+  try {
+    await sendInput(req.params.id, `/model ${opt.alias}`, { submit: true });
+    setModel(req.params.id, opt.label);
+    res.json({ ok: true, model: opt.label });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Current permission mode, read off the TUI footer.
 router.get('/:id/mode', async (req, res) => {
   const session = getSession(req.params.id);
@@ -664,11 +795,48 @@ router.get('/:id/screen', async (req, res) => {
     const full = req.query.full === '1' || req.query.full === 'true';
     const color = req.query.color === '1' || req.query.color === 'true';
     const screen = await readScreen(req.params.id, { full });
-    const resp = { screen, promptCwd: parsePromptCwd(screen) };
+    const promptScreen = full ? await readScreen(req.params.id, { full: false }) : screen;
+    const resp = { screen, promptCwd: parsePromptCwd(promptScreen) };
     // Full view = a real terminal's worth of scrollback, not just the last screen.
-    if (color) resp.html = await readScreenColored(req.params.id, { full, maxLines: full ? 4000 : 600 });
+    // Keep the cap aligned with terminal.js's larger resume scrollback so historical
+    // transcript seed text is actually reachable from the phone.
+    if (color) resp.html = await readScreenColored(req.params.id, { full, maxLines: full ? 20000 : 600 });
     res.json(resp);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Provider-neutral shell handoff. A new provider-owned PTY is spawned in the
+// shell's current directory and the navigation shell is closed. This keeps
+// credentials out of visible shell command lines and works for manifest agents
+// without teaching this router their executable syntax.
+router.post('/:id/launch-provider', async (req, res) => {
+  const shell = getSession(req.params.id);
+  if (!shell) return res.status(404).json({ error: 'session not found' });
+  if (!shell.alive) return res.status(409).json({ error: 'session is not alive' });
+  if (shell.kind !== 'shell') return res.status(409).json({ error: 'session is not a navigation shell' });
+  let providerId;
+  try {
+    providerId = normalizeKind(req.body?.providerId);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (providerId === 'shell') return res.status(400).json({ error: 'choose an AI CLI provider' });
+  try {
+    const screen = await readScreen(shell.id, { full: false });
+    const cwd = parsePromptCwd(screen) || shell.cwd;
+    const adapter = getAdapter(providerId);
+    const session = await createSession({
+      cwd,
+      label: req.body?.label || `${baseName(cwd)} · ${adapter.name}`,
+      providerId,
+      origin: shell.origin || (isLocalhost(req) ? 'harness' : 'remote'),
+    });
+    killSession(shell.id);
+    res.status(201).json(session);
+  } catch (err) {
+    log.error(`provider handoff failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -687,16 +855,32 @@ router.post('/:id/launch-claude', async (req, res) => {
   }
 });
 
-// Launch Hermes Agent (OpenRouter Grok 4.5) inside a shell session, then treat
-// it as a Hermes session. This mirrors launch-claude but keeps model/provider
-// explicit so the phone always starts the intended coding agent.
-router.post('/:id/launch-hermes', async (req, res) => {
+// Launch the native Voice Harness Grok coding agent inside a shell session,
+// then treat it as a Grok session. The agent inherits the shell's current
+// directory as its project root.
+router.post('/:id/launch-grok', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
   try {
-    await sendInput(req.params.id, 'hermes chat --provider openrouter -m x-ai/grok-4.5 --source voice-harness', { submit: true });
-    setKind(req.params.id, 'hermes');
+    await sendInput(req.params.id, `$env:CVH_PROJECT_ROOT=(Get-Location).Path; & "${psQuote(process.execPath)}" "${psQuote(GROK_AGENT)}" (Get-Location).Path`, { submit: true });
+    setKind(req.params.id, 'grok');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Launch OpenAI Codex CLI inside a shell session, then treat it as a Codex session.
+// Codex auth is handled by the CLI itself (ChatGPT/Codex subscription login), not by
+// Voice Harness API-key storage.
+router.post('/:id/launch-codex', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  try {
+    await sendInput(req.params.id, 'npx -y @openai/codex --yolo', { submit: true });
+    setKind(req.params.id, 'codex');
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions } from './lib/api.js';
+import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKeySeq } from './lib/api.js';
 import { ATTENTION_SHORT, isAlert } from './lib/attention.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { Terminal, basename } from './components.jsx';
@@ -36,6 +36,9 @@ const VIEWS = [
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
 // code is retained in lib/audio.js but not surfaced here.
 export default function SessionView({ session, onBack, onOpen, notify }) {
+  const isGrok = (session.kind || '') === 'grok';
+  const isCodex = (session.kind || '') === 'codex';
+  const hasChat = session.capabilities?.chat !== false;
   const [state, setState] = useState(session.state || 'idle');
   const [lastReply, setLastReply] = useState(''); // for the composer's 🔊/📖 replay buttons
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
@@ -101,6 +104,19 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
     } catch (e) {
       setMuted(!next);
       notify?.(e.message);
+    }
+  }
+
+  async function endSession() {
+    setShowMenu(false);
+    const name = title || label || basename(session.cwd) || `Session ${session.id}`;
+    if (!window.confirm(`End "${name}"?\n\nThis stops the session everywhere — phone, desktop terminal, and any attached agent process.`)) return;
+    try {
+      await killSession(session.id);
+      stopAudio();
+      onBack();
+    } catch (e) {
+      notify?.('End session failed: ' + e.message);
     }
   }
 
@@ -197,12 +213,30 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       sendRaw('\r');
       return;
     }
+    // Codex is an interactive terminal app; until we add a Codex-specific
+    // completion parser/hook, send everything as raw terminal input and keep the
+    // phone attached to the live PTY.
+    if (!hasChat) {
+      ding('sent');
+      sendRaw(norm);
+      setTimeout(() => sendRaw('\r'), 120);
+      return;
+    }
+    // Grok local slash commands (/help, /cwd, /exit) stay in the agent REPL.
+    // Everything else goes through /api/command so completion, chat log, TTS and
+    // push notifications work the same as Claude.
+    if (isGrok && /^\/(help|cwd|exit|quit)\b/i.test(norm)) {
+      ding('sent');
+      sendRaw(norm);
+      setTimeout(() => sendRaw('\r'), 120);
+      return;
+    }
     // Slash commands drive Claude Code's own TUI menu. The prompt pipeline
     // (/api/command) mishandles that menu, so send them as raw keystrokes over
     // /ws/term (exactly like the desktop terminal): type it, then Enter once the
     // menu has filtered. The screen poll shows the result.
     ding('sent'); // immediate "it went through" cue on every send
-    if (norm.startsWith('/')) {
+    if (!isGrok && norm.startsWith('/')) {
       sendRaw(norm);
       setTimeout(() => sendRaw('\r'), 200);
       return;
@@ -214,42 +248,73 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   // dialogs, "press Enter", multi-select menus). Reuses the deployed /ws/term
   // raw transport, so Enter/arrows/Space/Esc all work without a real keyboard.
   const keyWs = useRef(null);
+  const keyReconnect = useRef(null); // set by the effect; sendRaw uses it to rewire after a fallback
   useEffect(() => {
     if (mode !== 'terminal') return undefined;
     let stop = false;
+    let pongDue = null;
     // Locking the phone suspends the tab and the OS kills this socket; without a
     // rewire, sendRaw reports "Key channel not ready" after every unlock. Reconnect
-    // on close (while awake) and on the visibility flip back to foreground.
+    // on close (while awake) and on the visibility flip back to foreground. The
+    // ping/pong catches a ZOMBIE socket (died without a FIN, stays OPEN forever) —
+    // without it, keystrokes go into the void with readyState still saying 1.
     const connect = () => {
       if (stop) return;
       const ws = new WebSocket(termWsUrl(session.id));
       keyWs.current = ws;
+      ws.onmessage = (e) => {
+        try { if (JSON.parse(e.data).t === 'pong') { clearTimeout(pongDue); pongDue = null; } } catch { /* ignore */ }
+      };
       ws.onclose = () => {
+        clearTimeout(pongDue); pongDue = null;
         if (keyWs.current === ws) keyWs.current = null;
         if (!stop && !document.hidden) setTimeout(connect, 1500);
       };
     };
+    keyReconnect.current = connect;
+    const pinger = setInterval(() => {
+      const ws = keyWs.current;
+      if (stop || document.hidden || !ws || ws.readyState !== 1 || pongDue) return;
+      try { ws.send(JSON.stringify({ t: 'ping' })); } catch { return; }
+      pongDue = setTimeout(() => { pongDue = null; try { ws.close(); } catch { /* dead */ } }, 8000);
+    }, 20000);
     const onVisible = () => {
       if (stop || document.hidden) return;
       const ws = keyWs.current;
       if (!ws || ws.readyState > 1) connect(); // socket died while backgrounded
     };
     document.addEventListener('visibilitychange', onVisible);
+    // iOS bfcache restores can fire pageshow with no visibilitychange.
+    window.addEventListener('pageshow', onVisible);
     connect();
     return () => {
       stop = true;
+      clearInterval(pinger);
+      clearTimeout(pongDue);
+      keyReconnect.current = null;
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', onVisible);
       try { keyWs.current?.close(); } catch { /* ignore */ }
       keyWs.current = null;
     };
   }, [session.id, mode]);
   const sendRaw = (seq) => {
     const ws = keyWs.current;
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'in', d: seq }));
-    else notify('Key channel not ready — try again');
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ t: 'in', d: seq }));
+      return;
+    }
+    // Channel down (harness restart, zombie socket): deliver over HTTP so the
+    // keystroke lands anyway, and rewire the socket for the next one.
+    sessionKeySeq(session.id, seq).catch((e) => notify('Key failed: ' + e.message));
+    keyReconnect.current?.();
   };
 
   const stateCls = 'sv-state' + (state === 'working…' ? ' busy' : state === 'ready' ? ' ready' : '');
+  // Grok shares the command/chat/voice pipeline as Claude (turn-complete hook).
+  // Codex is terminal-first for now: no chat/voice views until we add a Codex
+  // completion hook/parser.
+  const viewOptions = hasChat ? VIEWS : VIEWS.filter((v) => v.id === 'terminal');
 
   return (
     <div className="session-view">
@@ -275,7 +340,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
             <div className="sv-menu-backdrop" onClick={() => setShowMenu(false)} />
             <div className="sv-menu" role="menu">
               <div className="sv-menu-head">View</div>
-              {VIEWS.map((v) => (
+              {viewOptions.map((v) => (
                 <button
                   key={v.id}
                   className="sv-menu-item"
@@ -298,6 +363,12 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
                 <span className="sv-menu-ico">{muted ? '🔕' : '🔔'}</span>
                 <span className="sv-menu-label">Notifications</span>
                 <span className={'sv-menu-state' + (!muted ? ' on' : '')}>{muted ? 'Off' : 'On'}</span>
+              </button>
+              <div className="sv-menu-sep" />
+              <button className="sv-menu-item" role="menuitem" onClick={endSession}>
+                <span className="sv-menu-ico">🛑</span>
+                <span className="sv-menu-label">End session</span>
+                <span className="sv-menu-state">Kill</span>
               </button>
             </div>
           </>
@@ -330,7 +401,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
         />
       )}
 
-      {mode === 'chat' ? (
+      {hasChat && mode === 'chat' ? (
         <ChatView session={session} notify={notify} />
       ) : (
         <>
@@ -359,7 +430,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
             {state === 'working…' ? (
               <span className="sv-working">
                 <span className="cw-dot" /><span className="cw-dot" /><span className="cw-dot" />
-                Claude is working…
+                {isCodex ? 'Codex is working…' : isGrok ? 'Grok is working…' : 'Claude is working…'}
               </span>
             ) : state === 'ready' ? (
               '✓ Ready'

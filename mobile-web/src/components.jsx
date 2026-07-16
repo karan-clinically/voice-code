@@ -238,6 +238,12 @@ export function MicButton({ className, onBlob, notify }) {
 export function Terminal({ sessionId, className }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
+  // The session's PTY is gone (server sent {t:'exit'}). Shown as a banner over the
+  // stale screen instead of freezing silently; cleared the moment data flows again
+  // (a resumed conversation re-adopts the same db row, so it CAN come back).
+  const [ended, setEnded] = useState(false);
+  const endedRef = useRef(false);
+  useEffect(() => { endedRef.current = ended; }, [ended]);
   const [fontPx, setFontPx] = useState(() => {
     const v = parseInt(localStorage.getItem('cvh_term_font') || '', 10);
     return v >= 8 && v <= 22 ? v : 13;
@@ -311,10 +317,12 @@ export function Terminal({ sessionId, className }) {
         if (outer && inner && inner.dataset.h !== (html || '')) {
           const atBottom = outer.scrollHeight - outer.scrollTop - outer.clientHeight < 60;
           const sx = outer.scrollLeft; // preserve horizontal scroll across refreshes
+          const sy = outer.scrollTop; // preserve vertical scroll when reading history
           inner.innerHTML = html || '';
           inner.dataset.h = html || '';
           outer.scrollLeft = sx;
           if (atBottom) outer.scrollTop = outer.scrollHeight;
+          else outer.scrollTop = sy;
         }
       } catch {
         /* transient */
@@ -327,22 +335,47 @@ export function Terminal({ sessionId, className }) {
     // (no more 'data' events) and can freeze an in-flight paint's fetch so `busy`
     // never clears. Auto-reconnect on close, and — critically — treat the visibility
     // flip as the recovery trigger: clear the stuck guard, rewire the socket, repaint.
+    //
+    // Two failure modes need more than onclose:
+    //  - ZOMBIE socket: a connection that died without a FIN (Wi-Fi→cellular handoff,
+    //    harness host vanished) stays readyState OPEN forever and onclose never fires.
+    //    The app-level ping/pong below detects it: no pong within the deadline →
+    //    force-close → the normal onclose reconnect takes over.
+    //  - PTY gone: the server answers a connect for a dead session with {t:'exit'}.
+    //    Reconnecting at full speed just loops exit→close, so back off and surface it
+    //    (setEnded) — but keep probing, because a resumed conversation re-adopts the
+    //    SAME db row and this terminal must come back to life when it does.
     let ws = null;
-    const connect = () => {
+    let pongDue = null; // timer armed per ping; fires = no pong in time = zombie
+    const connect = (delayMs = 0) => {
       if (stop) return;
       try { ws?.close(); } catch { /* already gone */ }
-      try {
-        ws = new WebSocket(termWsUrl(sessionId));
-        ws.onmessage = (e) => {
-          try { if (JSON.parse(e.data).t === 'data') paint(); } catch { /* ignore */ }
-        };
-        ws.onclose = () => {
-          if (!stop && !document.hidden) setTimeout(connect, 1500); // dropped while awake — retry
-        };
-      } catch {
-        /* no socket — the backstop interval still drives the view */
-      }
+      const open = () => {
+        if (stop) return;
+        try {
+          ws = new WebSocket(termWsUrl(sessionId));
+          ws.onmessage = (e) => {
+            let m;
+            try { m = JSON.parse(e.data); } catch { return; }
+            if (m.t === 'data') { setEnded(false); paint(); }
+            else if (m.t === 'pong') { clearTimeout(pongDue); pongDue = null; }
+            else if (m.t === 'exit') { setEnded(true); }
+          };
+          ws.onclose = () => {
+            clearTimeout(pongDue); pongDue = null;
+            if (!stop && !document.hidden) setTimeout(() => connect(), endedRef.current ? 5000 : 1500);
+          };
+        } catch {
+          /* no socket — the backstop interval still drives the view */
+        }
+      };
+      delayMs ? setTimeout(open, delayMs) : open();
     };
+    const pinger = setInterval(() => {
+      if (stop || document.hidden || !ws || ws.readyState !== 1 || pongDue) return;
+      try { ws.send(JSON.stringify({ t: 'ping' })); } catch { return; }
+      pongDue = setTimeout(() => { pongDue = null; try { ws?.close(); } catch { /* dead */ } connect(); }, 8000);
+    }, 20000);
     const onVisible = () => {
       if (stop || document.hidden) return;
       busy = false; again = false; // unwedge a paint frozen by suspend
@@ -350,6 +383,9 @@ export function Terminal({ sessionId, className }) {
       paint(); // force an immediate catch-up repaint on resume
     };
     document.addEventListener('visibilitychange', onVisible);
+    // iOS Safari can restore the page from bfcache with only a pageshow — no
+    // visibilitychange — so without this the key/read sockets stay dead on resume.
+    window.addEventListener('pageshow', onVisible);
 
     connect();
     paint();
@@ -357,7 +393,10 @@ export function Terminal({ sessionId, className }) {
     return () => {
       stop = true;
       clearInterval(t);
+      clearInterval(pinger);
+      clearTimeout(pongDue);
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', onVisible);
       try { ws?.close(); } catch { /* already gone */ }
     };
   }, [sessionId]);
@@ -366,6 +405,11 @@ export function Terminal({ sessionId, className }) {
 
   return (
     <div className={'term-wrap ' + (className || '')}>
+      {ended && (
+        <div className="term-ended" role="status">
+          Session ended — the screen below is its last output. Go back to Sessions to resume.
+        </div>
+      )}
       <div className="term-fontctl">
         <button onClick={() => bump(-1)} aria-label="Smaller font">A−</button>
         <button onClick={() => bump(1)} aria-label="Larger font">A+</button>

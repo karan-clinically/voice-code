@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSwipeable } from 'react-swipeable';
-import { createSession, transcribe, usageSummary, recentSessions, reindexArchive, killLocal, killSession, sessionInput } from './lib/api.js';
+import { createSession, listProviders, transcribe, usageSummary, recentSessions, reindexArchive, killLocal, killSession, sessionInput, deleteGrokConv } from './lib/api.js';
 import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
 import { ATTENTION_TITLE, attentionOf } from './lib/attention.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
@@ -12,7 +12,7 @@ import SettingsModal from './SettingsModal.jsx';
 // of terminal Claude but NOT bridged — the harness can only offer to kill it, so it
 // gets its own tag to set it apart from an RC row. Reads at a glance without decoding
 // a glyph; the full label stays as the tag's title.
-const ORIGIN_TAG = { phone: 'Phone', pc: 'PC', terminal: 'RC', cloud: 'Cloud' };
+const ORIGIN_TAG = { phone: 'Phone', pc: 'PC', terminal: 'RC', cloud: 'Cloud', saved: 'Saved' };
 
 // Compact relative time, like the Claude Code app ("now", "4m", "8h", "3d").
 function shortAgo(ts) {
@@ -41,9 +41,10 @@ function dayBucket(ts) {
 // a claude the harness doesn't own, running in some terminal — get iOS-style
 // swipe-left-to-reveal a red Kill button, so you can clear the ones cluttering the
 // list. A left swipe reveals; a right swipe or a tap on the row hides it; tapping an
-// un-revealed row opens it as usual. Only `local` rows expose Kill (the backend
-// guards the pid), so you can't accidentally nuke an owned/active session.
-function SessionRow({ it, openable, onOpen, onKill, notify }) {
+// un-revealed row opens it as usual. The revealed action is Kill for anything with a
+// process the harness can end, and Delete for a saved Grok conversation (a file, not a
+// process). Rows the harness neither owns nor can pid-kill reveal nothing.
+function SessionRow({ it, openable, onOpen, onKill, onDelete, notify }) {
   const [revealed, setRevealed] = useState(false);
   const [rcSent, setRcSent] = useState(false);
   const swiped = useRef(false);
@@ -51,10 +52,15 @@ function SessionRow({ it, openable, onOpen, onKill, notify }) {
   // claude (by pid) OR a harness-OWNED session (by id). Sessions the harness neither
   // owns nor can pid-kill — cloud/remote-control rows from claude.ai — stay unkillable.
   const canKill = !!((it.local && it.pid) || (it.kind === 'harness' && it.harnessId));
+  // A saved Grok conversation has no process — "Kill" is meaningless. It's backed by a
+  // context file, and deleting that file is the only way to clear the row, so it gets a
+  // Delete action instead (worded differently: this discards the conversation itself).
+  const canDelete = it.kind === 'grok-saved';
+  const swipeable = canKill || canDelete;
   // Only a harness-OWNED (non-shell) session that hasn't bridged yet can have remote
   // control turned on from here: the harness owns its pty, so it can type /rc into it.
   // Orphan "Local" rows can't — the harness has no keyboard channel to them.
-  const canRc = it.kind === 'harness' && !it.shell && it.remote === false;
+  const canRc = it.kind === 'harness' && (it.agentKind || 'claude') === 'claude' && !it.shell && it.remote === false;
 
   // Send /rc into the session's pty to start the claude.ai remote-control bridge.
   // Optimistically flip to a "connecting" hint; the 5s poll re-fetches and, once the
@@ -75,8 +81,8 @@ function SessionRow({ it, openable, onOpen, onKill, notify }) {
   // `delta` fires onSwiped*, and on touch a swipe emits no click — so taps fall
   // through to onClick untouched, keeping both gestures on the one row.
   const swipe = useSwipeable({
-    onSwipedLeft: () => { if (canKill) { swiped.current = true; setRevealed(true); } },
-    onSwipedRight: () => { if (canKill) { swiped.current = true; setRevealed(false); } },
+    onSwipedLeft: () => { if (swipeable) { swiped.current = true; setRevealed(true); } },
+    onSwipedRight: () => { if (swipeable) { swiped.current = true; setRevealed(false); } },
     trackMouse: true,
     delta: 40,
   });
@@ -93,14 +99,20 @@ function SessionRow({ it, openable, onOpen, onKill, notify }) {
 
   return (
     <div className="cc-row">
-      {canKill && (
-        <button className="cc-kill" onClick={() => onKill(it)} aria-label={'Kill ' + it.name}>Kill</button>
+      {swipeable && (
+        <button
+          className="cc-kill"
+          onClick={() => (canDelete ? onDelete(it) : onKill(it))}
+          aria-label={(canDelete ? 'Delete ' : 'Kill ') + it.name}
+        >
+          {canDelete ? 'Delete' : 'Kill'}
+        </button>
       )}
       <button
-        {...(canKill ? swipe : {})}
-        className={'cc-item' + (revealed ? ' revealed' : '') + (canKill ? ' swipeable' : '')}
+        {...(swipeable ? swipe : {})}
+        className={'cc-item' + (revealed ? ' revealed' : '') + (swipeable ? ' swipeable' : '')}
         onClick={onClick}
-        disabled={!openable && !canKill}
+        disabled={!openable && !swipeable}
       >
         <span className={'cc-tag cc-' + it.origin} title={it.originLabel}>
           {it.bgAgent ? 'Agent' : it.local ? 'Local' : ORIGIN_TAG[it.origin] || 'RC'}
@@ -113,8 +125,19 @@ function SessionRow({ it, openable, onOpen, onKill, notify }) {
             <span className="cc-time">{shortAgo(it.ts)}</span>
           </span>
           <span className="cc-status">
-            <span className={'cc-dot ' + (it.active ? 'busy' : 'on')} />
-            <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>{it.active ? 'Working' : 'Connected'}</span>
+            <span
+              className={'cc-dot ' + (it.active ? 'busy' : 'on')}
+              style={it.resumeGrok ? { background: 'var(--muted, #888)' } : undefined}
+            />
+            <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>
+              {it.resumeGrok ? 'Saved' : it.active ? 'Working' : 'Connected'}
+            </span>
+            {it.agentLabel && it.agentLabel !== 'Claude' && (
+              <>
+                <span className="cc-sep">·</span>
+                <span className="cc-rc">{it.agentLabel}</span>
+              </>
+            )}
             {'remote' in it && (
               <>
                 <span className="cc-sep">·</span>
@@ -155,6 +178,7 @@ export default function Home({ onOpen, onHistory, notify }) {
   const [showNew, setShowNew] = useState(false); // "New session" sheet
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
   const [sessions, setSessions] = useState([]);
+  const [providers, setProviders] = useState([]);
   const [picking, setPicking] = useState(false);
   const [spend, setSpend] = useState(null); // estimated total USD, for the header tally
   const [showSpend, setShowSpend] = useState(false);
@@ -178,26 +202,21 @@ export default function Home({ onOpen, onHistory, notify }) {
     };
   }, []);
 
+  useEffect(() => {
+    listProviders().then((d) => setProviders(d.providers || [])).catch(() => {});
+  }, []);
+
   // Freshen the transcript archive on open so externally-run (remote-controlled)
   // sessions show up promptly — reindex is incremental, so it's cheap.
   useEffect(() => {
     reindexArchive().catch(() => {});
   }, []);
 
-  async function startClaude() {
+  async function startProvider(provider) {
     try {
       const p = path.trim().replace(/["']/g, '');
-      const s = await createSession({ kind: 'claude', cwd: p || undefined, label: p ? basename(p) : null });
-      if (p) localStorage.setItem('cvh_lastpath', p);
-      onOpen(s);
-    } catch (e) {
-      notify(e.message);
-    }
-  }
-  async function startHermes() {
-    try {
-      const p = path.trim().replace(/["']/g, '');
-      const s = await createSession({ kind: 'hermes', cwd: p || undefined, label: p ? basename(p) + ' · Hermes/Grok' : 'Hermes/Grok' });
+      const label = p ? `${basename(p)} · ${provider.name}` : provider.name;
+      const s = await createSession({ providerId: provider.id, cwd: p || undefined, label });
       if (p) localStorage.setItem('cvh_lastpath', p);
       onOpen(s);
     } catch (e) {
@@ -228,6 +247,20 @@ export default function Home({ onOpen, onHistory, notify }) {
       await (owned ? killSession(it.harnessId) : killLocal(it.pid));
     } catch (e) {
       notify('Kill failed: ' + e.message);
+      recentSessions().then((d) => setSessions(d.sessions || [])).catch(() => {});
+    }
+  }
+
+  // Delete a saved Grok conversation from the swipe action. Unlike Kill this discards
+  // the conversation's memory permanently — there's no History to recover it from —
+  // so it always confirms. Same optimistic-drop-then-resync shape as killItem.
+  async function deleteItem(it) {
+    if (!window.confirm(`Delete "${it.name}"?\n\nThis permanently discards the saved Grok conversation and its memory. It cannot be resumed afterwards.`)) return;
+    setSessions((prev) => prev.filter((x) => x.key !== it.key));
+    try {
+      await deleteGrokConv(it.resumeGrok || it.sessionId);
+    } catch (e) {
+      notify('Delete failed: ' + e.message);
       recentSessions().then((d) => setSessions(d.sessions || [])).catch(() => {});
     }
   }
@@ -263,7 +296,7 @@ export default function Home({ onOpen, onHistory, notify }) {
               <div className="cc-group-head">{b}</div>
               <div className="cc-list">
                 {rows.map((it) => (
-                  <SessionRow key={it.key} it={it} openable={canOpen(it)} onOpen={openItem} onKill={killItem} notify={notify} />
+                  <SessionRow key={it.key} it={it} openable={canOpen(it)} onOpen={openItem} onKill={killItem} onDelete={deleteItem} notify={notify} />
                 ))}
               </div>
             </div>
@@ -300,13 +333,22 @@ export default function Home({ onOpen, onHistory, notify }) {
               </div>
               <div className="row">
                 <button style={{ flex: 1 }} onClick={() => setPicking(true)}>📁 Browse…</button>
-                <button className="primary" style={{ flex: 1 }} onClick={startClaude}>Start Claude here</button>
+                {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider, index) => (
+                  <button
+                    key={provider.id}
+                    className={index === 0 ? 'primary' : ''}
+                    style={{ flex: 1 }}
+                    onClick={() => startProvider(provider)}
+                  >
+                    Start {provider.name}
+                  </button>
+                ))}
               </div>
             </div>
 
             <div className="card stack">
               <h2>Start a shell to navigate</h2>
-              <p className="muted">Opens PowerShell in your projects base. cd/ls to the right folder, hear where you are, then Launch Claude.</p>
+              <p className="muted">Opens PowerShell in your projects base. Navigate to a folder, then launch any configured AI CLI.</p>
               <button onClick={startShell}>Start shell</button>
             </div>
           </div>

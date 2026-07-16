@@ -15,9 +15,10 @@ import { Router } from 'express';
 import {
   searchArchive, getArchivePrompts, getArchiveMeta, listProjects, reindex,
 } from '../../services/archiveIndex.js';
-import { createSession, reusableSession, recordReuse } from '../../services/sessionManager.js';
+import { createSession, reusableSession, recordReuse, latestSessionByClaudeId } from '../../services/sessionManager.js';
 import { isLocalhost } from '../auth.js';
 import { backfillFromTranscript } from '../../services/conversation.js';
+import { findTranscriptPath, parseMessages, renderTerminalTranscript } from '../../services/transcript.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('archive-route');
@@ -73,13 +74,31 @@ router.post('/:uuid/resume', async (req, res) => {
   const reuseKey = `resume:${meta.uuid}`;
   const open = reusableSession(reuseKey);
   if (open) return res.json(open);
+  // Same rule when the conversation is live via ANY path (a fresh spawn whose Stop
+  // hook bound this uuid, a `claude -c`): resuming a live conversation would fork
+  // it — its own process keeps running while the resume branches the transcript.
+  // The reuse map above can't catch these (in-memory, keyed only by this route's
+  // own opens), so check the DB row too. Attach in place instead.
+  const live = latestSessionByClaudeId(meta.uuid);
+  if (live?.alive) return res.json(live);
   try {
+    const transcriptPath = findTranscriptPath(meta.uuid);
+    let terminalPrelude = '';
+    if (transcriptPath) {
+      try {
+        const messages = await parseMessages(transcriptPath);
+        if (messages.length) terminalPrelude = renderTerminalTranscript(messages, { title: meta.title, uuid: meta.uuid });
+      } catch (err) {
+        log.warn(`terminal transcript seed failed for ${meta.uuid}: ${err.message}`);
+      }
+    }
     const session = await createSession({
       cwd: meta.cwd,
       label: meta.title,
       kind: 'claude',
       resumeId: meta.uuid,
       origin: isLocalhost(req) ? 'harness' : 'remote',
+      terminalPrelude,
     });
     recordReuse(reuseKey, session.id);
     // Seed the Chat view with the prior conversation from the on-disk transcript

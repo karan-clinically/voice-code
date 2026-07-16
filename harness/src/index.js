@@ -21,9 +21,27 @@ import { startNotifier } from './services/notify.js';
 import { startIndexer } from './services/archiveIndex.js';
 import * as terminal from './services/terminal.js';
 import { makeLogger } from './util/logger.js';
+import { startWatchdog } from './util/watchdog.js';
 
 const log = makeLogger('index');
 const PORT = Number(getConfig('port', 4620));
+
+// Last-resort crash forensics. The supervisor (harness-run.cmd) respawns us after
+// any exit, which HIDES crashes: an uncaught throw printed only to the detached
+// console and the harness appeared to "randomly restart" with nothing in the logs
+// (every restart also kills all owned PTYs — i.e. every live session). Log the real
+// reason to SQLite before dying so the next investigation starts from evidence.
+// Exit on uncaughtException (state is suspect; the supervisor restarts us) but only
+// log unhandledRejection — those are typically stray async errors (a WS write racing
+// a disconnect), not corruption, and killing every live session over one is worse.
+process.on('uncaughtException', (err) => {
+  try { log.error(`FATAL uncaughtException: ${err?.stack || err}`); } catch { /* logging must not mask the exit */ }
+  process.exitCode = 1;
+  setTimeout(() => process.exit(1), 250).unref(); // let the SQLite write flush
+});
+process.on('unhandledRejection', (reason) => {
+  try { log.error(`unhandledRejection: ${reason?.stack || reason}`); } catch { /* ignore */ }
+});
 
 const app = buildApp();
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -37,6 +55,7 @@ server.on('error', (err) => {
 
 startReconciler();
 startNotifier(); // session-attention → phone push notifications
+startWatchdog(); // a wedged event loop becomes a logged exit-99 + 3s respawn, not a 30-min dead phone
 
 // Build/refresh the session archive (scan ~/.claude/projects/*.jsonl). Runs
 // shortly after boot and periodically; incremental by file mtime so rescans are

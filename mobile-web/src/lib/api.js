@@ -35,7 +35,23 @@ export const authHeaders = () => H;
 // The service worker can't read localStorage, so it's handed this on load — it needs
 // it to answer a prompt (POST /select) straight from a notification button.
 export const authToken = () => token;
-export const jget = async (p) => parse(await fetch(base + p, { headers: H }));
+// A hung fetch (mid network handoff, dead route) never rejects on its own, so a
+// caller with a busy-guard around it — the Terminal screen poll is the case that
+// bit us — stays stuck until something else resets the guard. Callers that poll
+// on a fixed interval pass timeoutMs so a stall fails fast and the next tick can
+// recover; long-running calls (e.g. commandText, which can legitimately wait
+// minutes for a Claude turn) leave it unset and get no abort.
+async function fetchTimeout(url, opts, timeoutMs) {
+  if (!timeoutMs) return fetch(url, opts);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+export const jget = async (p, { timeoutMs } = {}) => parse(await fetchTimeout(base + p, { headers: H }, timeoutMs));
 export const jpost = async (p, b) =>
   parse(await fetch(base + p, { method: 'POST', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }));
 export const jform = async (p, fd) => parse(await fetch(base + p, { method: 'POST', headers: H, body: fd }));
@@ -46,26 +62,35 @@ export const mediaUrl = (u) => base + u + (authQS ? (u.includes('?') ? '&' : '?'
 export const termWsUrl = (id) =>
   base.replace(/^http/, 'ws') + `/ws/term?session=${id}` + (authQS ? '&' + authQS : '');
 
-export const listSessions = () => jget('/api/sessions');
+export const listSessions = () => jget('/api/sessions', { timeoutMs: 8000 });
+export const listProviders = () => jget('/api/providers');
 // Recent sessions for the Sessions tab: { harness: [...], remote: [...] } — the
 // harness-spawned ones (live + recently ended) and external Claude sessions
 // started in another terminal (driven from claude.ai remote control).
-export const recentSessions = () => jget('/api/sessions/recent');
+export const recentSessions = () => jget('/api/sessions/recent', { timeoutMs: 8000 });
 export const reindexArchive = () => jpost('/api/archive/reindex');
 export const createSession = (body) => jpost('/api/sessions', body);
 // Open Claude's background-agent view in a pty so the phone can attach to / peek a
 // live background agent (those reject --resume). cwd is where the view spawns.
 export const openAgentView = (cwd, label) => jpost('/api/sessions/agent-view', { cwd, label });
-export const sessionInfo = (id) => jget(`/api/sessions/${id}`);
+// Resume a saved Grok conversation into a fresh PTY that reloads its context (cwd
+// comes from the saved conversation server-side).
+export const resumeGrok = (id) => jpost('/api/sessions', { kind: 'grok', resumeGrok: id });
+// Forget a saved Grok conversation (deletes its context file). Only for `grok-saved`
+// rows — there's no process to kill, so this is the only way to clear one.
+export const deleteGrokConv = (id) => jdelete(`/api/sessions/grok/${id}`);
+export const sessionInfo = (id) => jget(`/api/sessions/${id}`, { timeoutMs: 8000 });
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const killLocal = (pid) => jpost('/api/sessions/kill-local', { pid });
 export const muteSession = (id, muted) => jpost(`/api/sessions/${id}/mute`, { muted });
-export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`);
-export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=1`);
+export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`, { timeoutMs: 8000 });
+export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=1`, { timeoutMs: 8000 });
 export const sessionInput = (id, text) => jpost(`/api/sessions/${id}/input`, { text });
 export const sessionResize = (id, cols, rows) => jpost(`/api/sessions/${id}/resize`, { cols, rows });
 export const launchClaudeIn = (id) => jpost(`/api/sessions/${id}/launch-claude`);
-export const launchHermesIn = (id) => jpost(`/api/sessions/${id}/launch-hermes`);
+export const launchGrokIn = (id) => jpost(`/api/sessions/${id}/launch-grok`);
+export const launchCodexIn = (id) => jpost(`/api/sessions/${id}/launch-codex`);
+export const launchProviderIn = (id, providerId) => jpost(`/api/sessions/${id}/launch-provider`, { providerId });
 export const fsList = (path) => jget('/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : ''));
 // cleanup=true runs the Wispr-style dictation pass server-side (fillers, false
 // starts, phrasing) so the phone gets the same tidied text the desktop does — it
@@ -81,9 +106,13 @@ export const transcribe = async (blob, ext, { cleanup = true } = {}) => {
 export const commandText = (sessionId, text, timeoutMs) =>
   jpost('/api/command', { sessionId, text, desktopPlayback: false, ...(timeoutMs ? { timeoutMs } : {}) });
 
-// --- settings (non-secret prefs; API keys are NOT reachable from the phone) ---
+// --- settings ---
+// Normal prefs are readable. API-key endpoints only expose has-key flags and write
+// new values; they never return secret values to the phone/PWA.
 export const getSettings = () => jget('/api/settings');
 export const saveSettings = (patch) => jpost('/api/settings', patch);
+export const apiKeyState = () => jget('/api/settings/keys');
+export const saveApiKeys = (patch) => jpost('/api/settings/keys', patch);
 // ElevenLabs voices for the Settings voice dropdown (non-secret metadata only).
 export const listElevenVoices = () => jget('/api/settings/voices');
 
@@ -121,9 +150,12 @@ export const usageSummary = () => jget('/api/usage/summary');
 // --- chat composer controls ---
 export const sessionMode = (id) => jget(`/api/sessions/${id}/mode`);
 export const sessionKey = (id, key) => jpost(`/api/sessions/${id}/key`, { key });
+// Raw sequence over HTTP — the key channel's fallback when its WS is down, so a
+// prompt answer typed right after a harness restart isn't silently lost.
+export const sessionKeySeq = (id, seq) => jpost(`/api/sessions/${id}/key`, { seq });
 
 // --- interactive picker (question + numbered options Claude is waiting on) ---
-export const sessionPrompt = (id) => jget(`/api/sessions/${id}/prompt`);
+export const sessionPrompt = (id) => jget(`/api/sessions/${id}/prompt`, { timeoutMs: 8000 });
 // Answer option `index`; resolves with Claude's follow-up reply ({responseText, audioUrl, prompt}).
 export const selectPromptOption = (id, index) => jpost(`/api/sessions/${id}/select`, { index, desktopPlayback: false });
 export const attachFile = (id, file) => {

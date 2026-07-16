@@ -3,8 +3,14 @@
 //   server -> client  {t:'data', d}   raw PTY output (a replay chunk on connect,
 //                                       then live output)
 //                     {t:'exit'}       the PTY exited
+//                     {t:'pong'}       reply to a client {t:'ping'}
 //   client -> server  {t:'in', d}      raw keystrokes written straight to the PTY
 //                     {t:'resize', cols, rows}
+//                     {t:'ping'}       app-level liveness probe. Browsers can't send
+//                                      protocol pings, and a socket that died without
+//                                      a FIN (network handoff, host gone) stays OPEN
+//                                      client-side forever — the pong is how the phone
+//                                      detects that and forces a reconnect.
 //
 // Auth mirrors /ws (localhost allowed; remote needs ?token=), applied in ws.js.
 // Raw input intentionally bypasses the C0-strip in sessionManager.sendInput —
@@ -60,7 +66,9 @@ export function createTermWss() {
       } catch {
         return;
       }
-      if (m.t === 'in' && typeof m.d === 'string') {
+      if (m.t === 'ping') {
+        send(ws, { t: 'pong' });
+      } else if (m.t === 'in' && typeof m.d === 'string') {
         try {
           sendRaw(ptyId, m.d);
         } catch (err) {
