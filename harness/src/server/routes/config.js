@@ -13,6 +13,7 @@ router.use(localhostOnly);
 
 const ALLOWED = new Set([
   'deepgram_api_key',
+  'xai_api_key',
   'openai_api_key',
   'elevenlabs_api_key',
   'elevenlabs_voice_id',
@@ -37,6 +38,7 @@ router.get('/state', (req, res) => {
   res.json({
     firstRun: isFirstRun(),
     hasDeepgram: !!getConfig('deepgram_api_key'),
+    hasXai: !!getConfig('xai_api_key'),
     hasOpenAI: !!getConfig('openai_api_key'),
     hasElevenLabs: !!getConfig('elevenlabs_api_key'),
     sttMode: getConfig('stt_mode', 'batch'),

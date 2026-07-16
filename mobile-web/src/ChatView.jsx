@@ -5,10 +5,11 @@ import { sessionMessages, sendChat, sessionPrompt, selectPromptOption } from './
 import { ding } from './lib/audio.js';
 import ChatComposer from './ChatComposer.jsx';
 
-// Claude-app-style chat over a live session (phone). Renders the harness
-// conversation log as markdown bubbles and sends messages to the live session.
-// Pearls theme — white rounded bubbles, green accent, no coloured rails.
+// App-style chat over a live session (phone) — Claude or Grok. Renders the
+// harness conversation log as markdown bubbles and sends messages to the live
+// session. Pearls theme — white rounded bubbles, green accent, no coloured rails.
 export default function ChatView({ session, notify }) {
+  const agentName = session.kind === 'grok' ? 'Grok' : 'Claude';
   const [messages, setMessages] = useState([]);
   const [working, setWorking] = useState(false);
   const [prompt, setPrompt] = useState(null); // interactive picker Claude is waiting on
@@ -117,7 +118,11 @@ export default function ChatView({ session, notify }) {
           <p className="chat-empty">
             No messages yet — type below to talk to this session. Replies appear here formatted.
             <br />
-            <span className="muted">When Claude asks a multiple-choice question, tap an option below.</span>
+            <span className="muted">
+              {session.kind === 'grok'
+                ? 'Grok replies land here after each turn completes.'
+                : 'When Claude asks a multiple-choice question, tap an option below.'}
+            </span>
           </p>
         ) : (
           messages.map((m) => <Bubble key={m.id} role={m.role} text={m.text} />)
@@ -126,12 +131,12 @@ export default function ChatView({ session, notify }) {
           <div className="chat-msg assistant">
             <div className="chat-bubble chat-working">
               <span className="cw-dot" /><span className="cw-dot" /><span className="cw-dot" />
-              <span className="cw-label">Claude is working…</span>
+              <span className="cw-label">{agentName} is working…</span>
             </div>
           </div>
         )}
       </div>
-      {prompt && (
+      {prompt && session.kind !== 'grok' && (
         <div className="chat-prompt">
           {prompt.multi ? (
             <p className="muted">Claude is asking a multi-part question — open the Terminal view to answer it.</p>

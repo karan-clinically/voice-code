@@ -4,9 +4,11 @@ import { startRecording } from '../lib/record.js';
 
 export default function StepApiKeys({ onNext }) {
   const [deepgram, setDeepgram] = useState('');
+  const [xai, setXai] = useState('');
   const [openai, setOpenai] = useState('');
   const [eleven, setEleven] = useState('');
   const [hasDeepgram, setHasDeepgram] = useState(false);
+  const [hasXai, setHasXai] = useState(false);
   const [hasEleven, setHasEleven] = useState(false);
   const [sttMode, setSttMode] = useState('batch');
 
@@ -34,6 +36,7 @@ export default function StepApiKeys({ onNext }) {
     configState()
       .then((s) => {
         setHasDeepgram(!!s.hasDeepgram);
+        setHasXai(!!s.hasXai);
         setHasEleven(!!s.hasElevenLabs);
         if (s.sttMode) setSttMode(s.sttMode);
         if (s.ttsProvider) setProvider(s.ttsProvider);
@@ -70,10 +73,12 @@ export default function StepApiKeys({ onNext }) {
     try {
       await saveConfig({
         deepgram_api_key: deepgram || undefined,
+        xai_api_key: xai || undefined,
         openai_api_key: openai || undefined,
         elevenlabs_api_key: eleven || undefined,
       });
       if (deepgram) setHasDeepgram(true);
+      if (xai) setHasXai(true);
       if (eleven) setHasEleven(true);
       // Only a Deepgram key? Then Deepgram is the only provider that can speak.
       const next = !eleven && !hasEleven ? 'deepgram' : provider;
@@ -189,6 +194,16 @@ export default function StepApiKeys({ onNext }) {
       <span className="label">Step 1 · API keys</span>
       <h2>Speech &amp; voice keys</h2>
       <p className="muted">Stored locally on this PC (SQLite) and used server-side only — never sent to your phone.</p>
+
+      <label>
+        xAI / Grok API key <span className="muted">(native Grok coding sessions)</span>
+      </label>
+      <input
+        type="password"
+        placeholder={hasXai ? '•••• (saved — blank keeps existing)' : 'xai-…  (blank if you only use Claude)'}
+        value={xai}
+        onChange={(e) => setXai(e.target.value)}
+      />
 
       <label>
         Deepgram API key <span className="muted">(speech-to-text, and optionally the voice too)</span>

@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import StepApiKeys from './StepApiKeys.jsx';
+import StepAgents from './StepAgents.jsx';
 import StepTunnel from './StepTunnel.jsx';
 import StepHook from './StepHook.jsx';
 import StepPairing from './StepPairing.jsx';
 
-const STEPS = ['API keys', 'Tunnel', 'Claude hook', 'Pairing'];
+const STEPS = ['AI CLIs', 'Speech & voice', 'Tunnel', 'Claude hook', 'Pairing'];
 
 export default function Wizard({ onDone }) {
   const [step, setStep] = useState(0);
@@ -26,10 +27,11 @@ export default function Wizard({ onDone }) {
           ))}
         </ol>
         <div className="card">
-          {step === 0 && <StepApiKeys onNext={next} />}
-          {step === 1 && <StepTunnel onNext={next} onBack={back} />}
-          {step === 2 && <StepHook onNext={next} onBack={back} />}
-          {step === 3 && <StepPairing onBack={back} onDone={onDone} />}
+          {step === 0 && <StepAgents onNext={next} />}
+          {step === 1 && <StepApiKeys onNext={next} />}
+          {step === 2 && <StepTunnel onNext={next} onBack={back} />}
+          {step === 3 && <StepHook onNext={next} onBack={back} />}
+          {step === 4 && <StepPairing onBack={back} onDone={onDone} />}
         </div>
       </main>
     </div>

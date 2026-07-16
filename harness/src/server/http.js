@@ -22,6 +22,8 @@ import archiveRouter from './routes/archive.js';
 import promptsRouter from './routes/prompts.js';
 import usageRouter from './routes/usage.js';
 import pushRouter from './routes/push.js';
+import providersRouter from './routes/providers.js';
+import agentEventsRouter from './routes/agentEvents.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -103,6 +105,8 @@ export function buildApp() {
   app.use('/api/prompts', promptsRouter);
   app.use('/api/usage', usageRouter);
   app.use('/api/push', pushRouter);
+  app.use('/api/providers', providersRouter);
+  app.use('/api/agent-events', agentEventsRouter);
 
   // JSON 404 + error handler so nothing leaks HTML/stack traces.
   app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));

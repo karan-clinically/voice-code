@@ -14,6 +14,7 @@ import { createTermWss } from './wsTerm.js';
 import { createSttWss } from './wsStt.js';
 import { logEvents } from '../util/logger.js';
 import { makeLogger } from '../util/logger.js';
+import { attachHeartbeat } from '../util/wsHeartbeat.js';
 
 const log = makeLogger('ws');
 let wss = null;
@@ -24,6 +25,11 @@ export function attachWs(server) {
   wss = new WebSocketServer({ noServer: true });
   wssTerm = createTermWss(); // raw terminal transport (/ws/term)
   wssStt = createSttWss(); // live speech-to-text relay (/ws/stt)
+  // Detect and drop connections a phone silently walked away from (network
+  // handoff, screen lock killing the radio) on all three sockets.
+  attachHeartbeat(wss);
+  attachHeartbeat(wssTerm);
+  attachHeartbeat(wssStt);
 
   server.on('upgrade', (req, socket, head) => {
     let pathname = '';

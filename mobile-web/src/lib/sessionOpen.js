@@ -1,7 +1,8 @@
-import { resumeArchive, openAgentView } from './api.js';
+import { resumeArchive, openAgentView, resumeGrok } from './api.js';
 
 // Whether a /recent row can be opened / switched to.
-export const canOpenRow = (it) => (it.kind === 'harness' && it.alive) || it.bgAgent || !!it.resumeUuid;
+export const canOpenRow = (it) =>
+  (it.kind === 'harness' && it.alive) || it.bgAgent || !!it.resumeUuid || !!it.resumeGrok;
 
 // Open a /recent row into a session.
 //
@@ -17,9 +18,13 @@ export const canOpenRow = (it) => (it.kind === 'harness' && it.alive) || it.bgAg
 export async function openSessionRow(it, onOpen, notify) {
   try {
     if (it.kind === 'harness' && it.alive) {
-      onOpen({ id: it.harnessId, kind: it.shell ? 'shell' : 'claude', label: it.name, cwd: it.cwd });
+      onOpen({ id: it.harnessId, kind: it.shell ? 'shell' : (it.agentKind || 'claude'), label: it.name, cwd: it.cwd });
     } else if (it.bgAgent) {
       onOpen(await openAgentView(it.agentCwd || it.cwd, it.name));
+    } else if (it.resumeGrok) {
+      // A saved Grok conversation is single-owner — resuming reloads the SAME context
+      // (not a fork), so no branch warning; the agent picks up where it left off.
+      onOpen(await resumeGrok(it.resumeGrok));
     } else if (it.resumeUuid) {
       const ok = window.confirm(
         `"${it.name}" is running outside the harness, so it can't be joined.\n\n` +

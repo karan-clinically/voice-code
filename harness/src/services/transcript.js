@@ -70,3 +70,36 @@ export function parseMessages(filePath, { max = 2000 } = {}) {
     rl.on('error', reject);
   });
 }
+
+// Render a saved Claude JSONL conversation into plain terminal text so a resumed
+// archive session opens with meaningful scrollback. This is intentionally a
+// reconstructed conversation transcript, not the original PTY byte stream (Claude
+// does not store raw terminal output in the JSONL archive).
+export function renderTerminalTranscript(messages, { title = '', uuid = '', maxChars = 900_000 } = {}) {
+  const lines = [
+    '===== Resumed Claude conversation transcript =====',
+    title ? `Title: ${title}` : '',
+    uuid ? `Session: ${uuid}` : '',
+    'Note: this is reconstructed from Claude Code\'s saved JSONL transcript; raw terminal bytes from the original process are not stored.',
+    '===== Historical conversation starts below =====',
+    '',
+  ].filter(Boolean);
+  let total = lines.join('\n').length;
+  let clipped = false;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const who = m.role === 'user' ? 'USER' : 'CLAUDE';
+    const block = [`----- ${who} ${i + 1} -----`, String(m.text || '').trim(), ''].join('\n');
+    if (total + block.length > maxChars) {
+      clipped = true;
+      break;
+    }
+    lines.push(block);
+    total += block.length;
+  }
+  if (clipped) {
+    lines.push('', `[Transcript clipped at ${Math.round(maxChars / 1024)}KB to keep the mobile terminal responsive. Open Chat view for the full parsed conversation.]`);
+  }
+  lines.push('', '===== Live resumed terminal continues below =====', '');
+  return lines.join('\n');
+}

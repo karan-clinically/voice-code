@@ -121,7 +121,12 @@ export async function previewVoiceUrl(voiceId, provider) {
 
 // --- sessions / command ---
 export const listSessions = () => apiGet('/api/sessions');
-export const createSession = (cwd, label) => apiPost('/api/sessions', { cwd, label });
+export const listProviders = () => apiGet('/api/providers');
+export const saveProviderCredential = (id, value) =>
+  apiPost(`/api/providers/${encodeURIComponent(id)}/credential`, { value });
+// kind: 'claude' | 'grok' | 'codex' | 'shell' — defaults to claude on the server.
+export const createSession = (cwd, label, providerId = 'claude') =>
+  apiPost('/api/sessions', { cwd, label, providerId });
 export const killSession = (id) => apiPost(`/api/sessions/${id}/kill`, {});
 export const renameSession = (id, label) => apiPost(`/api/sessions/${id}/rename`, { label });
 export const sendCommand = (sessionId, text) => apiPost('/api/command', { sessionId, text });
@@ -140,6 +145,7 @@ export const sendChat = (id, text) => apiPost(`/api/sessions/${id}/chat`, { text
 // --- chat composer controls ---
 export const sessionMode = (id) => apiGet(`/api/sessions/${id}/mode`);
 export const sessionKey = (id, key) => apiPost(`/api/sessions/${id}/key`, { key });
+export const setSessionModel = (id, alias) => apiPost(`/api/sessions/${id}/model`, { alias });
 export const listPrompts = () => apiGet('/api/prompts');
 export const savePrompt = (text, label) => apiPost('/api/prompts', { text, label });
 export const deletePrompt = (id) => apiDelete(`/api/prompts/${id}`);

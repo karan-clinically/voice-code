@@ -25,6 +25,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   const textRef = useRef('');
   const taRef = useRef(null);
   const busy = session.state === 'busy';
+  const isGrok = (session.kind || '') === 'grok';
   textRef.current = text;
 
   useEffect(() => {
@@ -51,10 +52,11 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   }, [session.id]);
 
   useEffect(() => {
+    if (isGrok) return undefined; // Grok has no Claude permission-mode footer
     refreshMode();
     const t = setInterval(refreshMode, 4000);
     return () => clearInterval(t);
-  }, [refreshMode]);
+  }, [refreshMode, isGrok]);
 
   // Auto-grow the textarea.
   useEffect(() => {
@@ -201,9 +203,12 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
         }}
       />
       <div className="composer-bar">
-        <button className={'mode-pill mode-' + mode} onClick={cycleMode} title="Permission mode — click to cycle (Shift+Tab)">
-          <span className="mode-zap">⚡</span> {MODE_LABEL[mode]}
-        </button>
+        {!isGrok && (
+          <button className={'mode-pill mode-' + mode} onClick={cycleMode} title="Permission mode — click to cycle (Shift+Tab)">
+            <span className="mode-zap">⚡</span> {MODE_LABEL[mode]}
+          </button>
+        )}
+        {isGrok && <span className="mode-pill" title="Native Grok coding agent">Grok</span>}
         <div className="composer-spacer" />
         <button
           className={'cbtn' + (recording ? ' rec' : '') + (tidying ? ' tidying' : '')}

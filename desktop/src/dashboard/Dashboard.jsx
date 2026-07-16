@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   listSessions,
+  listProviders,
   createSession,
   renameSession,
   killSession,
@@ -14,9 +15,11 @@ import TerminalPane from './TerminalPane.jsx';
 import ChatView from './ChatView.jsx';
 import LiveLog from './LiveLog.jsx';
 import HistoryOverlay from './HistoryOverlay.jsx';
+import ModelPicker from './ModelPicker.jsx';
 
 export default function Dashboard({ onOpenWizard }) {
   const [sessions, setSessions] = useState([]);
+  const [providers, setProviders] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [logs, setLogs] = useState([]);
   const [showLog, setShowLog] = useState(false);
@@ -50,6 +53,7 @@ export default function Dashboard({ onOpenWizard }) {
 
   useEffect(() => {
     refresh();
+    listProviders().then((d) => setProviders(d.providers || [])).catch(() => {});
     const ws = openWs((m) => {
       if (m.type === 'sessions') setSessions(m.sessions);
       else if (m.type === 'state')
@@ -69,8 +73,9 @@ export default function Dashboard({ onOpenWizard }) {
 
   // Keep an active tab pointed at a live session.
   const live = sessions.filter((s) => s.alive);
+  const activeSession = live.find((s) => s.id === activeId) || null;
   const modeOf = (id) => viewModes[id] || 'terminal';
-  const activeMode = modeOf(activeId);
+  const activeMode = activeSession?.capabilities?.chat === false ? 'terminal' : modeOf(activeId);
   const setMode = (id, m) => setViewModes((prev) => ({ ...prev, [id]: m }));
   useEffect(() => {
     if (activeId && live.some((s) => s.id === activeId)) return;
@@ -97,11 +102,14 @@ export default function Dashboard({ onOpenWizard }) {
     else delete termApis.current[id];
   }
 
-  async function newSession() {
+  async function newSession(kind = 'claude') {
     const dir = await window.cvh?.pickFolder();
     if (!dir) return;
     try {
-      const s = await createSession(dir, null);
+      const base = dir.split(/[\\/]/).filter(Boolean).pop() || 'project';
+      const provider = providers.find((p) => p.id === kind);
+      const label = kind === 'claude' ? null : `${base} · ${provider?.name || kind}`;
+      const s = await createSession(dir, label, kind);
       setActiveId(s.id);
     } catch (e) {
       notify('Could not start session: ' + e.message);
@@ -187,10 +195,11 @@ export default function Dashboard({ onOpenWizard }) {
             onNew={newSession}
             onRename={rename}
             onClose={close}
+            providers={providers}
           />
         </div>
         <div className="term-tools">
-          {activeId && (
+          {activeId && activeSession?.capabilities?.chat !== false && (
             <div className="seg" title="Switch the active session between the raw terminal and a chat view">
               <button
                 className={'seg-btn' + (activeMode !== 'chat' ? ' on' : '')}
@@ -206,6 +215,7 @@ export default function Dashboard({ onOpenWizard }) {
               </button>
             </div>
           )}
+          {activeSession && <ModelPicker session={activeSession} notify={notify} />}
           <button
             className={'tool' + (recording ? ' rec' : '')}
             onClick={toggleTalk}
@@ -216,7 +226,7 @@ export default function Dashboard({ onOpenWizard }) {
           <button
             className={'tool' + (speak ? ' on' : '')}
             onClick={() => setSpeak((v) => !v)}
-            title="Speak Claude's replies aloud"
+            title="Speak agent replies aloud"
           >
             🔊 Speak {speak ? 'on' : 'off'}
           </button>
@@ -236,8 +246,7 @@ export default function Dashboard({ onOpenWizard }) {
         {live.length === 0 ? (
           <div className="term-empty">
             <p>
-              No sessions. Press <strong>+</strong> to pick a folder and launch Claude Code there — it opens as a
-              live terminal tab.
+              No sessions. Press <strong>+</strong> to pick a folder and launch an installed AI CLI.
             </p>
           </div>
         ) : (
@@ -247,11 +256,11 @@ export default function Dashboard({ onOpenWizard }) {
                   it just hides under the chat overlay in chat mode. */}
               <TerminalPane
                 session={s}
-                active={s.id === activeId && modeOf(s.id) !== 'chat'}
+                active={s.id === activeId && (s.capabilities?.chat === false || modeOf(s.id) !== 'chat')}
                 onApi={registerApi}
                 notify={notify}
               />
-              {modeOf(s.id) === 'chat' && <ChatView session={s} active={s.id === activeId} notify={notify} />}
+              {s.capabilities?.chat !== false && modeOf(s.id) === 'chat' && <ChatView session={s} active={s.id === activeId} notify={notify} />}
             </React.Fragment>
           ))
         )}

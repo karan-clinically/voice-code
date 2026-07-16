@@ -4,10 +4,11 @@ import remarkGfm from 'remark-gfm';
 import { sessionMessages, sendChat } from '../lib/api.js';
 import ChatComposer from './ChatComposer.jsx';
 
-// Claude-app-style conversation view over a live session. Renders the harness's
-// conversation log (assistant turns from the Stop hook, user turns from this box)
-// as markdown bubbles, polling incrementally. Overlays the terminal pane; the
-// xterm stays mounted underneath so the PTY/scrollback survive the toggle.
+// App-style conversation view over a live session (Claude or Grok). Renders the
+// harness conversation log (assistant turns from the Stop/turn-complete hook,
+// user turns from this box) as markdown bubbles, polling incrementally. Overlays
+// the terminal pane; the xterm stays mounted underneath so the PTY/scrollback
+// survive the toggle.
 export default function ChatView({ session, active, notify }) {
   const [messages, setMessages] = useState([]);
   const lastId = useRef(0);
@@ -72,7 +73,11 @@ export default function ChatView({ session, active, notify }) {
           <div className="chat-empty">
             No messages yet. Type below to talk to this session — replies appear here formatted.
             <br />
-            <span className="chat-empty-sub">Interactive prompts (permissions, plan approval) still need the Terminal view.</span>
+            <span className="chat-empty-sub">
+              {session.kind === 'grok'
+                ? 'Grok replies land here after each turn completes.'
+                : 'Interactive prompts (permissions, plan approval) still need the Terminal view.'}
+            </span>
           </div>
         ) : (
           messages

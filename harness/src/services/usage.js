@@ -11,8 +11,8 @@ import { makeLogger } from '../util/logger.js';
 const log = makeLogger('usage');
 
 // USD per single unit. Deepgram was dropped as a voice provider, so only
-// ElevenLabs + OpenAI are priced here (any lingering deepgram rows are filtered
-// out of the summary below).
+// ElevenLabs + OpenAI + xAI/Grok are priced here (any lingering deepgram rows are
+// filtered out of the summary below).
 const DEFAULT_RATES = {
   // Calibrated to the ElevenLabs dashboard: $0.48 for 9.36K characters generated
   // (≈ $0.051 / 1k chars). Credit-priced, so still an estimate.
@@ -20,6 +20,8 @@ const DEFAULT_RATES = {
   elevenlabs_stt_sec: 0.4 / 3600, // Scribe ~$0.40 / hour
   openai_in_token: 0.15 / 1_000_000, // gpt-4o-mini input
   openai_out_token: 0.6 / 1_000_000, // gpt-4o-mini output
+  xai_in_token: 2.0 / 1_000_000, // grok-4.5 input, docs.x.ai pricing
+  xai_out_token: 6.0 / 1_000_000, // grok-4.5 output, docs.x.ai pricing
 };
 
 function rate(unitType) {
@@ -47,6 +49,8 @@ const LABEL = {
   elevenlabs_stt_sec: { title: 'ElevenLabs · speech in', unit: 'audio min' },
   openai_in_token: { title: 'OpenAI · summaries in', unit: 'tokens' },
   openai_out_token: { title: 'OpenAI · summaries out', unit: 'tokens' },
+  xai_in_token: { title: 'Grok/xAI · coding in', unit: 'tokens' },
+  xai_out_token: { title: 'Grok/xAI · coding out', unit: 'tokens' },
 };
 
 export function usageSummary() {

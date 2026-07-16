@@ -33,20 +33,25 @@ export default function ChatComposer({
   const taRef = useRef(null);
   const fileRef = useRef(null);
   const isBusy = busy !== undefined ? busy : session.state === 'busy';
+  const isGrok = (session.kind || '') === 'grok';
+  const isCodex = (session.kind || '') === 'codex';
+  const agentLabel = isCodex ? 'Codex' : isGrok ? 'Grok' : 'Claude';
   // Terminal (allowEmptySend) has ONE button that follows the screen: Claude grinding
   // away -> ■ (Esc, interrupt); a question waiting or something typed -> ➤ (Enter/send).
   // A pending prompt still reads as "busy", so it has to override the stop state.
   const showStop = allowEmptySend ? isBusy && !promptPending && !text.trim() : isBusy;
 
   const refreshMode = useCallback(() => {
+    if (isGrok || isCodex) return; // non-Claude agents have no Claude permission-mode footer
     sessionMode(session.id).then((r) => r?.mode && setMode(r.mode)).catch(() => {});
-  }, [session.id]);
+  }, [session.id, isGrok, isCodex]);
 
   useEffect(() => {
+    if (isGrok || isCodex) return undefined;
     refreshMode();
     const t = setInterval(refreshMode, 4000);
     return () => clearInterval(t);
-  }, [refreshMode]);
+  }, [refreshMode, isGrok, isCodex]);
 
   useEffect(() => {
     const ta = taRef.current;
@@ -184,9 +189,13 @@ export default function ChatComposer({
             <>
               <div className="composer-more-backdrop" onClick={() => setShowMore(false)} />
               <div className="composer-more" role="menu">
-                <button className={'mode-pill mode-' + mode} onClick={cycleMode}>
-                  <span className="mode-zap">⚡</span> {MODE_LABEL[mode]}
-                </button>
+                {!(isGrok || isCodex) ? (
+                  <button className={'mode-pill mode-' + mode} onClick={cycleMode}>
+                    <span className="mode-zap">⚡</span> {MODE_LABEL[mode]}
+                  </button>
+                ) : (
+                  <div className="mode-pill" title={`${agentLabel} terminal session`}>{agentLabel}</div>
+                )}
                 <button
                   className="composer-more-item"
                   onClick={() => { setShowMore(false); replay('summary'); }}

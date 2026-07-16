@@ -1,5 +1,9 @@
 # Claude Code Voice Harness
 
+> Provider architecture: the PTY/session core now supports pluggable AI CLI
+> adapters. Claude Code, Grok, and Codex are built-ins; simple additional CLIs can
+> be registered with a local JSON manifest. See [AGENT_ADAPTERS.md](AGENT_ADAPTERS.md).
+
 A voice-first control layer for [Claude Code](https://claude.com/claude-code). Speak (or type) a
 command, have it typed into a specific Claude Code session on your PC, and hear the response read
 back aloud. It uses your existing Claude Code subscription — the harness only pays for

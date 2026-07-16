@@ -21,11 +21,17 @@ const log = makeLogger('terminal');
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
-const SCROLLBACK = 5000;
+const SCROLLBACK = Math.max(5000, Number(process.env.CVH_TERM_SCROLLBACK) || 20000);
 // Raw-output replay buffer: kept per session so a newly-connected xterm client
 // (desktop /ws/term) can paint the existing screen + scrollback on connect.
-const REPLAY_CAP = 256 * 1024; // bytes retained
-const REPLAY_TRIM_AT = 384 * 1024; // slice back to CAP once we exceed this
+const REPLAY_CAP = Math.max(256 * 1024, Number(process.env.CVH_TERM_REPLAY_BYTES) || 1024 * 1024); // bytes retained
+const REPLAY_TRIM_AT = Math.floor(REPLAY_CAP * 1.5); // slice back to CAP once we exceed this
+// Plain-text live output log for mobile Terminal scrollback. Claude's TUI uses the
+// alternate screen, whose xterm buffer only exposes the current viewport, so keep a
+// sanitized transcript of bytes as they arrive for sessions that have no JSONL
+// transcript/prelude yet.
+const TEXT_LOG_CAP = Math.max(256 * 1024, Number(process.env.CVH_TERM_TEXT_LOG_BYTES) || 900 * 1024);
+const TEXT_LOG_TRIM_AT = Math.floor(TEXT_LOG_CAP * 1.5);
 const isWin = process.platform === 'win32';
 
 // events: 'data' {id,data}, 'exit' {id,exitCode}, 'spawn' {id}
@@ -57,6 +63,44 @@ function publicView(s) {
   };
 }
 
+function normalizeTerminalText(text) {
+  return String(text || '').replace(/\r?\n/g, '\n').replace(/\n+$/g, '');
+}
+
+function withHistoryPrelude(s, body) {
+  const parts = [];
+  if (s?.terminalPrelude) parts.push(s.terminalPrelude);
+  if (s?.terminalLog) parts.push(['===== Live terminal output log =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n'));
+  if (!parts.length) return body;
+  return [...parts, body].filter(Boolean).join('\n');
+}
+
+function terminalDataToText(data) {
+  let s = String(data || '');
+  // OSC hyperlinks/window-title, CSI cursor/style/control, and simple ESC sequences.
+  s = s.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
+  s = s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+  s = s.replace(/\x1b[()][A-Za-z0-9]/g, '');
+  s = s.replace(/\x1b[=>]/g, '');
+  // Convert carriage-return redraws into lines; remove remaining non-printing C0.
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s.replace(/[^\x09\x0A\x20-\x7E\u00A0-\uFFFF]/g, '');
+  // Apply backspaces within this chunk.
+  while (/[^\n]\x08/.test(s)) s = s.replace(/[^\n]\x08/g, '');
+  return s;
+}
+
+function appendTerminalLog(session, data) {
+  const text = terminalDataToText(data);
+  if (!text.trim()) return;
+  session.terminalLog += text;
+  if (session.terminalLog.length > TEXT_LOG_TRIM_AT) {
+    session.terminalLog = session.terminalLog.slice(-TEXT_LOG_CAP);
+    const firstNl = session.terminalLog.indexOf('\n');
+    if (firstNl > 0) session.terminalLog = session.terminalLog.slice(firstNl + 1);
+  }
+}
+
 function deriveName(cwd, id) {
   const b = cwd ? basename(cwd) : '';
   return b || id;
@@ -83,9 +127,10 @@ const SESSION_MARKERS = new Set([
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDE_CODE_EXECPATH',
 ]);
-function topLevelEnv() {
+function topLevelEnv(removeEnv = []) {
   const e = { ...process.env };
   for (const k of SESSION_MARKERS) delete e[k];
+  for (const k of removeEnv) delete e[k];
   return e;
 }
 
@@ -98,8 +143,10 @@ export function spawnSession({
   label = null,
   name = null,
   env = {},
+  removeEnv = [],
   cols = DEFAULT_COLS,
   rows = DEFAULT_ROWS,
+  terminalPrelude = '',
 } = {}) {
   const id = `s${++counter}`;
   const cmd = command || resolveClaudeCommand();
@@ -112,7 +159,7 @@ export function spawnSession({
       cols,
       rows,
       cwd,
-      env: { ...topLevelEnv(), ...env },
+      env: { ...topLevelEnv(removeEnv), ...env },
     });
   } catch (err) {
     log.error(`spawn failed for ${cmd}: ${err.message}`);
@@ -132,6 +179,8 @@ export function spawnSession({
     exitCode: null,
     createdAt: new Date().toISOString(),
     replay: '',
+    terminalPrelude: normalizeTerminalText(terminalPrelude),
+    terminalLog: '',
     cols,
     rows,
   };
@@ -139,6 +188,7 @@ export function spawnSession({
   ptyProc.onData((data) => {
     term.write(data);
     session.replay += data;
+    appendTerminalLog(session, data);
     if (session.replay.length > REPLAY_TRIM_AT) session.replay = session.replay.slice(-REPLAY_CAP);
     terminalEvents.emit('data', { id, data });
   });
@@ -191,7 +241,8 @@ export function captureScreen(id, { full = true } = {}) {
     const line = buf.getLine(i);
     lines.push(line ? line.translateToString(true) : '');
   }
-  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+  const body = lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+  return full ? withHistoryPrelude(s, body) : body;
 }
 
 // Ensure all queued writes are parsed into the buffer before capturing.
@@ -295,7 +346,14 @@ export function captureColoredHtml(id, { full = false, maxLines = 600 } = {}) {
     if (run) html += spanFor(key, run);
     out.push(html.replace(/\s+$/, ''));
   }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
+  const body = out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
+  if (full && (s.terminalPrelude || s.terminalLog)) {
+    const parts = [];
+    if (s.terminalPrelude) parts.push(esc(s.terminalPrelude));
+    if (s.terminalLog) parts.push(esc(['===== Live terminal output log =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n')));
+    return [...parts, body].filter(Boolean).join('\n');
+  }
+  return body;
 }
 
 export async function captureColoredHtmlFlushed(id, opts) {

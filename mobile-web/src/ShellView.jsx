@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { sessionScreenPlain, sessionInput, launchClaudeIn, launchHermesIn, sayUrl } from './lib/api.js';
+import { sessionScreenPlain, sessionInput, listProviders, launchProviderIn, sayUrl, killSession } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
 import { DictationMic, Terminal } from './components.jsx';
 
@@ -9,6 +9,12 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
   const [cmd, setCmd] = useState('');
   const [cwd, setCwd] = useState(session.cwd || '');
   const [launching, setLaunching] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const [providers, setProviders] = useState([]);
+
+  useEffect(() => {
+    listProviders().then((d) => setProviders(d.providers || [])).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let stop = false;
@@ -45,18 +51,27 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
       notify(e.message);
     }
   }
-  async function launch(agent = 'claude') {
+  async function launch(provider) {
     setLaunching(true);
     try {
-      if (agent === 'hermes') await launchHermesIn(session.id);
-      else await launchClaudeIn(session.id);
-      setTimeout(() => {
-        setLaunching(false);
-        onLaunched({ ...session, kind: agent, cwd });
-      }, 3000);
+      const launched = await launchProviderIn(session.id, provider.id);
+      setLaunching(false);
+      onLaunched(launched);
     } catch (e) {
       setLaunching(false);
       notify(e.message);
+    }
+  }
+
+  async function endSession() {
+    setShowMenu(false);
+    const name = session.label || cwd || `Session ${session.id}`;
+    if (!window.confirm(`End "${name}"?\n\nThis stops the shell session everywhere — phone and desktop terminal.`)) return;
+    try {
+      await killSession(session.id);
+      onBack();
+    } catch (e) {
+      notify?.('End session failed: ' + e.message);
     }
   }
 
@@ -65,14 +80,43 @@ export default function ShellView({ session, onLaunched, onBack, notify }) {
       <div className="sv-top">
         <button className="ghost sv-back" onClick={onBack}>←</button>
         <div className="sv-title">Terminal · {cwd}</div>
+        <button
+          className="ghost sv-more"
+          onClick={() => setShowMenu((v) => !v)}
+          aria-label="Session options"
+          aria-expanded={showMenu}
+        >
+          ⋯
+        </button>
+        {showMenu && (
+          <>
+            <div className="sv-menu-backdrop" onClick={() => setShowMenu(false)} />
+            <div className="sv-menu" role="menu">
+              <div className="sv-menu-head">Session</div>
+              <button className="sv-menu-item" role="menuitem" onClick={endSession}>
+                <span className="sv-menu-ico">🛑</span>
+                <span className="sv-menu-label">End session</span>
+                <span className="sv-menu-state">Kill</span>
+              </button>
+            </div>
+          </>
+        )}
       </div>
       <Terminal sessionId={session.id} className="sv-term" />
       <div className="row" style={{ flexWrap: 'wrap' }}>
         <button onClick={() => run('ls')}>ls</button>
         <button onClick={() => run('cd ..')}>cd ..</button>
         <button onClick={whereami}>🔊 Where am I</button>
-        <button className="primary" onClick={() => launch('hermes')} disabled={launching}>🚀 Launch Hermes/Grok</button>
-        <button onClick={() => launch('claude')} disabled={launching}>Launch Claude</button>
+        {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider, index) => (
+          <button
+            key={provider.id}
+            className={index === 0 ? 'primary' : ''}
+            onClick={() => launch(provider)}
+            disabled={launching}
+          >
+            Launch {provider.name}
+          </button>
+        ))}
       </div>
       <div className="sv-bar">
         <DictationMic className="micbtn" text={cmd} setText={setCmd} notify={notify} />

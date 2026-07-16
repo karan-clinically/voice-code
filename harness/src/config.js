@@ -16,6 +16,7 @@ const allStmt = db.prepare('SELECT key, value FROM config');
 // when the DB value is absent). Keeps secrets out of the repo during testing.
 const ENV_FALLBACK = {
   deepgram_api_key: 'DEEPGRAM_API_KEY',
+  xai_api_key: 'XAI_API_KEY',
   openai_api_key: 'OPENAI_API_KEY', // optional — dictation cleanup only (refine.js)
   elevenlabs_api_key: 'ELEVENLABS_API_KEY',
   elevenlabs_voice_id: 'ELEVENLABS_VOICE_ID',

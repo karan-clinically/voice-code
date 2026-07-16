@@ -10,11 +10,16 @@ import { mkdirSync } from 'node:fs';
 export const DATA_DIR = process.env.CVH_DATA_DIR || join(homedir(), '.claude-voice-harness');
 export const AUDIO_DIR = join(DATA_DIR, 'audio');
 export const UPLOADS_DIR = join(DATA_DIR, 'uploads');
+// The native Grok agent persists each conversation's full LLM context here as
+// <convId>.json, so a Grok session survives its PTY dying and can be resumed with
+// memory intact (Claude gets this for free via its own on-disk transcript).
+export const GROK_DIR = join(DATA_DIR, 'grok');
 export const DB_PATH = join(DATA_DIR, 'harness.db');
 
 // recursive:true creates DATA_DIR too, and is a no-op if they already exist.
 mkdirSync(AUDIO_DIR, { recursive: true });
 mkdirSync(UPLOADS_DIR, { recursive: true });
+mkdirSync(GROK_DIR, { recursive: true });
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL'); // concurrent reads while the harness writes
@@ -88,6 +93,25 @@ function migrate(db) {
   } catch {
     /* column already exists */
   }
+
+  // Provider-neutral adapter metadata. Keep the legacy columns during the
+  // compatibility window; new code writes both old and new fields.
+  for (const sql of [
+    "ALTER TABLE sessions ADD COLUMN provider_id TEXT DEFAULT 'claude'",
+    'ALTER TABLE sessions ADD COLUMN adapter_version INTEGER DEFAULT 1',
+    'ALTER TABLE sessions ADD COLUMN external_session_id TEXT',
+    'ALTER TABLE sessions ADD COLUMN credential_ref TEXT',
+    'ALTER TABLE sessions ADD COLUMN capabilities_json TEXT',
+  ]) {
+    try { db.exec(sql); } catch { /* column already exists */ }
+  }
+  db.exec(`
+    UPDATE sessions SET provider_id = COALESCE(NULLIF(provider_id, ''), kind, 'claude');
+    UPDATE sessions SET external_session_id = claude_session_id
+      WHERE external_session_id IS NULL AND claude_session_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider_id, last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_sessions_external ON sessions(provider_id, external_session_id);
+  `);
 
   // Additive migration: characters billed for this interaction's TTS, so voice
   // spend is visible per provider later. NULL for user rows / when TTS was off.

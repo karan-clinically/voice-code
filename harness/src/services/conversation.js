@@ -12,6 +12,7 @@
 import { statSync } from 'node:fs';
 import db from '../db.js';
 import { findTranscriptPath, parseMessages } from './transcript.js';
+import { getGrokConversationForView } from './grokArchive.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('conversation');
@@ -70,6 +71,14 @@ const transcriptCache = new Map(); // uuid -> { mtimeMs, size, messages }
 // conversation snapshot to replace, not an incremental append.
 export async function getLiveConversation(session, afterId = 0) {
   const uuid = session?.claude_session_id;
+  // A Grok session's complete record is its own on-disk context file (keyed by the
+  // conv id we stored in claude_session_id). Read it directly — the symmetric of
+  // reading Claude's transcript below — so history survives across resumes and even
+  // terminal-typed turns show up. Falls through to the messages table if unwritten.
+  if (session?.kind === 'grok' && uuid) {
+    const messages = getGrokConversationForView(uuid);
+    if (messages && messages.length) return { messages, lastId: messages.length, full: true };
+  }
   const path = uuid ? findTranscriptPath(uuid) : null;
   if (path) {
     try {
