@@ -210,6 +210,21 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
       // numbered picker, a permission dialog, a "press Enter to continue"). Send a
       // raw carriage return to the pty instead of dropping it — the same thing the
       // ⌨ pad's Enter does — so Return alone answers a prompt without typing a number.
+      //
+      // Tapping it TWICE quickly accepts Claude's ghosted next-prompt suggestion:
+      // the TUI only materialises a suggestion on Tab (a bare Enter is a no-op with
+      // ghost text showing), so the second tap sends Tab-then-Enter. The first
+      // tap's stray Enter is harmless in that state, and prompt-confirmation still
+      // works because nobody double-taps a prompt they just confirmed.
+      const now = Date.now();
+      if (now - lastEmptySend.current < 600) {
+        lastEmptySend.current = 0;
+        ding('sent');
+        sendRaw('\t');
+        setTimeout(() => sendRaw('\r'), 150);
+        return;
+      }
+      lastEmptySend.current = now;
       sendRaw('\r');
       return;
     }
@@ -247,6 +262,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   // Raw-key channel for answering the TUI's interactive prompts (permission
   // dialogs, "press Enter", multi-select menus). Reuses the deployed /ws/term
   // raw transport, so Enter/arrows/Space/Esc all work without a real keyboard.
+  const lastEmptySend = useRef(0); // double-tap-Send window for accepting a suggested prompt
   const keyWs = useRef(null);
   const keyReconnect = useRef(null); // set by the effect; sendRaw uses it to rewire after a fallback
   useEffect(() => {
