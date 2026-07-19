@@ -44,6 +44,8 @@ export const api = {
   sendMessage: (id, text) => request(`/api/sessions/${id}/events`, { method: 'POST', body: { text } }),
   interrupt: (id) => request(`/api/sessions/${id}/events`, { method: 'POST', body: { interrupt: true } }),
   codeSessions: () => request('/api/code-sessions'),
+  listPcs: () => request('/api/pcs'),
+  forgetPc: (id) => request(`/api/pcs?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
   sttToken: () => request('/api/stt-token'),
   transcribe: (blob, audioType) =>
     request('/api/transcribe', { method: 'POST', body: blob, raw: { audioType } }),

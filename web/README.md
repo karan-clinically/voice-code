@@ -43,6 +43,7 @@ Phone mic ──WSS (short-lived JWT)──► api.deepgram.com/v1/listen   (liv
    | `ANTHROPIC_ENVIRONMENT_ID` | recommended | Pin after first run — see below |
    | `VOICE_AGENT_MODEL` | no | Model for new agents (default `claude-opus-4-8`) |
    | `CLAUDE_CODE_OAUTH_TOKEN` | no | Enables the read-only claude.ai/code session list (see below) |
+   | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | for PC list | Added automatically by the Upstash Redis integration (see "My PCs") |
 
 3. **Deploy**, open the URL on your phone, enter the access token, and speak. Add to home
    screen for a standalone app feel.
@@ -51,6 +52,30 @@ Phone mic ──WSS (short-lived JWT)──► api.deepgram.com/v1/listen   (liv
    `voice-code-env` environment. Visit `/api/setup?token=YOUR_APP_ACCESS_TOKEN` to see their ids,
    then set `ANTHROPIC_AGENT_ID` / `ANTHROPIC_ENVIRONMENT_ID` so cold starts skip the lookup and
    redeploys can never create duplicates.
+
+### Optional: "My PCs" — launch into your harness machines (AnyDesk-style)
+
+The home screen can list every PC running the local harness, with a live
+connected/disconnected dot. Tapping a connected PC opens that machine's own mobile UI (`/m`) —
+full local PTY sessions on your Max subscription; the Vercel app is the device directory.
+
+1. **Add a store for heartbeats** (serverless functions are stateless): in Vercel, Project →
+   Storage → add the **Upstash Redis** integration (free tier is plenty — one hash key, one small
+   write per PC per 30s). It injects `KV_REST_API_URL`/`KV_REST_API_TOKEN` automatically;
+   redeploy after adding it.
+2. **Point each PC's harness at the hub** — in `harness/.env` on each machine:
+
+   ```ini
+   HUB_URL=https://your-app.vercel.app
+   HUB_TOKEN=<same value as APP_ACCESS_TOKEN>
+   ```
+
+   Restart the harness. It heartbeats every 30s with its name, tunnel URL, and pairing token;
+   a PC that stops beating for ~75s shows as **disconnected** (it stays listed — ✕ forgets it).
+3. **Reachability:** the launch link uses the PC's Tailscale URL. With `tunnel_mode=funnel` the
+   PC is reachable from anywhere (traffic is still gated by the pairing token). With plain
+   `serve`, launching works only while your phone is on the tailnet — the status dot works
+   either way.
 
 ### Optional: show your claude.ai/code sessions
 

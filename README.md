@@ -22,6 +22,9 @@ mobile app is a later phase.
 > dictate-review-send voice loop (Deepgram STT/TTS). No harness, no Tailscale. Your existing
 > claude.ai/code sessions appear read-only there (no public API can send prompts into them);
 > voice-driven work runs in Managed Agents cloud sessions, billed to an Anthropic API key.
+> It also acts as a device directory: harnesses heartbeat to it (`HUB_URL`/`HUB_TOKEN`), the
+> home screen shows each PC as connected/disconnected AnyDesk-style, and tapping a connected
+> PC launches straight into that machine's own subscription-billed sessions.
 > See [web/README.md](web/README.md) for setup.
 
 ---

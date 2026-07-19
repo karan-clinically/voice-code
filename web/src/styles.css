@@ -122,6 +122,18 @@ code { background: var(--panel); padding: 0.1em 0.35em; border-radius: 4px; }
 .badge.running { color: var(--green); border-color: var(--green); }
 .badge.terminated, .badge.error { color: var(--red); border-color: var(--red); }
 
+.pc-row.offline { opacity: 0.55; }
+.presence-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  margin-right: 0.55rem;
+  vertical-align: middle;
+}
+.presence-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
 /* ---- session view ---- */
 .session-view { display: flex; flex-direction: column; height: 100dvh; padding: 0 1rem; }
 .session-title { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
