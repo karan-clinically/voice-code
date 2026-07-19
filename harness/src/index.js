@@ -19,6 +19,7 @@ import { ensureServe } from './services/tunnel.js';
 import { startReconciler, stopReconciler } from './services/sessionManager.js';
 import { startNotifier } from './services/notify.js';
 import { startIndexer } from './services/archiveIndex.js';
+import { startHubPresence } from './services/hubPresence.js';
 import * as terminal from './services/terminal.js';
 import { makeLogger } from './util/logger.js';
 import { startWatchdog } from './util/watchdog.js';
@@ -62,6 +63,10 @@ startWatchdog(); // a wedged event loop becomes a logged exit-99 + 3s respawn, n
 // cheap. Non-blocking — search just returns fewer results until the first pass
 // completes.
 startIndexer();
+
+// Announce this PC to the Vercel hub's device list (opt-in; no-op unless
+// hub_url + hub_token are configured).
+startHubPresence();
 
 // Self-heal the Tailscale serve/funnel mapping (something on this machine keeps
 // repointing the root path). Only keeps the loop if the first re-pin succeeds

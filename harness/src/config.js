@@ -22,6 +22,8 @@ const ENV_FALLBACK = {
   elevenlabs_voice_id: 'ELEVENLABS_VOICE_ID',
   pairing_token: 'PAIRING_TOKEN',
   port: 'PORT',
+  hub_url: 'HUB_URL', // Vercel hub (web/) presence beacon — see services/hubPresence.js
+  hub_token: 'HUB_TOKEN',
 };
 
 export function getConfig(key, fallback = null) {

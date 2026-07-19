@@ -16,6 +16,17 @@ lands in the command box on whichever device you spoke into, you edit it if you 
 This repo contains **Phase 1 + 2**: the `harness/` backend and the `desktop/` Electron app. The
 mobile app is a later phase.
 
+> **☁️ Hosted (Vercel) edition:** there is now a second, PC-free way to run Voice Code —
+> [`web/`](web/README.md) is a Vercel-deployable app that drives **cloud** Claude agent sessions
+> through Anthropic's Managed Agents API instead of local PTYs, with the same
+> dictate-review-send voice loop (Deepgram STT/TTS). No harness, no Tailscale. Your existing
+> claude.ai/code sessions appear read-only there (no public API can send prompts into them);
+> voice-driven work runs in Managed Agents cloud sessions, billed to an Anthropic API key.
+> It also acts as a device directory: harnesses heartbeat to it (`HUB_URL`/`HUB_TOKEN`), the
+> home screen shows each PC as connected/disconnected AnyDesk-style, and tapping a connected
+> PC launches straight into that machine's own subscription-billed sessions.
+> See [web/README.md](web/README.md) for setup.
+
 ---
 
 ## Architecture (Windows-native)
