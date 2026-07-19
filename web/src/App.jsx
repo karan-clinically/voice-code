@@ -54,26 +54,36 @@ function Main({ onAuthFail }) {
   const [sessions, setSessions] = useState([]);
   const [codeSessions, setCodeSessions] = useState(null);
   const [pcs, setPcs] = useState(null);
+  const [features, setFeatures] = useState(null);
   const [active, setActive] = useState(null);
   const [error, setError] = useState('');
   const [autoSpeak, setAutoSpeak] = useState(localStorage.getItem('vc_autospeak') !== '0');
 
-  const refresh = useCallback(async () => {
-    try {
-      const [mine, code, devices] = await Promise.all([
-        api.listSessions(),
-        api.codeSessions(),
-        api.listPcs(),
-      ]);
-      setSessions(mine.sessions);
-      setCodeSessions(code);
-      setPcs(devices);
-      setError('');
-    } catch (e) {
-      if (e.status === 401) onAuthFail();
-      else setError(e.message);
-    }
+  useEffect(() => {
+    api.setup()
+      .then((s) => setFeatures(s.features))
+      .catch((e) => (e.status === 401 ? onAuthFail() : setError(e.message)));
   }, [onAuthFail]);
+
+  // Each data source fails independently — a missing ANTHROPIC_API_KEY (connector-only
+  // deployment) must not blank the PC list.
+  const refresh = useCallback(async () => {
+    const results = await Promise.allSettled([
+      api.listPcs(),
+      api.codeSessions(),
+      features?.cloud_sessions ? api.listSessions() : Promise.resolve(null),
+    ]);
+    const [pcsR, codeR, mineR] = results;
+    if (results.some((r) => r.status === 'rejected' && r.reason?.status === 401)) {
+      onAuthFail();
+      return;
+    }
+    if (pcsR.status === 'fulfilled') setPcs(pcsR.value);
+    if (codeR.status === 'fulfilled') setCodeSessions(codeR.value);
+    if (mineR.status === 'fulfilled' && mineR.value) setSessions(mineR.value.sessions);
+    const firstErr = results.find((r) => r.status === 'rejected');
+    setError(firstErr ? firstErr.reason.message : '');
+  }, [features, onAuthFail]);
 
   useEffect(() => {
     refresh();
@@ -132,26 +142,38 @@ function Main({ onAuthFail }) {
 
       <PcList pcs={pcs} onForget={async (id) => { await api.forgetPc(id).catch(() => {}); refresh(); }} />
 
-      <section>
-        <h2>New session</h2>
-        <Composer placeholder="Dictate the first command for a new session…" onSend={startSession} />
-      </section>
+      {features?.cloud_sessions ? (
+        <>
+          <section>
+            <h2>New cloud session</h2>
+            <Composer placeholder="Dictate the first command for a new session…" onSend={startSession} />
+          </section>
 
-      <section>
-        <h2>Agent sessions</h2>
-        {sessions.length === 0 && <p className="hint">None yet — start one above.</p>}
-        <ul className="session-list">
-          {sessions.map((s) => (
-            <li key={s.id}>
-              <button className="session-row" onClick={() => setActive(s)}>
-                <span className="row-title">{s.title || s.id}</span>
-                <span className={`badge ${s.status}`}>{s.status}</span>
-              </button>
-              <button className="ghost danger" onClick={() => removeSession(s.id)} aria-label="Delete">✕</button>
-            </li>
-          ))}
-        </ul>
-      </section>
+          <section>
+            <h2>Cloud agent sessions</h2>
+            {sessions.length === 0 && <p className="hint">None yet — start one above.</p>}
+            <ul className="session-list">
+              {sessions.map((s) => (
+                <li key={s.id}>
+                  <button className="session-row" onClick={() => setActive(s)}>
+                    <span className="row-title">{s.title || s.id}</span>
+                    <span className={`badge ${s.status}`}>{s.status}</span>
+                  </button>
+                  <button className="ghost danger" onClick={() => removeSession(s.id)} aria-label="Delete">✕</button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </>
+      ) : (
+        features && (
+          <p className="hint">
+            Connector-only mode: this hub just launches into your PCs. To also run PC-free cloud
+            agent sessions (billed to an Anthropic API key), add <code>ANTHROPIC_API_KEY</code> and{' '}
+            <code>DEEPGRAM_API_KEY</code> in Vercel.
+          </p>
+        )
+      )}
 
       <CodeSessionsSection codeSessions={codeSessions} />
     </div>

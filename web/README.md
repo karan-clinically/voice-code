@@ -32,13 +32,20 @@ Phone mic ──WSS (short-lived JWT)──► api.deepgram.com/v1/listen   (liv
 1. **Vercel → New Project → import this repo.**
    - **Root Directory:** `web`
    - **Framework preset:** Vite (auto-detected)
-2. **Environment variables** (Project → Settings → Environment Variables):
+2. **Environment variables** (Project → Settings → Environment Variables).
+
+   The hub has two independent halves — configure only what you use:
+   - **Connector-only mode** (device directory into PC-hosted harnesses): just
+     `APP_ACCESS_TOKEN` + the Upstash Redis integration. No Anthropic/Deepgram keys, nothing
+     billed on Vercel's side; session traffic goes phone → PC over Tailscale directly.
+   - **Cloud sessions** (PC-free, API-billed): additionally `ANTHROPIC_API_KEY` and
+     `DEEPGRAM_API_KEY`.
 
    | Variable | Required | What it is |
    |---|---|---|
-   | `ANTHROPIC_API_KEY` | yes | API key from [platform.claude.com](https://platform.claude.com/settings/keys) |
-   | `DEEPGRAM_API_KEY` | yes | Deepgram key (STT + TTS), [console.deepgram.com](https://console.deepgram.com) |
-   | `APP_ACCESS_TOKEN` | yes | Any long random string — the app's login token. Generate one: `openssl rand -hex 24` |
+   | `APP_ACCESS_TOKEN` | yes | Any long random string — the app's login token. Generate one: `openssl rand -hex 24`. Needed even in connector-only mode: Vercel is on the public internet (it can't join a tailnet), and the device list serves your PCs' URLs and pairing tokens. |
+   | `ANTHROPIC_API_KEY` | cloud sessions | API key from [platform.claude.com](https://platform.claude.com/settings/keys) |
+   | `DEEPGRAM_API_KEY` | cloud sessions | Deepgram key (STT + TTS), [console.deepgram.com](https://console.deepgram.com) |
    | `ANTHROPIC_AGENT_ID` | recommended | Pin after first run — see below |
    | `ANTHROPIC_ENVIRONMENT_ID` | recommended | Pin after first run — see below |
    | `VOICE_AGENT_MODEL` | no | Model for new agents (default `claude-opus-4-8`) |
