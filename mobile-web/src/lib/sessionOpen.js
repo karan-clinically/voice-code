@@ -15,7 +15,8 @@ export const canOpenRow = (it) =>
 //
 // Calls onOpen with the resulting session; surfaces errors via notify. Shared by the
 // Home Sessions list and the in-session switcher drawer.
-export async function openSessionRow(it, onOpen, notify) {
+export async function openSessionRow(it, onOpen, notify, onStatus) {
+  onStatus?.(true);
   try {
     if (it.kind === 'harness' && it.alive) {
       onOpen({ id: it.harnessId, kind: it.shell ? 'shell' : (it.agentKind || 'claude'), label: it.name, cwd: it.cwd });
@@ -37,5 +38,7 @@ export async function openSessionRow(it, onOpen, notify) {
     }
   } catch (e) {
     notify?.(e.message);
+  } finally {
+    onStatus?.(false);
   }
 }

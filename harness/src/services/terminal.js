@@ -26,10 +26,9 @@ const SCROLLBACK = Math.max(5000, Number(process.env.CVH_TERM_SCROLLBACK) || 200
 // (desktop /ws/term) can paint the existing screen + scrollback on connect.
 const REPLAY_CAP = Math.max(256 * 1024, Number(process.env.CVH_TERM_REPLAY_BYTES) || 1024 * 1024); // bytes retained
 const REPLAY_TRIM_AT = Math.floor(REPLAY_CAP * 1.5); // slice back to CAP once we exceed this
-// Plain-text live output log for mobile Terminal scrollback. Claude's TUI uses the
-// alternate screen, whose xterm buffer only exposes the current viewport, so keep a
-// sanitized transcript of bytes as they arrive for sessions that have no JSONL
-// transcript/prelude yet.
+// Full-screen TUIs render in xterm's alternate buffer, which deliberately has no
+// scrollback. Keep a plain-text history alongside the rendered current screen so
+// opening a session can still show output that has already scrolled away.
 const TEXT_LOG_CAP = Math.max(256 * 1024, Number(process.env.CVH_TERM_TEXT_LOG_BYTES) || 900 * 1024);
 const TEXT_LOG_TRIM_AT = Math.floor(TEXT_LOG_CAP * 1.5);
 const isWin = process.platform === 'win32';
@@ -70,35 +69,35 @@ function normalizeTerminalText(text) {
 function withHistoryPrelude(s, body) {
   const parts = [];
   if (s?.terminalPrelude) parts.push(s.terminalPrelude);
-  if (s?.terminalLog) parts.push(['===== Live terminal output log =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n'));
+  if (s?.terminalLog) {
+    parts.push(['===== Earlier terminal output =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n'));
+  }
   if (!parts.length) return body;
   return [...parts, body].filter(Boolean).join('\n');
 }
 
 function terminalDataToText(data) {
-  let s = String(data || '');
-  // OSC hyperlinks/window-title, CSI cursor/style/control, and simple ESC sequences.
-  s = s.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
-  s = s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
-  s = s.replace(/\x1b[()][A-Za-z0-9]/g, '');
-  s = s.replace(/\x1b[=>]/g, '');
-  // Convert carriage-return redraws into lines; remove remaining non-printing C0.
-  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  s = s.replace(/[^\x09\x0A\x20-\x7E\u00A0-\uFFFF]/g, '');
-  // Apply backspaces within this chunk.
-  while (/[^\n]\x08/.test(s)) s = s.replace(/[^\n]\x08/g, '');
-  return s;
+  let text = String(data || '');
+  // Remove terminal control sequences while retaining the text they position.
+  text = text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
+  text = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+  text = text.replace(/\x1b[()][A-Za-z0-9]/g, '');
+  text = text.replace(/\x1b[=>]/g, '');
+  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Apply backspaces before removing the remaining non-printing characters.
+  while (/[^\n]\x08/.test(text)) text = text.replace(/[^\n]\x08/g, '');
+  return text.replace(/[^\x09\x0A\x20-\x7E\u00A0-\uFFFF]/g, '');
 }
 
 function appendTerminalLog(session, data) {
   const text = terminalDataToText(data);
   if (!text.trim()) return;
   session.terminalLog += text;
-  if (session.terminalLog.length > TEXT_LOG_TRIM_AT) {
-    session.terminalLog = session.terminalLog.slice(-TEXT_LOG_CAP);
-    const firstNl = session.terminalLog.indexOf('\n');
-    if (firstNl > 0) session.terminalLog = session.terminalLog.slice(firstNl + 1);
-  }
+  if (session.terminalLog.length <= TEXT_LOG_TRIM_AT) return;
+  session.terminalLog = session.terminalLog.slice(-TEXT_LOG_CAP);
+  // Never expose a partial first line after trimming the bounded history.
+  const firstNewline = session.terminalLog.indexOf('\n');
+  if (firstNewline >= 0) session.terminalLog = session.terminalLog.slice(firstNewline + 1);
 }
 
 function deriveName(cwd, id) {
@@ -348,17 +347,90 @@ export function captureColoredHtml(id, { full = false, maxLines = 600 } = {}) {
   }
   const body = out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
   if (full && (s.terminalPrelude || s.terminalLog)) {
-    const parts = [];
-    if (s.terminalPrelude) parts.push(esc(s.terminalPrelude));
-    if (s.terminalLog) parts.push(esc(['===== Live terminal output log =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n')));
-    return [...parts, body].filter(Boolean).join('\n');
+    const history = [];
+    if (s.terminalPrelude) history.push(esc(s.terminalPrelude));
+    if (s.terminalLog) {
+      history.push(esc(['===== Earlier terminal output =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n')));
+    }
+    return [...history, body].filter(Boolean).join('\n');
   }
   return body;
+}
+
+// Render one cursor-addressable slice of the full terminal history. `before` is
+// an exclusive virtual line index; omitting it returns the newest page. History
+// seeded from a resumed transcript/log participates in the same line space, so
+// even very large resumed sessions do not have to cross the network at once.
+export function captureColoredHtmlPage(id, { before = null, limit = 400 } = {}) {
+  const s = sessions.get(id);
+  if (!s) throw new Error(`session ${id} not found`);
+  const term = s.term;
+  const buf = term.buffer.active;
+  const history = [];
+  if (s.terminalPrelude) history.push(...s.terminalPrelude.split('\n').map(esc));
+  if (s.terminalLog) {
+    history.push(...[
+      '===== Earlier terminal output =====',
+      ...s.terminalLog.trimEnd().split('\n'),
+      '===== Current terminal screen =====',
+    ].map(esc));
+  }
+
+  const totalLines = history.length + buf.length;
+  const endLine = before == null
+    ? totalLines
+    : Math.max(0, Math.min(totalLines, Number(before) || 0));
+  const pageSize = Math.max(50, Math.min(1000, Number(limit) || 400));
+  const startLine = Math.max(0, endLine - pageSize);
+  const out = [];
+
+  for (let virtualY = startLine; virtualY < endLine; virtualY++) {
+    if (virtualY < history.length) {
+      out.push(history[virtualY]);
+      continue;
+    }
+    const line = buf.getLine(virtualY - history.length);
+    if (!line) {
+      out.push('');
+      continue;
+    }
+    let html = '';
+    let key = null;
+    let run = '';
+    for (let x = 0; x < term.cols; x++) {
+      const cell = line.getCell(x);
+      if (!cell || cell.getWidth() === 0) continue;
+      const chars = cell.getChars() || ' ';
+      const k = cellKey(cell);
+      if (k !== key) {
+        if (run) html += spanFor(key, run);
+        key = k;
+        run = '';
+      }
+      run += chars;
+    }
+    if (run) html += spanFor(key, run);
+    out.push(html.replace(/\s+$/, ''));
+  }
+
+  return {
+    html: out.join('\n').replace(/\n+$/g, ''),
+    startLine,
+    endLine,
+    totalLines,
+    hasOlder: startLine > 0,
+    hasTerminalPrelude: history.length > 0,
+  };
 }
 
 export async function captureColoredHtmlFlushed(id, opts) {
   await flush(id);
   return captureColoredHtml(id, opts);
+}
+
+export async function captureColoredHtmlPageFlushed(id, opts) {
+  await flush(id);
+  return captureColoredHtmlPage(id, opts);
 }
 
 // Raw output retained for this session (for a fresh terminal client to replay).

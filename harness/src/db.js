@@ -102,6 +102,8 @@ function migrate(db) {
     'ALTER TABLE sessions ADD COLUMN external_session_id TEXT',
     'ALTER TABLE sessions ADD COLUMN credential_ref TEXT',
     'ALTER TABLE sessions ADD COLUMN capabilities_json TEXT',
+    'ALTER TABLE sessions ADD COLUMN tab_color TEXT',
+    'ALTER TABLE sessions ADD COLUMN title_locked INTEGER DEFAULT 0',
   ]) {
     try { db.exec(sql); } catch { /* column already exists */ }
   }

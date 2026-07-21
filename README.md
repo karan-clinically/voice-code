@@ -451,7 +451,7 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | Route | Method | Notes |
 |---|---|---|
 | `/api/health` | GET | `{ok, version}` |
-| `/api/sessions` | GET/POST | list / spawn (`{cwd,label,kind}`; kind `claude`\|`shell`) |
+| `/api/sessions` | GET/POST | list / spawn (`{cwd,label,kind,forceNew}`; `forceNew:true` allows parallel sessions for the same agent and folder) |
 | `/api/sessions/recent` | GET | connected sessions for the phone home screen — harness PTYs + live Claude sessions from Claude's own API (`api.anthropic.com/v1/code/sessions`); disconnected ones filtered, **deduped to one row per conversation** (by transcript uuid; prefers the live harness PTY so a tap opens in place, not a `--resume` fork) |
 | `/api/sessions/:id` | GET | one session (includes `muted`) |
 | `/api/sessions/:id/history` | GET | interactions |

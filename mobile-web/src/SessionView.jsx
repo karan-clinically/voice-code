@@ -8,7 +8,9 @@ import ChatComposer from './ChatComposer.jsx';
 import VoiceView from './VoiceView.jsx';
 import TerminalKeypad from './TerminalKeypad.jsx';
 import SessionSwitcher from './SessionSwitcher.jsx';
+import QuickSessionSwitcher from './QuickSessionSwitcher.jsx';
 import { normalizeSpokenSlash } from './lib/slashCommands.js';
+import { readSessionCards, writeSessionCards } from './lib/localCache.js';
 
 // Spoken form of a detected prompt (a numbered picker or a bash-permission dialog):
 // the question followed by its numbered options, so it's clear what you're answering.
@@ -35,7 +37,7 @@ const VIEWS = [
 // Full-screen Claude session — terminal is the main view. Voice dictates into the
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
 // code is retained in lib/audio.js but not surfaced here.
-export default function SessionView({ session, onBack, onOpen, notify }) {
+export default function SessionView({ session, onBack, onOpen, quickSwitchSignal = 0, notify }) {
   const isGrok = (session.kind || '') === 'grok';
   const isCodex = (session.kind || '') === 'codex';
   const hasChat = session.capabilities?.chat !== false;
@@ -45,6 +47,7 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   const [voice, setVoice] = useState(false); // hands-free overlay
   const [keysMode, setKeysMode] = useState(false); // terminal key-pad replaces the composer input
   const [showSwitch, setShowSwitch] = useState(false); // left session-switcher drawer
+  const [showQuickSwitch, setShowQuickSwitch] = useState(false); // native back-swipe Alt-Tab modal
   const [showMenu, setShowMenu] = useState(false); // ⋯ overflow: speak-replies + notifications
   // Speak replies aloud? Off = a normal, silent coding session. Persisted so the
   // choice sticks across sessions. TTS renders lazily on first fetch, so muting
@@ -124,10 +127,15 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   // header exactly as the row you tapped is named, and notice when a DIFFERENT session
   // finishes, errors or hits a question — the banner below is how you hear about it
   // while you're heads-down in this one.
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState(readSessionCards);
   useEffect(() => {
     let stop = false;
-    const load = () => recentSessions().then((d) => !stop && setRows(d.sessions || [])).catch(() => {});
+    const load = () => recentSessions().then((d) => {
+      if (stop) return;
+      const fresh = d.sessions || [];
+      setRows(fresh);
+      writeSessionCards(fresh);
+    }).catch(() => {});
     load();
     const t = setInterval(load, 5000);
     return () => { stop = true; clearInterval(t); };
@@ -135,6 +143,16 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
   const here = rows.find((r) => r.harnessId === session.id);
   const title = here?.name || label || basename(session.cwd);
   const alerts = rows.filter((r) => r.harnessId !== session.id && isAlert(r));
+  const seenQuickSwitchSignal = useRef(quickSwitchSignal);
+
+  useEffect(() => {
+    if (quickSwitchSignal > seenQuickSwitchSignal.current) {
+      seenQuickSwitchSignal.current = quickSwitchSignal;
+      setShowMenu(false);
+      setShowSwitch(false);
+      setShowQuickSwitch(true);
+    }
+  }, [quickSwitchSignal]);
 
   const view = voice ? 'voice' : mode;
   function pickView(id) {
@@ -326,7 +344,9 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
     keyReconnect.current?.();
   };
 
-  const stateCls = 'sv-state' + (state === 'working…' ? ' busy' : state === 'ready' ? ' ready' : '');
+  const isWorking = state === 'working…' || srvState === 'busy';
+  const isReady = state === 'ready' || srvState === 'response_ready';
+  const stateCls = 'sv-state' + (isWorking ? ' busy' : promptPending ? ' waiting' : isReady ? ' ready' : '');
   // Grok shares the command/chat/voice pipeline as Claude (turn-complete hook).
   // Codex is terminal-first for now: no chat/voice views until we add a Codex
   // completion hook/parser.
@@ -417,6 +437,17 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
         />
       )}
 
+      {showQuickSwitch && (
+        <QuickSessionSwitcher
+          key={quickSwitchSignal}
+          session={session}
+          rows={rows}
+          onOpen={onOpen}
+          onClose={() => setShowQuickSwitch(false)}
+          notify={notify}
+        />
+      )}
+
       {hasChat && mode === 'chat' ? (
         <ChatView session={session} notify={notify} />
       ) : (
@@ -443,15 +474,17 @@ export default function SessionView({ session, onBack, onOpen, notify }) {
             />
           )}
           <div className={stateCls}>
-            {state === 'working…' ? (
+            {promptPending ? (
+              <span className="sv-working">● Waiting for your input</span>
+            ) : isWorking ? (
               <span className="sv-working">
                 <span className="cw-dot" /><span className="cw-dot" /><span className="cw-dot" />
                 {isCodex ? 'Codex is working…' : isGrok ? 'Grok is working…' : 'Claude is working…'}
               </span>
-            ) : state === 'ready' ? (
+            ) : isReady ? (
               '✓ Ready'
             ) : (
-              state
+              'Connected · idle'
             )}
           </div>
         </>

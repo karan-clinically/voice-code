@@ -5,7 +5,8 @@ const base = location.origin;
 const hp = new URLSearchParams(location.hash.slice(1));
 if (hp.get('t')) {
   localStorage.setItem('cvh_token', hp.get('t'));
-  history.replaceState(null, '', location.pathname);
+  // Remove the secret fragment without discarding an active-session deep link.
+  history.replaceState(null, '', location.pathname + location.search);
 }
 const token = localStorage.getItem('cvh_token') || '';
 const authQS = token ? 'token=' + encodeURIComponent(token) : '';
@@ -67,7 +68,23 @@ export const listProviders = () => jget('/api/providers');
 // Recent sessions for the Sessions tab: { harness: [...], remote: [...] } — the
 // harness-spawned ones (live + recently ended) and external Claude sessions
 // started in another terminal (driven from claude.ai remote control).
-export const recentSessions = () => jget('/api/sessions/recent', { timeoutMs: 8000 });
+// /recent performs process/bridge reconciliation server-side. Coalesce callers
+// (Home, session header, and switcher can overlap) and briefly reuse the result.
+let recentValue = null;
+let recentAt = 0;
+let recentPending = null;
+export const recentSessions = () => {
+  if (recentValue && Date.now() - recentAt < 1500) return Promise.resolve(recentValue);
+  if (recentPending) return recentPending;
+  recentPending = jget('/api/sessions/recent', { timeoutMs: 8000 })
+    .then((value) => {
+      recentValue = value;
+      recentAt = Date.now();
+      return value;
+    })
+    .finally(() => { recentPending = null; });
+  return recentPending;
+};
 export const reindexArchive = () => jpost('/api/archive/reindex');
 export const createSession = (body) => jpost('/api/sessions', body);
 // Open Claude's background-agent view in a pty so the phone can attach to / peek a
@@ -83,7 +100,11 @@ export const sessionInfo = (id) => jget(`/api/sessions/${id}`, { timeoutMs: 8000
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const killLocal = (pid) => jpost('/api/sessions/kill-local', { pid });
 export const muteSession = (id, muted) => jpost(`/api/sessions/${id}/mute`, { muted });
-export const sessionScreen = (id) => jget(`/api/sessions/${id}/screen?full=1&color=1`, { timeoutMs: 8000 });
+export const sessionScreen = (id, { before = null, lines = 400 } = {}) => {
+  const qs = new URLSearchParams({ full: '1', color: '1', plain: '0', lines: String(lines) });
+  if (before != null) qs.set('before', String(before));
+  return jget(`/api/sessions/${id}/screen?${qs}`, { timeoutMs: 8000 });
+};
 export const sessionScreenPlain = (id) => jget(`/api/sessions/${id}/screen?full=1`, { timeoutMs: 8000 });
 export const sessionInput = (id, text) => jpost(`/api/sessions/${id}/input`, { text });
 export const sessionResize = (id, cols, rows) => jpost(`/api/sessions/${id}/resize`, { cols, rows });
@@ -142,6 +163,11 @@ export const resumeArchive = (uuid) => jpost(`/api/archive/${encodeURIComponent(
 
 // --- chat view (conversation log) ---
 export const sessionMessages = (id, after = 0) => jget(`/api/sessions/${id}/messages?after=${after}`);
+export const sessionMessagePage = (id, { before = null, limit = 40 } = {}) => {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (before != null) qs.set('before', String(before));
+  return jget(`/api/sessions/${id}/messages?${qs}`);
+};
 export const sendChat = (id, text) => jpost(`/api/sessions/${id}/chat`, { text });
 
 // --- spend tally: estimated API cost across providers ---

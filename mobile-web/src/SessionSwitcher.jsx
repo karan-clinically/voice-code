@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { recentSessions } from './lib/api.js';
 import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
 import { ATTENTION_TITLE, ATTENTION_SHORT, attentionOf } from './lib/attention.js';
+import { readSessionCards, writeSessionCards } from './lib/localCache.js';
 
 const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '☁️' };
 
@@ -9,11 +10,21 @@ const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '
 // jump between them without going Home. The one you're in is marked "Here"; tapping
 // another switches straight to it (same open logic as the Home Sessions list).
 export default function SessionSwitcher({ session, onOpen, onClose, onHome, notify }) {
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState(readSessionCards);
+  const [loading, setLoading] = useState(true);
+  const [openingKey, setOpeningKey] = useState(null);
 
   useEffect(() => {
     let stop = false;
-    const load = () => recentSessions().then((d) => !stop && setRows(d.sessions || [])).catch(() => {});
+    const load = () => recentSessions()
+      .then((d) => {
+        if (stop) return;
+        const fresh = d.sessions || [];
+        setRows(fresh);
+        writeSessionCards(fresh);
+        setLoading(false);
+      })
+      .catch(() => { if (!stop) setLoading(true); });
     load();
     const t = setInterval(load, 4000);
     return () => { stop = true; clearInterval(t); };
@@ -21,7 +32,7 @@ export default function SessionSwitcher({ session, onOpen, onClose, onHome, noti
 
   const pick = (it) => {
     if (it.harnessId === session.id) { onClose(); return; } // already here
-    openSessionRow(it, (s) => { onOpen(s); onClose(); }, notify);
+    openSessionRow(it, (s) => { onOpen(s); onClose(); }, notify, (opening) => setOpeningKey(opening ? it.key : null));
   };
 
   const openable = rows.filter(canOpenRow);
@@ -35,18 +46,23 @@ export default function SessionSwitcher({ session, onOpen, onClose, onHome, noti
           <button className="ghost" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="sw-list">
+          {loading && (
+            <div className="load-status compact" role="status">
+              <span className="load-spinner" /> {rows.length ? 'Updating…' : 'Loading sessions…'}
+            </div>
+          )}
           {openable.length === 0 && <div className="muted" style={{ padding: '14px 12px' }}>No other connected sessions.</div>}
           {openable.map((it) => {
             const here = it.harnessId === session.id;
             const att = attentionOf(it);
             return (
-              <button key={it.key} className={'sw-item' + (here ? ' current' : '')} onClick={() => pick(it)}>
+              <button key={it.key} className={'sw-item' + (here ? ' current' : '')} onClick={() => pick(it)} disabled={!!openingKey}>
                 <span className="sw-ic">{it.bgAgent ? '🤖' : ORIGIN_ICON[it.origin] || '⌨️'}</span>
                 <span className="sw-body">
                   <span className="sw-name">{it.name}</span>
                   <span className="sw-meta">
                     <span className={'sw-dot ' + (it.active ? 'busy' : 'on')} />
-                    {it.active ? 'Working' : 'Connected'} · {it.originLabel}
+                    {openingKey === it.key ? 'Opening…' : it.active ? 'Working' : 'Connected'} · {it.originLabel}
                   </span>
                 </span>
                 {att && !here && (

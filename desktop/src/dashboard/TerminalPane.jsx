@@ -49,7 +49,10 @@ export default function TerminalPane({ session, active, onApi, notify }) {
       fontSize: 13,
       lineHeight: 1.15,
       cursorBlink: true,
-      scrollback: 6000,
+      // Match the harness's retained scrollback. A newly opened tab receives the
+      // session's existing output as a replay; a smaller client-side buffer used
+      // to evict its oldest lines immediately, making the scrollbar stop short.
+      scrollback: 20000,
       allowProposedApi: true,
       theme: THEME,
     });

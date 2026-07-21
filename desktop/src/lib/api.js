@@ -126,9 +126,10 @@ export const saveProviderCredential = (id, value) =>
   apiPost(`/api/providers/${encodeURIComponent(id)}/credential`, { value });
 // kind: 'claude' | 'grok' | 'codex' | 'shell' — defaults to claude on the server.
 export const createSession = (cwd, label, providerId = 'claude') =>
-  apiPost('/api/sessions', { cwd, label, providerId });
+  apiPost('/api/sessions', { cwd, label, providerId, forceNew: true });
 export const killSession = (id) => apiPost(`/api/sessions/${id}/kill`, {});
 export const renameSession = (id, label) => apiPost(`/api/sessions/${id}/rename`, { label });
+export const setSessionColor = (id, color) => apiPost(`/api/sessions/${id}/color`, { color });
 export const sendCommand = (sessionId, text) => apiPost('/api/command', { sessionId, text });
 
 // --- session archive (past transcripts) ---

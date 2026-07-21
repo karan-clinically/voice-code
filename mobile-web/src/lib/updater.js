@@ -1,8 +1,8 @@
 // Keep the phone off a stale bundle.
 //
 // The app is an installed PWA: it holds its loaded page in memory across
-// backgrounding, and the service worker caches nothing (it's push-only), so a
-// rebuilt frontend could sit unseen for hours. That one gap produced three separate
+// backgrounding, and its app-shell cache is deliberately stale-while-revalidate,
+// so a rebuilt frontend could otherwise sit unseen for hours. That gap produced three separate
 // "bugs" in a single session — an invisible Enter key, a stale sessions list, and a
 // chat that looked lost — all of which were just an old bundle.
 //

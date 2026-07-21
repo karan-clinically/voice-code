@@ -2,6 +2,7 @@
 // Auth is applied to all /api/* routes (localhost bypass OR bearer token).
 
 import express from 'express';
+import compression from 'compression';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -32,6 +33,9 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8
 export function buildApp() {
   const app = express();
   app.disable('x-powered-by');
+  // Terminal snapshots and parsed transcripts are highly repetitive text. Gzip
+  // cuts the largest mobile responses by an order of magnitude over Tailscale.
+  app.use(compression({ threshold: 1024 }));
   app.use(express.json({ limit: '2mb' }));
 
   // Scoped CORS: reflect only localhost origins and file:// ('null'). This lets
@@ -54,7 +58,7 @@ export function buildApp() {
   app.use('/api', authMiddleware);
 
   // Hash of the JS bundle we're currently serving. An installed PWA keeps its loaded
-  // page in memory across backgrounding and the service worker caches nothing, so a
+  // page in memory across backgrounding and the app-shell cache can be stale, so a
   // rebuilt frontend can otherwise sit unseen on the phone for hours. The client
   // compares this against the bundle IT loaded and reloads on a mismatch. Cached on
   // index.html's mtime so /health stays a cheap call.

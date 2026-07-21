@@ -15,7 +15,12 @@ import { Router } from 'express';
 import {
   searchArchive, getArchivePrompts, getArchiveMeta, listProjects, reindex,
 } from '../../services/archiveIndex.js';
-import { createSession, reusableSession, recordReuse, latestSessionByClaudeId } from '../../services/sessionManager.js';
+import {
+  createSession, getSession, latestSessionByClaudeId, listSessions,
+  recordReuse, reusableSession, setClaudeSessionId,
+} from '../../services/sessionManager.js';
+import { liveClaudeSessions } from '../../services/claudeSessions.js';
+import { liveHarnessForConversation } from '../../services/sessionIdentity.js';
 import { isLocalhost } from '../auth.js';
 import { backfillFromTranscript } from '../../services/conversation.js';
 import { findTranscriptPath, parseMessages, renderTerminalTranscript } from '../../services/transcript.js';
@@ -80,7 +85,18 @@ router.post('/:uuid/resume', async (req, res) => {
   // The reuse map above can't catch these (in-memory, keyed only by this route's
   // own opens), so check the DB row too. Attach in place instead.
   const live = latestSessionByClaudeId(meta.uuid);
-  if (live?.alive) return res.json(live);
+  if (live?.alive) {
+    recordReuse(reuseKey, live.id);
+    return res.json(live);
+  }
+  // The Stop hook may not have bound the UUID yet. Claude's PID registry is still
+  // an exact link, so use it before considering a new --resume process.
+  const processLinked = liveHarnessForConversation(listSessions(), meta.uuid, liveClaudeSessions());
+  if (processLinked) {
+    setClaudeSessionId(processLinked.id, meta.uuid);
+    recordReuse(reuseKey, processLinked.id);
+    return res.json(getSession(processLinked.id));
+  }
   try {
     const transcriptPath = findTranscriptPath(meta.uuid);
     let terminalPrelude = '';

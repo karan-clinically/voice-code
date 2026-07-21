@@ -58,6 +58,32 @@ export const SLASH_COMMANDS = [
 export const BUCKET_LABEL = { run: 'Runs immediately', menu: 'Opens a menu', args: 'Takes arguments' };
 
 const KNOWN = new Set(SLASH_COMMANDS.map((c) => c.cmd));
+const USAGE_KEY = 'cvh_slash_command_usage';
+
+// Usage is intentionally local to this browser/device. It is only presentation
+// metadata, so a corrupt value or unavailable storage should never break the picker.
+export function loadSlashCommandUsage() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(USAGE_KEY) || '{}');
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+export function recordSlashCommandUse(cmd, usage = loadSlashCommandUsage()) {
+  if (!KNOWN.has(cmd)) return usage;
+  const previous = usage[cmd] || {};
+  const next = {
+    ...usage,
+    [cmd]: {
+      count: Math.max(0, Number(previous.count) || 0) + 1,
+      lastUsed: Date.now(),
+    },
+  };
+  try { localStorage.setItem(USAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  return next;
+}
 
 // Spoken slash commands: dictation can't say "/", so turn a leading
 // "slash <cmd>" / "forward slash <cmd>" into "/<cmd>" when <cmd> is a real command

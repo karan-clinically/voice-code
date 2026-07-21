@@ -6,6 +6,7 @@ import { ATTENTION_TITLE, attentionOf } from './lib/attention.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
+import { readSessionCards, writeSessionCards } from './lib/localCache.js';
 
 // Where a session was started, as a short text tag. RC = remote control (a terminal
 // Claude reachable via claude.ai); "Local" (set below, off it.local) is the same kind
@@ -44,7 +45,7 @@ function dayBucket(ts) {
 // un-revealed row opens it as usual. The revealed action is Kill for anything with a
 // process the harness can end, and Delete for a saved Grok conversation (a file, not a
 // process). Rows the harness neither owns nor can pid-kill reveal nothing.
-function SessionRow({ it, openable, onOpen, onKill, onDelete, notify }) {
+function SessionRow({ it, openable, opening, onOpen, onKill, onDelete, notify }) {
   const [revealed, setRevealed] = useState(false);
   const [rcSent, setRcSent] = useState(false);
   const swiped = useRef(false);
@@ -87,6 +88,7 @@ function SessionRow({ it, openable, onOpen, onKill, onDelete, notify }) {
     delta: 40,
   });
   const onClick = () => {
+    if (opening) return;
     if (swiped.current) { swiped.current = false; return; } // ignore the click a mouse-drag can emit
     if (revealed) { setRevealed(false); return; }           // tap-to-close the reveal
     if (openable) onOpen(it);
@@ -126,11 +128,11 @@ function SessionRow({ it, openable, onOpen, onKill, onDelete, notify }) {
           </span>
           <span className="cc-status">
             <span
-              className={'cc-dot ' + (it.active ? 'busy' : 'on')}
+              className={'cc-dot ' + (opening || it.active ? 'busy' : 'on')}
               style={it.resumeGrok ? { background: 'var(--muted, #888)' } : undefined}
             />
             <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>
-              {it.resumeGrok ? 'Saved' : it.active ? 'Working' : 'Connected'}
+              {opening ? 'Opening…' : it.resumeGrok ? 'Saved' : it.active ? 'Working' : 'Connected'}
             </span>
             {it.agentLabel && it.agentLabel !== 'Claude' && (
               <>
@@ -177,25 +179,42 @@ function SessionRow({ it, openable, onOpen, onKill, onDelete, notify }) {
 export default function Home({ onOpen, onHistory, notify }) {
   const [showNew, setShowNew] = useState(false); // "New session" sheet
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
-  const [sessions, setSessions] = useState([]);
+  const [sessions, setSessions] = useState(readSessionCards);
+  const [sessionLoad, setSessionLoad] = useState('loading'); // loading | ready | retrying
   const [providers, setProviders] = useState([]);
   const [picking, setPicking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [openingKey, setOpeningKey] = useState(null);
+  const startingRef = useRef(false);
   const [spend, setSpend] = useState(null); // estimated total USD, for the header tally
   const [showSpend, setShowSpend] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     let stop = false;
+    let first = true;
     const refresh = () => {
       recentSessions()
-        .then((d) => !stop && setSessions(d.sessions || []))
-        .catch(() => {});
+        .then((d) => {
+          if (stop) return;
+          const rows = d.sessions || [];
+          setSessions(rows);
+          writeSessionCards(rows);
+          setSessionLoad('ready');
+        })
+        .catch(() => { if (!stop) setSessionLoad('retrying'); })
+        .finally(() => { first = false; });
       usageSummary()
         .then((d) => !stop && setSpend(d.totalUsd))
         .catch(() => {});
     };
     refresh();
-    const t = setInterval(refresh, 5000);
+    const t = setInterval(() => {
+      // Background refreshes stay quiet after the first successful response; only
+      // surface a status again if connectivity has actually failed.
+      if (first) setSessionLoad('loading');
+      refresh();
+    }, 5000);
     return () => {
       stop = true;
       clearInterval(t);
@@ -213,27 +232,39 @@ export default function Home({ onOpen, onHistory, notify }) {
   }, []);
 
   async function startProvider(provider) {
+    if (startingRef.current) return;
+    startingRef.current = true;
+    setStarting(true);
     try {
       const p = path.trim().replace(/["']/g, '');
       const label = p ? `${basename(p)} · ${provider.name}` : provider.name;
-      const s = await createSession({ providerId: provider.id, cwd: p || undefined, label });
+      const s = await createSession({ providerId: provider.id, cwd: p || undefined, label, forceNew: true });
       if (p) localStorage.setItem('cvh_lastpath', p);
       onOpen(s);
     } catch (e) {
       notify(e.message);
+    } finally {
+      startingRef.current = false;
+      setStarting(false);
     }
   }
   async function startShell() {
+    if (startingRef.current) return;
+    startingRef.current = true;
+    setStarting(true);
     try {
-      onOpen(await createSession({ kind: 'shell' }));
+      onOpen(await createSession({ kind: 'shell', forceNew: true }));
     } catch (e) {
       notify(e.message);
+    } finally {
+      startingRef.current = false;
+      setStarting(false);
     }
   }
   // Tap: open a live harness session directly; a background agent opens the agent
   // view; resume any other into a harness PTY. Shared with the in-session switcher.
   const canOpen = canOpenRow;
-  const openItem = (it) => openSessionRow(it, onOpen, notify);
+  const openItem = (it) => openSessionRow(it, onOpen, notify, (opening) => setOpeningKey(opening ? it.key : null));
 
   // Kill a session from the swipe action. An orphan bare-terminal claude goes by pid
   // (taskkill); a harness-owned session goes by id (ends its pty) — the latter also
@@ -280,7 +311,16 @@ export default function Home({ onOpen, onHistory, notify }) {
       {showSpend && <SpendModal onClose={() => setShowSpend(false)} />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} notify={notify} />}
 
-      {sessions.length === 0 ? (
+      {sessionLoad !== 'ready' && (
+        <div className="load-status" role="status">
+          <span className="load-spinner" />
+          {sessionLoad === 'retrying'
+            ? sessions.length ? 'Showing saved sessions · reconnecting…' : 'Harness unavailable · retrying…'
+            : sessions.length ? 'Showing saved sessions · checking for updates…' : 'Finding connected sessions…'}
+        </div>
+      )}
+
+      {sessions.length === 0 && sessionLoad !== 'loading' ? (
         <div className="card">
           <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
             No connected sessions. Tap ＋ New session below, or run Claude in any terminal and it'll
@@ -296,7 +336,7 @@ export default function Home({ onOpen, onHistory, notify }) {
               <div className="cc-group-head">{b}</div>
               <div className="cc-list">
                 {rows.map((it) => (
-                  <SessionRow key={it.key} it={it} openable={canOpen(it)} onOpen={openItem} onKill={killItem} onDelete={deleteItem} notify={notify} />
+                  <SessionRow key={it.key} it={it} openable={canOpen(it)} opening={openingKey === it.key} onOpen={openItem} onKill={killItem} onDelete={deleteItem} notify={notify} />
                 ))}
               </div>
             </div>
@@ -339,8 +379,9 @@ export default function Home({ onOpen, onHistory, notify }) {
                     className={index === 0 ? 'primary' : ''}
                     style={{ flex: 1 }}
                     onClick={() => startProvider(provider)}
+                    disabled={starting}
                   >
-                    Start {provider.name}
+                    {starting ? 'Starting…' : `Start ${provider.name}`}
                   </button>
                 ))}
               </div>
@@ -349,7 +390,7 @@ export default function Home({ onOpen, onHistory, notify }) {
             <div className="card stack">
               <h2>Start a shell to navigate</h2>
               <p className="muted">Opens PowerShell in your projects base. Navigate to a folder, then launch any configured AI CLI.</p>
-              <button onClick={startShell}>Start shell</button>
+              <button onClick={startShell} disabled={starting}>{starting ? 'Starting…' : 'Start shell'}</button>
             </div>
           </div>
         </div>

@@ -4,6 +4,7 @@ import {
   listProviders,
   createSession,
   renameSession,
+  setSessionColor,
   killSession,
   openWs,
   transcribeAudio,
@@ -119,9 +120,23 @@ export default function Dashboard({ onOpenWizard }) {
   async function rename(id, label) {
     setSessions((prev) => prev.map((x) => (x.id === id ? { ...x, label } : x)));
     try {
-      await renameSession(id, label);
+      const result = await renameSession(id, label);
+      if (result.kind === 'claude' && result.alive && !result.claudeSynced) {
+        notify('Tab renamed, but Claude title sync failed' + (result.syncError ? ': ' + result.syncError : ''));
+      }
     } catch (e) {
       notify('Rename failed: ' + e.message);
+    }
+  }
+
+  async function setColor(id, color) {
+    const previous = sessions.find((s) => s.id === id)?.tab_color || null;
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, tab_color: color } : s)));
+    try {
+      await setSessionColor(id, color);
+    } catch (e) {
+      setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, tab_color: previous } : s)));
+      notify('Tab color failed: ' + e.message);
     }
   }
 
@@ -194,6 +209,7 @@ export default function Dashboard({ onOpenWizard }) {
             onSelect={setActiveId}
             onNew={newSession}
             onRename={rename}
+            onColor={setColor}
             onClose={close}
             providers={providers}
           />

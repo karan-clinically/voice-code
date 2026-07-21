@@ -2,16 +2,33 @@
    things you can do without opening the app: answer a permission prompt from the
    notification's buttons, and hear Claude's reply read aloud (▶ Play).
 
-   No offline caching (the app needs the live harness anyway). The one thing the Cache
-   API is used for is the auth token: a service worker can't read localStorage, so the
-   page posts its token here on load and we stash it — the worker is restarted between
-   events, so an in-memory copy wouldn't survive. */
+   The /m app shell is cached stale-while-revalidate so the UI and locally cached
+   session cards appear while the harness is waking up. API responses are never
+   service-worker cached. The auth token lives in a separate Cache entry because
+   service workers cannot read localStorage. */
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
 const TOKEN_CACHE = 'cvh-auth';
 const TOKEN_KEY = '/__cvh_token';
+const SHELL_CACHE = 'cvh-shell-v1';
+
+// Cache only UI assets and the navigation shell. Live /api and /ws data always
+// bypasses this handler and retains its existing freshness semantics.
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin || !(url.pathname === '/m' || url.pathname.startsWith('/m/'))) return;
+  const key = req.mode === 'navigate' ? new Request('/m/') : req;
+  const update = fetch(req).then(async (response) => {
+    if (response.ok) (await caches.open(SHELL_CACHE)).put(key, response.clone());
+    return response;
+  });
+  event.waitUntil(update.catch(() => {}));
+  event.respondWith(caches.match(key).then((cached) => cached || update));
+});
 
 async function saveToken(t) {
   const c = await caches.open(TOKEN_CACHE);

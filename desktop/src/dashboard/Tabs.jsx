@@ -3,9 +3,9 @@ import React, { useEffect, useRef, useState } from 'react';
 const tabName = (s) =>
   s.label || s.git_repo || (s.cwd || '').split(/[\\/]/).filter(Boolean).pop() || `session ${s.id}`;
 
-// Terminal-style tab strip: one tab per live session, double-click to rename
-// (persists + syncs to the phone), × to close, + menu to start Claude, Grok, or Codex.
-export default function Tabs({ sessions, providers = [], activeId, onSelect, onNew, onRename, onClose }) {
+// Terminal-style tab strip: one tab per live session. Double-click renames the
+// harness tab (and Claude session); the color dot opens the native color picker.
+export default function Tabs({ sessions, providers = [], activeId, onSelect, onNew, onRename, onColor, onClose }) {
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -42,10 +42,11 @@ export default function Tabs({ sessions, providers = [], activeId, onSelect, onN
       {sessions.map((s) => (
         <div
           key={s.id}
-          className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '')}
+          className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '') + (s.tab_color ? ' has-color' : '')}
+          style={s.tab_color ? { '--tab-color': s.tab_color } : undefined}
           onClick={() => onSelect(s.id)}
           onDoubleClick={() => startEdit(s)}
-          title={(s.kind === 'grok' ? 'Grok · ' : s.kind === 'codex' ? 'Codex · ' : s.kind === 'shell' ? 'Shell · ' : '') + (s.cwd || '')}
+          title={(s.kind === 'grok' ? 'Grok · ' : s.kind === 'codex' ? 'Codex · ' : s.kind === 'shell' ? 'Shell · ' : '') + (s.cwd || '') + '\nDouble-click to rename'}
         >
           {editing === s.id ? (
             <input
@@ -62,6 +63,21 @@ export default function Tabs({ sessions, providers = [], activeId, onSelect, onN
             />
           ) : (
             <span className="tab-label">
+              <input
+                type="color"
+                className="tab-color"
+                value={s.tab_color || '#3fb950'}
+                title="Choose a tab color; right-click to clear"
+                aria-label={`Color for ${tabName(s)}`}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onChange={(e) => onColor(s.id, e.target.value)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onColor(s.id, null);
+                }}
+              />
               {s.kind === 'grok' && <span className="tab-kind" title="Grok">G</span>}
               {s.kind === 'codex' && <span className="tab-kind" title="Codex">C</span>}
               {tabName(s)}

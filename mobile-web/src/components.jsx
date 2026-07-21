@@ -1,11 +1,27 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionScreen, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
+import { sessionScreen, sessionMessagePage, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
 import { tapRecord, playUrl } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 import { THEMES, getTheme, applyTheme } from './lib/theme.js';
 import { keepAwakeEnabled, setKeepAwake } from './lib/wakeLock.js';
+import { readTerminalSnapshot, writeTerminalSnapshot } from './lib/localCache.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
+
+const escapeTerminalHtml = (value) => String(value || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+
+function conversationTranscriptHtml(messages) {
+  if (!messages?.length) return '';
+  const turns = messages
+    .filter((m) => m?.text)
+    .map((m) => {
+      const label = m.role === 'user' ? 'You' : 'Claude';
+      const turn = `<strong class="terminal-transcript-label">${label}:</strong>\n${escapeTerminalHtml(m.text)}`;
+      return m.role === 'user' ? `<span class="terminal-transcript-user">${turn}</span>` : turn;
+    })
+    .join('\n\n');
+  return `===== Saved conversation transcript =====\n${turns}`;
+}
 
 // Dictation mic bound to a text box: the transcript lands in `text` for review
 // and is NEVER sent — the caller's Send/Run button is the only way to the pty.
@@ -238,6 +254,10 @@ export function MicButton({ className, onBlob, notify }) {
 export function Terminal({ sessionId, className }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
+  const reviewingRef = useRef(false);
+  const [displayState, setDisplayState] = useState('loading'); // loading | cached | live
+  const [connectionState, setConnectionState] = useState('connecting'); // connecting | live | reconnecting
+  const [loadingOlder, setLoadingOlder] = useState(false);
   // The session's PTY is gone (server sent {t:'exit'}). Shown as a banner over the
   // stale screen instead of freezing silently; cleared the moment data flows again
   // (a resumed conversation re-adopts the same db row, so it CAN come back).
@@ -306,24 +326,159 @@ export function Terminal({ sessionId, className }) {
     let stop = false;
     let busy = false;
     let again = false;
+    let repaintTimer = null;
+    let lastPaintStarted = 0;
+    let cacheTimer = null;
+    let queuedCacheHtml = '';
+    const queueSnapshot = (html) => {
+      queuedCacheHtml = html;
+      if (cacheTimer) return;
+      cacheTimer = setTimeout(() => {
+        cacheTimer = null;
+        const snapshot = queuedCacheHtml;
+        queuedCacheHtml = '';
+        if (snapshot) writeTerminalSnapshot(sessionId, snapshot);
+      }, 750);
+    };
+    // Paint the last bounded snapshot immediately. The live request below runs in
+    // parallel and silently replaces it when the harness responds.
+    readTerminalSnapshot(sessionId).then((cached) => {
+      if (stop || !cached?.html) return;
+      const outer = outerRef.current;
+      const inner = innerRef.current;
+      if (!outer || !inner || inner.dataset.h) return;
+      inner.innerHTML = cached.html;
+      inner.dataset.h = cached.html;
+      outer.scrollTop = outer.scrollHeight;
+      setDisplayState('cached');
+    });
+    let latestScreen = null;
+    let olderTerminalHtml = '';
+    let terminalPagingUsed = false;
+    let transcriptMessages = [];
+    let transcriptBefore = null;
+    let transcriptHasOlder = false;
+    let transcriptFetchedAt = 0;
+    const transcriptFallback = async () => {
+      const now = Date.now();
+      if (now - transcriptFetchedAt < 5000) return;
+      transcriptFetchedAt = now;
+      try {
+        const data = await sessionMessagePage(sessionId, { limit: 40 });
+        transcriptMessages = data.messages || [];
+        transcriptBefore = data.before;
+        transcriptHasOlder = !!data.hasOlder;
+      } catch {
+        /* shell/Codex sessions may not expose a parsed conversation */
+      }
+    };
+    const composedHtml = () => {
+      const terminalHtml = [olderTerminalHtml, latestScreen?.html || ''].filter(Boolean).join('\n');
+      const seeded = latestScreen?.hasTerminalPrelude
+        ?? /===== (?:Live|Earlier) terminal output/.test(terminalHtml);
+      const useTranscript = !terminalPagingUsed && !seeded && transcriptMessages.length > 0;
+      return useTranscript
+        ? `${conversationTranscriptHtml(transcriptMessages)}\n\n===== Current terminal screen =====\n${terminalHtml}`
+        : terminalHtml;
+    };
+    const replaceRendered = ({ preserveTop = false } = {}) => {
+      const outer = outerRef.current;
+      const inner = innerRef.current;
+      if (!outer || !inner) return;
+      const renderedHtml = composedHtml();
+      if (inner.dataset.h === renderedHtml) return;
+      const oldHeight = outer.scrollHeight;
+      const oldTop = outer.scrollTop;
+      const sx = outer.scrollLeft;
+      inner.innerHTML = renderedHtml;
+      inner.dataset.h = renderedHtml;
+      outer.scrollLeft = sx;
+      outer.scrollTop = preserveTop
+        ? oldTop + (outer.scrollHeight - oldHeight)
+        : outer.scrollHeight;
+      queueSnapshot(renderedHtml);
+    };
+
+    let pagingOlder = false;
+    const loadOlder = async () => {
+      const outer = outerRef.current;
+      if (stop || pagingOlder || !outer || outer.scrollTop > 140) return;
+      const canPageTerminal = latestScreen?.hasOlder && latestScreen.startLine > 0;
+      const canPageTranscript = !terminalPagingUsed && transcriptHasOlder && transcriptBefore != null;
+      if (!canPageTerminal && !canPageTranscript) return;
+      pagingOlder = true;
+      setLoadingOlder(true);
+      try {
+        if (canPageTerminal) {
+          const page = await sessionScreen(sessionId, { before: latestScreen.startLine, lines: 400 });
+          olderTerminalHtml = [page.html || '', olderTerminalHtml].filter(Boolean).join('\n');
+          latestScreen = {
+            ...latestScreen,
+            startLine: page.startLine,
+            hasOlder: !!page.hasOlder,
+          };
+          terminalPagingUsed = true;
+        } else {
+          const page = await sessionMessagePage(sessionId, { before: transcriptBefore, limit: 40 });
+          transcriptMessages = [...(page.messages || []), ...transcriptMessages];
+          transcriptBefore = page.before;
+          transcriptHasOlder = !!page.hasOlder;
+        }
+        replaceRendered({ preserveTop: true });
+      } catch {
+        /* leave the current page readable; a later upward scroll can retry */
+      } finally {
+        pagingOlder = false;
+        if (!stop) setLoadingOlder(false);
+      }
+    };
+    const onHistoryScroll = () => {
+      const outer = outerRef.current;
+      if (outer && outer.scrollTop < 140) loadOlder();
+    };
+    outerRef.current?.addEventListener('scroll', onHistoryScroll, { passive: true });
+
     const paint = async () => {
       if (stop) return;
       if (busy) { again = true; return; }
+      const delay = 300 - (Date.now() - lastPaintStarted);
+      if (delay > 0) {
+        again = true;
+        if (!repaintTimer) {
+          repaintTimer = setTimeout(() => {
+            repaintTimer = null;
+            again = false;
+            paint();
+          }, delay);
+        }
+        return;
+      }
       busy = true;
+      lastPaintStarted = Date.now();
       try {
-        const { html } = await sessionScreen(sessionId);
+        // These used to run serially, costing two full network round trips over
+        // Tailscale before the terminal could update. Start both together; the
+        // transcript result is ignored when native terminal history is present.
+        const [screen] = await Promise.all([
+          sessionScreen(sessionId),
+          transcriptFallback(),
+        ]);
         const outer = outerRef.current;
         const inner = innerRef.current;
-        if (outer && inner && inner.dataset.h !== (html || '')) {
+        if (outer && inner) {
           const atBottom = outer.scrollHeight - outer.scrollTop - outer.clientHeight < 60;
-          const sx = outer.scrollLeft; // preserve horizontal scroll across refreshes
-          const sy = outer.scrollTop; // preserve vertical scroll when reading history
-          inner.innerHTML = html || '';
-          inner.dataset.h = html || '';
-          outer.scrollLeft = sx;
-          if (atBottom) outer.scrollTop = outer.scrollHeight;
-          else outer.scrollTop = sy;
+          // Replacing the entire rendered screen while a finger/wheel is moving
+          // interrupts momentum scrolling on mobile browsers and can snap the user
+          // away from the oldest output. Freeze the snapshot while history is being
+          // read; the next socket event/backstop poll catches up at the bottom.
+          if (atBottom && !reviewingRef.current) {
+            latestScreen = screen;
+            olderTerminalHtml = '';
+            terminalPagingUsed = !!screen.hasOlder || !!screen.hasTerminalPrelude;
+            replaceRendered();
+          }
         }
+        setDisplayState('live');
       } catch {
         /* transient */
       }
@@ -353,7 +508,9 @@ export function Terminal({ sessionId, className }) {
       const open = () => {
         if (stop) return;
         try {
+          setConnectionState('connecting');
           ws = new WebSocket(termWsUrl(sessionId));
+          ws.onopen = () => setConnectionState('live');
           ws.onmessage = (e) => {
             let m;
             try { m = JSON.parse(e.data); } catch { return; }
@@ -363,6 +520,7 @@ export function Terminal({ sessionId, className }) {
           };
           ws.onclose = () => {
             clearTimeout(pongDue); pongDue = null;
+            if (!stop) setConnectionState('reconnecting');
             if (!stop && !document.hidden) setTimeout(() => connect(), endedRef.current ? 5000 : 1500);
           };
         } catch {
@@ -395,6 +553,10 @@ export function Terminal({ sessionId, className }) {
       clearInterval(t);
       clearInterval(pinger);
       clearTimeout(pongDue);
+      clearTimeout(repaintTimer);
+      clearTimeout(cacheTimer);
+      outerRef.current?.removeEventListener('scroll', onHistoryScroll);
+      if (queuedCacheHtml) writeTerminalSnapshot(sessionId, queuedCacheHtml);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('pageshow', onVisible);
       try { ws?.close(); } catch { /* already gone */ }
@@ -402,19 +564,47 @@ export function Terminal({ sessionId, className }) {
   }, [sessionId]);
 
   const bump = (d) => setFontPx((f) => Math.max(8, Math.min(22, f + d)));
+  const updateReviewing = () => {
+    const outer = outerRef.current;
+    if (outer) reviewingRef.current = outer.scrollHeight - outer.scrollTop - outer.clientHeight > 2;
+  };
 
   return (
     <div className={'term-wrap ' + (className || '')}>
+      {displayState !== 'live' && (
+        <div className="term-load-status" role="status">
+          <span className="load-spinner" />
+          {displayState === 'cached' ? 'Showing saved terminal · updating…' : 'Loading terminal…'}
+        </div>
+      )}
+      {displayState === 'live' && connectionState !== 'live' && !ended && (
+        <div className="term-load-status" role="status">
+          <span className="load-spinner" /> Reconnecting live terminal…
+        </div>
+      )}
       {ended && (
         <div className="term-ended" role="status">
           Session ended — the screen below is its last output. Go back to Sessions to resume.
+        </div>
+      )}
+      {loadingOlder && (
+        <div className="term-history-status" role="status">
+          <span className="load-spinner" /> Loading earlier transcript…
         </div>
       )}
       <div className="term-fontctl">
         <button onClick={() => bump(-1)} aria-label="Smaller font">A−</button>
         <button onClick={() => bump(1)} aria-label="Larger font">A+</button>
       </div>
-      <div ref={outerRef} className="screen">
+      <div
+        ref={outerRef}
+        className="screen"
+        onPointerDown={() => { reviewingRef.current = true; }}
+        onPointerUp={updateReviewing}
+        onPointerCancel={updateReviewing}
+        onWheel={() => { reviewingRef.current = true; }}
+        onScroll={updateReviewing}
+      >
         <div ref={innerRef} className="screen-inner" style={{ fontSize: fontPx + 'px' }} />
       </div>
     </div>

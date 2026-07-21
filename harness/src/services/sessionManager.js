@@ -30,6 +30,7 @@ const ptyIdByDb = new Map(); // dbId -> terminalId
 const tokenByDb = new Map(); // dbId -> CVH_SESSION_ID token
 const dbByToken = new Map(); // token -> dbId
 const modelByDb = new Map(); // dbId -> friendly model label (Claude sessions only)
+const agentViewByDb = new Set(); // exact marker; cwd is not unique to an agent view
 
 const insertSession = db.prepare(`
   INSERT INTO sessions (
@@ -42,7 +43,8 @@ const insertSession = db.prepare(`
 `);
 const updState = db.prepare('UPDATE sessions SET state = ?, last_seen_at = ? WHERE id = ?');
 const touchSeen = db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?');
-const updLabel = db.prepare('UPDATE sessions SET label = ? WHERE id = ?');
+const updLabel = db.prepare('UPDATE sessions SET label = ?, title_locked = ? WHERE id = ?');
+const updTabColor = db.prepare('UPDATE sessions SET tab_color = ? WHERE id = ?');
 const updExternalId = db.prepare('UPDATE sessions SET external_session_id = ?, claude_session_id = ? WHERE id = ?');
 const selAll = db.prepare('SELECT * FROM sessions ORDER BY id DESC');
 const selOne = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -104,7 +106,8 @@ function decorate(row) {
   const providerId = row.provider_id || row.kind || 'claude';
   const adapter = getAdapter(providerId);
   const ptyId = ptyIdByDb.get(row.id) || null;
-  const alive = ptyId ? terminal.sessionExists(ptyId) : false;
+  const terminalSession = ptyId ? terminal.getSession(ptyId) : null;
+  const alive = !!terminalSession?.alive;
   const model = providerId === 'claude' ? modelByDb.get(row.id) || null : null;
   let storedCapabilities = null;
   try { storedCapabilities = row.capabilities_json ? JSON.parse(row.capabilities_json) : null; } catch { /* ignore */ }
@@ -116,6 +119,8 @@ function decorate(row) {
     capabilities: adapter?.capabilities || storedCapabilities || { terminal: true },
     provider: adapter ? { id: adapter.id, name: adapter.name, icon: adapter.icon } : { id: providerId, name: providerId },
     ptyId,
+    pid: terminalSession?.pid || null,
+    agentView: agentViewByDb.has(row.id),
     alive,
     model,
   };
@@ -201,6 +206,8 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
   }
   dbIdByPty.set(view.id, dbId);
   ptyIdByDb.set(dbId, view.id);
+  if (agentView) agentViewByDb.add(dbId);
+  else agentViewByDb.delete(dbId); // a dead agent-view row may be re-adopted normally
   tokenByDb.set(dbId, token);
   dbByToken.set(token, dbId);
   if (adapter.id === 'claude') modelByDb.set(dbId, guessInitialModel(view.cwd));
@@ -276,8 +283,14 @@ export function markState(id, state) {
   sessionEvents.emit('change');
 }
 
-export function renameSession(id, label) {
-  updLabel.run(label, Number(id));
+export function renameSession(id, label, { locked = true } = {}) {
+  updLabel.run(label, locked ? 1 : 0, Number(id));
+  sessionEvents.emit('change');
+  return getSession(id);
+}
+
+export function setTabColor(id, color) {
+  updTabColor.run(color, Number(id));
   sessionEvents.emit('change');
   return getSession(id);
 }
@@ -337,6 +350,12 @@ export async function readScreenColored(id, opts) {
   const ptyId = ptyIdByDb.get(Number(id));
   if (!ptyId) throw new Error('session has no live PTY');
   return terminal.captureColoredHtmlFlushed(ptyId, opts);
+}
+
+export async function readScreenColoredPage(id, opts) {
+  const ptyId = ptyIdByDb.get(Number(id));
+  if (!ptyId) throw new Error('session has no live PTY');
+  return terminal.captureColoredHtmlPageFlushed(ptyId, opts);
 }
 
 export function killSession(id) {

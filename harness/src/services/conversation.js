@@ -99,6 +99,31 @@ export async function getLiveConversation(session, afterId = 0) {
   return { messages: rows, lastId, full: false };
 }
 
+// Newest-first paging for transcript surfaces such as the mobile terminal. The
+// cursor is the first message id already displayed, so the next page contains
+// only older turns. getLiveConversation's file cache keeps repeated JSONL pages
+// from re-reading disk while keeping this API provider-neutral.
+export async function getConversationPage(session, { before = null, limit = 40 } = {}) {
+  const conv = await getLiveConversation(session, 0);
+  const all = conv.messages || [];
+  const pageSize = Math.max(10, Math.min(100, Number(limit) || 40));
+  let end = all.length;
+  if (before != null && before !== '') {
+    const cursor = Number(before);
+    const found = all.findIndex((m) => Number(m.id) >= cursor);
+    end = found < 0 ? all.length : found;
+  }
+  const start = Math.max(0, end - pageSize);
+  const messages = all.slice(start, end);
+  return {
+    messages,
+    before: messages.length ? messages[0].id : before,
+    hasOlder: start > 0,
+    total: all.length,
+    full: true,
+  };
+}
+
 // Parse a resumed session's on-disk transcript once and seed the conversation with
 // its prior history. No-ops if already backfilled or no transcript found.
 export async function backfillFromTranscript(sessionId, uuid) {

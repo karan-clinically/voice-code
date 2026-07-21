@@ -16,20 +16,22 @@ import multer from 'multer';
 import db, { UPLOADS_DIR } from '../../db.js';
 import { getConfig } from '../../config.js';
 import {
-  listSessions, getSession, createSession, killSession, renameSession,
-  sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, setKind,
-  getPtyId, markState, reusableSession, recordReuse, setModel, latestSessionByClaudeId,
+  listSessions, getSession, createSession, killSession, renameSession, setTabColor,
+  sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, readScreenColoredPage, setKind,
+  getPtyId, markState, reusableSession, recordReuse, setModel, setClaudeSessionId,
+  latestSessionByClaudeId,
 } from '../../services/sessionManager.js';
 import { MODEL_OPTIONS } from '../../services/models.js';
 import { isLocalhost } from '../auth.js';
 import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
 import { bridgeSuffixMap, liveClaudeSessions } from '../../services/claudeSessions.js';
+import { isBackgroundAgentSession, processForHarnessSession } from '../../services/sessionIdentity.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
 import { listGrokConversations, getGrokMeta, deleteGrokConversation, isGrokConvId } from '../../services/grokArchive.js';
 import { getRemoteSlug } from '../../services/terminal.js';
 import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
-import { getLiveConversation, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
+import { getLiveConversation, getConversationPage, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt } from '../../services/prompt.js';
 import { buildReplyResponse, recordUserInteraction } from '../../services/reply.js';
@@ -170,6 +172,7 @@ router.get('/recent', (req, res) => {
   // The API leaves stale "connected" records behind after a bridge dies, so it
   // over-reports. The reliable signal is a running claude.exe (pid vs tasklist).
   const live = liveClaudeSessions();
+  const processByPid = new Map(live.map((process) => [Number(process.pid), process]));
   const liveSuffixes = new Set(live.filter((x) => x.suffix).map((x) => x.suffix));
   const liveUuids = new Set(live.map((x) => x.sessionId).filter(Boolean));
 
@@ -178,20 +181,30 @@ router.get('/recent', (req, res) => {
   // in a terminal has no bridge, so the harness surfaces it here but claude.ai can't
   // see it. The phone drives every row it lists regardless; this flag only says
   // whether the SAME session also appears in claude.ai remote control.
-  const bridgedUuids = new Set(live.filter((x) => x.bridged && x.sessionId).map((x) => x.sessionId));
-
   // ---- ATTACHABLE: harness-owned PTYs (the source of truth; tap = attach) ----
   // A pty opened to peek a background agent lives in that agent's worktree; it's the
   // same work as the agent's own row (whose tap reuses this very pty), so skip it.
-  const agentCwds = new Set(bgList.filter((a) => a.cwd).map((a) => norm(a.cwd)));
+  const backgroundUuids = new Set(bgList.map((agent) => agent.sessionId).filter(Boolean));
   const harness = listSessions()
     .filter((s) => s.alive)
-    // Only hide Claude agent-view peek PTYs that duplicate a background-agent row.
-    // Native Grok sessions can share a cwd with those worktrees and must remain
-    // visible/attachable; otherwise a successfully-resumed Grok conversation still
-    // appears as a stale "Saved" row and looks like resume failed.
-    .filter((s) => !(s.kind === 'claude' && s.cwd && agentCwds.has(norm(s.cwd))))
-    .map((s) => ({
+    // Agent-view PTYs are marked when spawned. Never infer this from cwd: a stale
+    // background agent at C:\AI previously hid every ordinary session in C:\AI.
+    .filter((s) => !s.agentView)
+    .map((s) => {
+      // The Stop hook can leave the DB row carrying an older conversation UUID
+      // after `claude --continue` or a reconnect changes the live process's
+      // transcript. The PTY's process id is an exact identity link to Claude's
+      // ~/.claude/sessions registry, so prefer it over the stored snapshot. This
+      // also lets the remote-control API twin dedupe immediately at startup.
+      const processSession = s.kind === 'claude' && s.pid
+        ? processByPid.get(Number(s.pid)) || processForHarnessSession(s, live)
+        : null;
+      const sessionId = processSession?.sessionId || s.claude_session_id || null;
+      const remote = !!processSession?.bridged;
+      if (processSession?.sessionId && processSession.sessionId !== s.claude_session_id) {
+        setClaudeSessionId(s.id, processSession.sessionId);
+      }
+      return {
       key: 'h' + s.id,
       kind: 'harness',
       attachable: true, // drivable from phone + terminal + Claude remote control
@@ -207,13 +220,13 @@ router.get('/recent', (req, res) => {
       repo: repoSlug(s.cwd) || s.git_repo || null,
       branch: s.git_branch || null,
       cwd: s.cwd || null,
-      sessionId: s.claude_session_id || null,
+      sessionId,
       ts: s.last_seen_at,
       harnessId: s.id,
       alive: true,
       // On claude.ai only once its Claude has bridged. Shell/Grok sessions are
       // local harness PTYs and are reachable through Voice Harness/Tailscale only.
-      remote: s.kind === 'claude' && !!(s.claude_session_id && bridgedUuids.has(s.claude_session_id)),
+      remote: s.kind === 'claude' && remote,
       remoteReason:
         s.kind === 'shell'
           ? 'A shell runs only on this PC — remote control is for Claude sessions.'
@@ -221,13 +234,14 @@ router.get('/recent', (req, res) => {
           ? 'Grok runs inside this harness PTY using Voice Harness tools and is reachable from the phone via Voice Harness/Tailscale, not claude.ai remote control.'
           : s.kind === 'codex'
           ? 'Codex runs inside this harness PTY using the OpenAI Codex CLI and is reachable from the phone via Voice Harness/Tailscale, not claude.ai remote control.'
-          : s.claude_session_id && bridgedUuids.has(s.claude_session_id)
+          : remote
           ? null
           : 'Started on this PC and not yet bridged to claude.ai, so it only shows here. You can drive it from the app; it appears in claude.ai remote control once its bridge connects.',
       // Sticky badge: which ping this session is waiting on you for, until opened.
       attention: getAttention(s.id)?.kind || null,
       muted: isMutedById(s.id),
-    }))
+      };
+    })
     // Two harness PTYs can land on the SAME conversation — e.g. the phone resumed it
     // and a terminal `claude -c` continued it. That's one conversation, so show one
     // row (the most recently active). A session with no uuid yet can't be matched, so
@@ -316,7 +330,8 @@ router.get('/recent', (req, res) => {
   const shownUuids = new Set([...harness, ...remote].map((r) => r.sessionId).filter(Boolean));
   const local = live
     .filter((s) => s.sessionId && !shownUuids.has(s.sessionId))
-    .filter((s) => !(s.cwd && agentCwds.has(norm(s.cwd)))) // skip agent-worktree peeks
+    // Exact UUID only. A background agent and an interactive session may share cwd.
+    .filter((s) => !isBackgroundAgentSession(s, backgroundUuids))
     // Two processes can share a uuid (a fork's leftover); show one, freshest.
     .reduce((acc, s) => {
       const prev = acc.find((x) => x.sessionId === s.sessionId);
@@ -466,21 +481,16 @@ router.post('/', async (req, res) => {
     // `claude --continue` (from the hclaude alias) → a harness-owned session that
     // resumes the most-recent conversation in cwd, so terminal + phone share it.
     const continueSession = req.body?.continue === true;
-    // If the harness ALREADY owns a live session for this agent in this cwd, that IS
-    // the working terminal — attach to it rather than silently spawning a second PTY.
-    // This is mandatory for Grok/Codex because the phone's "Start <agent> here"
-    // button feels like "go into that agent for this folder", not "create a
-    // parallel PTY every tap".
-    // Claude included: a second Claude PTY in a folder that already has a live one
-    // is never what the tap meant, and it actively breaks the session list. Both
-    // PTYs can converge on one conversation (the newer one resumes it), but a row's
-    // UUID only refreshes for whichever row the Stop hook binds to — so the other
-    // row keeps a stale UUID, escapes the by-UUID dedupe, and shows up as a second
-    // card that resumes an older fork of the same chat.
-    const open = listSessions()
-      .filter((s) => s.alive && s.kind === kind && s.cwd && norm(s.cwd) === norm(cwd))
-      .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
-    if (open) return res.json(open); // 200 = reused, not created
+    // Callers opening an existing item may omit forceNew and attach to the freshest
+    // matching PTY. Explicit "New session" actions set forceNew so several coding
+    // sessions can intentionally work in the same directory at once.
+    const forceNew = req.body?.forceNew === true;
+    if (!forceNew) {
+      const open = listSessions()
+        .filter((s) => s.alive && s.kind === kind && s.cwd && norm(s.cwd) === norm(cwd))
+        .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))[0];
+      if (open) return res.json(open); // 200 = reused, not created
+    }
     // A localhost request is the desktop app on the PC (in the harness); anything
     // else reached us over Tailscale with a bearer token (remote control).
     const origin = isLocalhost(req) ? 'harness' : 'remote';
@@ -565,8 +575,8 @@ router.get('/:id', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   const title = liveTitle(session);
-  if (title && title !== session.label) {
-    renameSession(session.id, title); // persist, so the Sessions list agrees with the header
+  if (title && !session.title_locked && title !== session.label) {
+    renameSession(session.id, title, { locked: false }); // persist, so the Sessions list agrees with the header
     session.label = title;
   }
   // Viewing a session is acknowledging its ping — clear the sticky badge. SessionView
@@ -606,6 +616,13 @@ router.get('/:id/history', (req, res) => {
 router.get('/:id/messages', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
+  if (req.query.limit != null || req.query.before != null) {
+    const page = await getConversationPage(session, {
+      before: req.query.before,
+      limit: req.query.limit,
+    });
+    return res.json({ ...page, state: session.state });
+  }
   const after = Number(req.query.after) || 0;
   const conv = await getLiveConversation(session, after);
   // `state` lets the chat show a "working…" indicator while Claude is busy.
@@ -794,13 +811,31 @@ router.get('/:id/screen', async (req, res) => {
   try {
     const full = req.query.full === '1' || req.query.full === 'true';
     const color = req.query.color === '1' || req.query.color === 'true';
-    const screen = await readScreen(req.params.id, { full });
-    const promptScreen = full ? await readScreen(req.params.id, { full: false }) : screen;
-    const resp = { screen, promptCwd: parsePromptCwd(promptScreen) };
+    const includePlain = req.query.plain !== '0' && req.query.plain !== 'false';
+    const paged = req.query.lines != null || req.query.before != null;
+    let screen = null;
+    let promptScreen;
+    if (includePlain) {
+      screen = await readScreen(req.params.id, { full });
+      promptScreen = full ? await readScreen(req.params.id, { full: false }) : screen;
+    } else {
+      // Colored mobile view does not consume the duplicate plain-text scrollback.
+      // Capture only the small viewport needed for cwd detection.
+      promptScreen = await readScreen(req.params.id, { full: false });
+    }
+    const resp = { promptCwd: parsePromptCwd(promptScreen) };
+    if (includePlain) resp.screen = screen;
     // Full view = a real terminal's worth of scrollback, not just the last screen.
     // Keep the cap aligned with terminal.js's larger resume scrollback so historical
     // transcript seed text is actually reachable from the phone.
-    if (color) resp.html = await readScreenColored(req.params.id, { full, maxLines: full ? 20000 : 600 });
+    if (color && paged) {
+      Object.assign(resp, await readScreenColoredPage(req.params.id, {
+        before: req.query.before == null ? null : req.query.before,
+        limit: req.query.lines,
+      }));
+    } else if (color) {
+      resp.html = await readScreenColored(req.params.id, { full, maxLines: full ? 20000 : 600 });
+    }
     res.json(resp);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -894,11 +929,35 @@ router.post('/:id/kill', (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/:id/rename', (req, res) => {
+router.post('/:id/rename', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
-  const label = (req.body?.label || '').trim() || null;
-  res.json(renameSession(req.params.id, label));
+  const label = String(req.body?.label || '').trim().slice(0, 120) || null;
+  const renamed = renameSession(req.params.id, label, { locked: !!label });
+  let claudeSynced = false;
+  let syncError = null;
+  // Claude's supported /rename command updates the prompt bar, local transcript,
+  // resume picker, and Remote Control title. The harness label remains useful for
+  // non-Claude providers, but shared Claude sessions must carry the name with them.
+  if (label && session.kind === 'claude' && session.alive) {
+    try {
+      await sendInput(req.params.id, `/rename ${label}`);
+      claudeSynced = true;
+    } catch (err) {
+      syncError = err.message;
+      log.warn(`Claude title sync failed for db#${session.id}: ${err.message}`);
+    }
+  }
+  res.json({ ...renamed, claudeSynced, syncError });
+});
+
+router.post('/:id/color', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  const raw = String(req.body?.color || '').trim();
+  const color = raw ? (/^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : false) : null;
+  if (color === false) return res.status(400).json({ error: 'color must be a 6-digit hex value' });
+  res.json(setTabColor(req.params.id, color));
 });
 
 // Extract the current directory from the last PowerShell prompt (`PS C:\path>`).
