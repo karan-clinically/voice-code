@@ -67,3 +67,41 @@ export function promptToText(p) {
   const opts = p.options.map((o) => `${o.n}. ${o.label}`).join('. ');
   return `Claude is asking: ${q}\n\nOptions — ${opts}.`;
 }
+
+// Detect terminal states that are actionable but are not numbered prompts. Claude
+// Code keeps foreground shell batches inside its spinner UI and offers Ctrl+B to
+// detach them; without exposing that state, a remote/mobile session looks frozen.
+// Failure detection is intentionally limited to the newest screen tail so an old
+// error higher in scrollback cannot keep a stale warning alive forever.
+export function detectTerminalActivity(screen) {
+  if (!screen) return null;
+  const tail = String(screen).split('\n').slice(-35).join('\n');
+  const runningShell = /(?:running|searching[^\n]*running)\s+(?:\d+\s+)?shell\s+commands?/i.test(tail);
+  if (runningShell) {
+    const elapsed = tail.match(/\((?:(\d+)m\s*)?(\d+)s\s*[·)]/i);
+    const duration = elapsed
+      ? [elapsed[1] ? `${elapsed[1]}m` : '', `${elapsed[2]}s`].filter(Boolean).join(' ')
+      : null;
+    return {
+      kind: 'foreground-shell',
+      title: 'Shell commands are still running',
+      detail: duration ? `Foreground command batch running for ${duration}.` : 'Foreground command batch is blocking this turn.',
+      canBackground: true,
+      canStop: true,
+    };
+  }
+
+  const failure = tail.split('\n').reverse().find((line) =>
+    /(?:shell|background|command).{0,80}(?:failed|timed out|exited with (?:code )?[1-9])|(?:failed|error).{0,80}(?:shell|background|command)/i.test(line)
+  );
+  if (failure) {
+    return {
+      kind: 'shell-failed',
+      title: 'A shell command failed',
+      detail: failure.trim().replace(/\s+/g, ' ').slice(0, 180),
+      canBackground: false,
+      canStop: true,
+    };
+  }
+  return null;
+}

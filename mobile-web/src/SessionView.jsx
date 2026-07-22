@@ -74,6 +74,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   // The composer needs it: mid-question the session still reads as busy, but its
   // button must offer Enter (answer) rather than Esc (interrupt).
   const [promptPending, setPromptPending] = useState(false);
+  const [terminalActivity, setTerminalActivity] = useState(null);
   // The session is now shared — the terminal or Claude remote control can start a turn
   // this view never saw. The local `state` below only tracks turns THIS phone sent, so
   // without the server's own state the ■ Stop button would never appear for a turn
@@ -185,9 +186,10 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     let stop = false;
     const tick = async () => {
       try {
-        const { prompt: p } = await sessionPrompt(session.id);
+        const { prompt: p, activity = null } = await sessionPrompt(session.id);
         if (stop) return;
         setPromptPending(!!p);
+        setTerminalActivity(activity);
         if (p) announcePrompt(p);
         // Prompt gone — forget this session's spoken prompts so a genuinely new one
         // (even with the same text) is announced again next time it appears.
@@ -200,6 +202,17 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     const t = setInterval(tick, 1800);
     return () => { stop = true; clearInterval(t); };
   }, [session.id, voice]);
+
+  async function handleTerminalActivity(key) {
+    try {
+      await sessionKey(session.id, key);
+      setTerminalActivity(null);
+      if (key === 'background') notify?.('Shell commands moved to the background', 'info');
+      else notify?.('Stop sent to the foreground command', 'info');
+    } catch (e) {
+      notify?.('Terminal action failed: ' + e.message);
+    }
+  }
 
   async function runResult(promise) {
     setState('working…');
@@ -354,7 +367,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
 
   // `/recent` independently reports whether the PTY is active. Use it alongside
   // the detail poll so a transient/stale sessionInfo response cannot hide Stop.
-  const isWorking = state === 'working…' || srvState === 'busy' || !!here?.active;
+  const isWorking = state === 'working…' || srvState === 'busy' || !!here?.active || terminalActivity?.kind === 'foreground-shell';
   const isReady = state === 'ready' || srvState === 'response_ready';
   const stateCls = 'sv-state' + (isWorking ? ' busy' : promptPending ? ' waiting' : isReady ? ' ready' : '');
   // Grok shares the command/chat/voice pipeline as Claude (turn-complete hook).
@@ -433,6 +446,23 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
           </span>
           <span className="sv-alert-go">Switch ›</span>
         </button>
+      )}
+
+      {terminalActivity && !promptPending && (
+        <div className={'sv-terminal-activity ' + terminalActivity.kind} role="alert">
+          <div className="sv-terminal-activity-copy">
+            <strong>{terminalActivity.title}</strong>
+            <span>{terminalActivity.detail}</span>
+          </div>
+          <div className="sv-terminal-activity-actions">
+            {terminalActivity.canBackground && (
+              <button type="button" onClick={() => handleTerminalActivity('background')}>Run in background</button>
+            )}
+            {terminalActivity.canStop && (
+              <button type="button" className="danger" onClick={() => handleTerminalActivity('stop')}>Stop</button>
+            )}
+          </div>
+        </div>
       )}
 
       {voice && <VoiceView session={session} onBack={() => setVoice(false)} notify={notify} />}

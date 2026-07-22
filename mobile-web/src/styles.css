@@ -537,6 +537,17 @@ button.ghost:hover { background: var(--surface-2); }
 .qsw-timeout.paused { animation-play-state: paused; }
 @keyframes qsw-timeout { to { transform: scaleX(0); } }
 .sv-term { flex: 1 1 auto; min-height: 0; min-width: 0; }
+.sv-terminal-activity {
+  display: flex; align-items: center; gap: 10px; margin: 5px 8px; padding: 9px 10px;
+  border: 1px solid var(--warn-border); border-radius: 12px; color: var(--warn-text);
+  background: var(--warn-bg); font-size: 12px;
+}
+.sv-terminal-activity.shell-failed { border-color: var(--error); color: var(--error); background: var(--error-bg); }
+.sv-terminal-activity-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.sv-terminal-activity-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-terminal-activity-actions { display: flex; flex: 0 0 auto; gap: 6px; }
+.sv-terminal-activity-actions button { min-height: 32px; padding: 5px 9px; font-size: 11px; }
+.sv-terminal-activity-actions button.danger { color: #fff; border-color: var(--error); background: var(--error); }
 /* terminal composer Send — a labelled pill in the one-container control row */
 .composer-send {
   flex: 0 0 auto; height: 38px; padding: 0 16px; font-weight: 600; border-radius: 10px;

@@ -33,7 +33,7 @@ import { getRemoteSlug } from '../../services/terminal.js';
 import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
 import { getLiveConversation, getConversationPage, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
-import { detectPrompt } from '../../services/prompt.js';
+import { detectPrompt, detectTerminalActivity } from '../../services/prompt.js';
 import { buildReplyResponse, recordUserInteraction } from '../../services/reply.js';
 import { makeLogger } from '../../util/logger.js';
 import { getAdapter } from '../../agents/registry.js';
@@ -55,6 +55,7 @@ const KEY_SEQS = {
   down: '\x1b[B',
   left: '\x1b[D',
   right: '\x1b[C',
+  background: '\x02', // Ctrl+B — detach Claude Code's foreground shell batch
 };
 
 // Footer strings Claude Code shows for each permission mode -> our label. Require
@@ -678,7 +679,7 @@ router.get('/:id/prompt', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'session not found' });
   try {
     const screen = await readScreen(req.params.id, { full: false });
-    res.json({ prompt: detectPrompt(screen) });
+    res.json({ prompt: detectPrompt(screen), activity: detectTerminalActivity(screen) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
