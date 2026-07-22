@@ -46,6 +46,19 @@ function completedTurnsHtml(messages, terminalHtml) {
     .join('\n\n');
 }
 
+function messageFragmentVisible(message, terminalHtml) {
+  const text = comparableTerminalText(message?.text);
+  const visible = comparableTerminalText(terminalHtml);
+  if (!text || !visible) return false;
+  if (visible.includes(text)) return true;
+  const anchorLength = Math.min(64, text.length);
+  const step = Math.max(16, Math.floor(anchorLength / 2));
+  for (let start = 0; start + anchorLength <= text.length; start += step) {
+    if (visible.includes(text.slice(start, start + anchorLength))) return true;
+  }
+  return text.length > anchorLength && visible.includes(text.slice(-anchorLength));
+}
+
 // Dictation mic bound to a text box: the transcript lands in `text` for review
 // and is NEVER sent — the caller's Send/Run button is the only way to the pty.
 // In stream mode the words appear live while speaking.
@@ -274,10 +287,12 @@ export function MicButton({ className, onBlob, notify }) {
 // keeping scroll pinned to the bottom unless the user scrolled up. Resizes the
 // session's PTY to the phone's width so the TUI reflows to fit — full lines are
 // visible at a readable, user-adjustable font (A−/A+, persisted), no sideways scroll.
-export function Terminal({ sessionId, className }) {
+export function Terminal({ sessionId, className, promptPending = false }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
   const reviewingRef = useRef(false);
+  const promptPendingRef = useRef(promptPending);
+  useEffect(() => { promptPendingRef.current = promptPending; }, [promptPending]);
   const [displayState, setDisplayState] = useState('loading'); // loading | cached | live
   const [connectionState, setConnectionState] = useState('connecting'); // connecting | live | reconnecting
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -400,6 +415,16 @@ export function Terminal({ sessionId, className }) {
       // genuine terminal pages are exhausted, completed turns provide clean long
       // history without raw thinking/tool redraws or synthetic section banners.
       const terminalHistoryExhausted = latestScreen && (!latestScreen.hasOlder || latestScreen.hasTerminalPrelude);
+      const latestMessage = transcriptMessages[transcriptMessages.length - 1];
+      const settledAnswerOnScreen = !promptPendingRef.current
+        && latestMessage?.role !== 'user'
+        && messageFragmentVisible(latestMessage, terminalHtml);
+      // A settled answer can be much taller than Claude's TUI viewport. If any
+      // fragment of it is on-screen, the transcript is the authoritative complete
+      // rendering; combining it with the viewport would either duplicate or cut it.
+      if (terminalHistoryExhausted && settledAnswerOnScreen) {
+        return completedTurnsHtml(transcriptMessages, '');
+      }
       const completedHtml = terminalHistoryExhausted ? completedTurnsHtml(transcriptMessages, terminalHtml) : '';
       return [completedHtml, terminalHtml].filter(Boolean).join('\n\n');
     };
