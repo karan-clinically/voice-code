@@ -493,7 +493,12 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         <ChatView session={session} notify={notify} />
       ) : (
         <>
-          <Terminal sessionId={session.id} className="sv-term" promptPending={promptPending} />
+          <Terminal
+            sessionId={session.id}
+            className="sv-term"
+            promptPending={promptPending}
+            sessionKind={session.kind}
+          />
           {keysMode ? (
             <TerminalKeypad sendRaw={sendRaw} onClose={() => setKeysMode(false)} />
           ) : (

@@ -19,6 +19,33 @@ function nativeTerminalHtml(html) {
   return markerAt < 0 ? value : value.slice(markerAt + LEGACY_SCREEN_MARKER.length).replace(/^\r?\n/, '');
 }
 
+function terminalLineText(html) {
+  return String(html || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]);
+}
+
+// Codex renders submitted prompts as a `›` line followed by two-space-indented
+// wraps. Its own replies use `•`, but both inherit the same terminal foreground
+// colour. Add semantic markup without disturbing Codex's ANSI formatting so each
+// app theme can apply its established user accent (`--term-user`).
+function highlightCodexUserTurns(html) {
+  let inUserTurn = false;
+  return String(html || '').split('\n').map((line) => {
+    const text = terminalLineText(line);
+    const startsUserTurn = /^\s*›\s+\S/.test(text);
+    if (startsUserTurn) {
+      const prompt = text.replace(/^\s*›\s+/, '').trim();
+      // Codex's empty-composer suggestion is UI chrome, not user-authored text.
+      inUserTurn = !/^find and fix a bug in @filename$/i.test(prompt);
+    } else if (inUserTurn) {
+      if (!text.trim()) inUserTurn = false;
+      else if (!/^\s{2,}\S/.test(text)) inUserTurn = false;
+    }
+    return inUserTurn ? `<span class="terminal-user-turn">${line}</span>` : line;
+  }).join('\n');
+}
+
 const escapeTerminalHtml = (value) => String(value || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
 const comparableTerminalText = (value) => String(value || '')
   .replace(/<[^>]*>/g, ' ')
@@ -287,7 +314,7 @@ export function MicButton({ className, onBlob, notify }) {
 // keeping scroll pinned to the bottom unless the user scrolled up. Resizes the
 // session's PTY to the phone's width so the TUI reflows to fit — full lines are
 // visible at a readable, user-adjustable font (A−/A+, persisted), no sideways scroll.
-export function Terminal({ sessionId, className, promptPending = false }) {
+export function Terminal({ sessionId, className, promptPending = false, sessionKind = '' }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
   const reviewingRef = useRef(false);
@@ -419,7 +446,8 @@ export function Terminal({ sessionId, className, promptPending = false }) {
       }
     };
     const composedHtml = () => {
-      const terminalHtml = [olderTerminalHtml, nativeTerminalHtml(latestScreen?.html)].filter(Boolean).join('\n');
+      const rawTerminalHtml = [olderTerminalHtml, nativeTerminalHtml(latestScreen?.html)].filter(Boolean).join('\n');
+      const terminalHtml = sessionKind === 'codex' ? highlightCodexUserTurns(rawTerminalHtml) : rawTerminalHtml;
       // Claude's TUI can use an alternate screen with no xterm scrollback. Once
       // genuine terminal pages are exhausted, completed turns provide clean long
       // history without raw thinking/tool redraws or synthetic section banners.
