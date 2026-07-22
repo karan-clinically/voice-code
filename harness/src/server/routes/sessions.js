@@ -63,9 +63,12 @@ const KEY_SEQS = {
 function detectMode(screen) {
   const s = String(screen || '');
   if (/accept edits on/i.test(s)) return 'auto';
-  if (/auto mode on/i.test(s)) return 'bypass';
+  if (/(?:auto mode|bypass permissions(?: mode)?) on/i.test(s)) return 'bypass';
   if (/plan mode on/i.test(s)) return 'plan';
-  return 'ask'; // "manual mode on" / default
+  if (/(?:manual|default) mode on/i.test(s)) return 'ask';
+  // While Claude is working, the status/footer can temporarily replace the mode
+  // label. That is not a switch back to Ask; callers should retain the last mode.
+  return null;
 }
 
 // Attachments are stored under a safe generated name; only a known set of

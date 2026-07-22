@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSwipeable } from 'react-swipeable';
-import { createSession, listProviders, transcribe, usageSummary, recentSessions, reindexArchive, killLocal, killSession, sessionInput, deleteGrokConv } from './lib/api.js';
+import { createSession, listProviders, transcribe, usageSummary, recentSessions, reindexArchive, killLocal, killSession, renameSession, sessionInput, deleteGrokConv } from './lib/api.js';
 import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
-import { ATTENTION_TITLE, attentionOf } from './lib/attention.js';
+import { ATTENTION_SHORT, attentionOf } from './lib/attention.js';
 import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
@@ -45,7 +45,7 @@ function dayBucket(ts) {
 // un-revealed row opens it as usual. The revealed action is Kill for anything with a
 // process the harness can end, and Delete for a saved Grok conversation (a file, not a
 // process). Rows the harness neither owns nor can pid-kill reveal nothing.
-function SessionRow({ it, openable, opening, onOpen, onKill, onDelete, notify }) {
+function SessionRow({ it, openable, opening, onOpen, onRename, onKill, onDelete, notify }) {
   const [revealed, setRevealed] = useState(false);
   const [rcSent, setRcSent] = useState(false);
   const swiped = useRef(false);
@@ -58,6 +58,7 @@ function SessionRow({ it, openable, opening, onOpen, onKill, onDelete, notify })
   // Delete action instead (worded differently: this discards the conversation itself).
   const canDelete = it.kind === 'grok-saved';
   const swipeable = canKill || canDelete;
+  const canRename = it.kind === 'harness' && it.alive && !!it.harnessId;
   // Only a harness-OWNED (non-shell) session that hasn't bridged yet can have remote
   // control turned on from here: the harness owns its pty, so it can type /rc into it.
   // Orphan "Local" rows can't — the harness has no keyboard channel to them.
@@ -98,9 +99,20 @@ function SessionRow({ it, openable, opening, onOpen, onKill, onDelete, notify })
   const folder = it.cwd ? basename(it.cwd) : '';
   const sub = [repo.toLowerCase().includes(folder.toLowerCase()) ? '' : folder, repo].filter(Boolean).join('  ·  ');
   const att = attentionOf(it);
+  const jobStatus = opening
+    ? { label: 'Opening…', kind: 'working' }
+    : att
+      ? { label: ATTENTION_SHORT[att] || 'Unread', kind: att }
+      : it.resumeGrok
+        ? { label: 'Saved', kind: 'saved' }
+        : it.active
+          ? { label: 'Working', kind: 'working' }
+          : it.alive === false
+            ? { label: 'Ended', kind: 'ended' }
+            : { label: 'Ready', kind: 'ready' };
 
   return (
-    <div className="cc-row">
+    <div className={'cc-row' + (revealed ? ' revealed' : '')}>
       {swipeable && (
         <button
           className="cc-kill"
@@ -110,15 +122,25 @@ function SessionRow({ it, openable, opening, onOpen, onKill, onDelete, notify })
           {canDelete ? 'Delete' : 'Kill'}
         </button>
       )}
+      {canRename && (
+        <button
+          type="button"
+          className="cc-rename"
+          aria-label={`Rename ${it.name}`}
+          title="Rename session"
+          onClick={() => onRename(it)}
+        >
+          ✎
+        </button>
+      )}
       <button
         {...(swipeable ? swipe : {})}
-        className={'cc-item' + (revealed ? ' revealed' : '') + (swipeable ? ' swipeable' : '')}
+        className={'cc-item' + (revealed ? ' revealed' : '') + (swipeable ? ' swipeable' : '') + (canRename ? ' renamable' : '')}
         onClick={onClick}
         disabled={!openable && !swipeable}
       >
         <span className={'cc-tag cc-' + it.origin} title={it.originLabel}>
           {it.bgAgent ? 'Agent' : it.local ? 'Local' : ORIGIN_TAG[it.origin] || 'RC'}
-          {att && <span className={'cc-unread cc-att-' + att} title={ATTENTION_TITLE[att] || 'Wants attention'} />}
         </span>
         <span className="cc-body">
           <span className="cc-line1">
@@ -127,56 +149,31 @@ function SessionRow({ it, openable, opening, onOpen, onKill, onDelete, notify })
             <span className="cc-time">{shortAgo(it.ts)}</span>
           </span>
           <span className="cc-status">
-            <span
-              className={'cc-dot ' + (opening || it.active ? 'busy' : 'on')}
-              style={it.resumeGrok ? { background: 'var(--muted, #888)' } : undefined}
-            />
-            <span className={'cc-conn ' + (it.active ? 'busy' : 'on')}>
-              {opening ? 'Opening…' : it.resumeGrok ? 'Saved' : it.active ? 'Working' : 'Connected'}
-            </span>
-            {it.agentLabel && it.agentLabel !== 'Claude' && (
-              <>
-                <span className="cc-sep">·</span>
-                <span className="cc-rc">{it.agentLabel}</span>
-              </>
-            )}
-            {'remote' in it && (
-              <>
-                <span className="cc-sep">·</span>
-                {canRc && !it.remote ? (
-                  rcSent ? (
-                    <span className="cc-rc">⏳ Turning on remote…</span>
-                  ) : (
-                    <span
-                      className="cc-rc cc-rc-btn"
-                      role="button"
-                      tabIndex={0}
-                      title="Send /rc to turn on claude.ai remote control"
-                      onClick={(e) => { e.stopPropagation(); enableRc(); }}
-                    >
-                      🖥 Enable remote control
-                    </span>
-                  )
-                ) : (
-                  <span
-                    className={'cc-rc' + (it.remote ? ' on' : '')}
-                    title={it.remote ? 'Also on claude.ai remote control' : it.remoteReason || ''}
-                  >
-                    {it.remote ? '☁ Remote control' : '🖥 Local only'}
-                  </span>
-                )}
-              </>
+            <span className={'cc-job-chip ' + jobStatus.kind}>{jobStatus.label}</span>
+            {canRc && !it.remote && (
+              rcSent ? (
+                <span className="cc-rc-btn pending">Turning on RC…</span>
+              ) : (
+                <span
+                  className="cc-rc-btn"
+                  role="button"
+                  tabIndex={0}
+                  title="Send /rc to turn on claude.ai remote control"
+                  onClick={(e) => { e.stopPropagation(); enableRc(); }}
+                >
+                  Enable RC
+                </span>
+              )
             )}
           </span>
           {sub && <span className="cc-sub">{sub}</span>}
-          {'remote' in it && !it.remote && it.remoteReason && <span className="cc-rc-reason">{it.remoteReason}</span>}
         </span>
       </button>
     </div>
   );
 }
 
-export default function Home({ onOpen, onHistory, notify }) {
+export default function Home({ onOpen, onHistory, newSessionRequested = false, onNewSessionRequestHandled, notify }) {
   const [showNew, setShowNew] = useState(false); // "New session" sheet
   const [path, setPath] = useState(localStorage.getItem('cvh_lastpath') || '');
   const [sessions, setSessions] = useState(readSessionCards);
@@ -189,6 +186,15 @@ export default function Home({ onOpen, onHistory, notify }) {
   const [spend, setSpend] = useState(null); // estimated total USD, for the header tally
   const [showSpend, setShowSpend] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [renameTarget, setRenameTarget] = useState(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renaming, setRenaming] = useState(false);
+
+  useEffect(() => {
+    if (!newSessionRequested) return;
+    setShowNew(true);
+    onNewSessionRequestHandled?.();
+  }, [newSessionRequested, onNewSessionRequestHandled]);
 
   useEffect(() => {
     let stop = false;
@@ -296,6 +302,53 @@ export default function Home({ onOpen, onHistory, notify }) {
     }
   }
 
+  function beginRename(it) {
+    setRenameTarget(it);
+    setRenameDraft(it.name || '');
+  }
+
+  async function saveRename(e) {
+    e.preventDefault();
+    const target = renameTarget;
+    const label = renameDraft.trim();
+    if (!target || !label || renaming) return;
+    const previousName = target.name;
+    const updateName = (name) => {
+      setSessions((prev) => {
+        const next = prev.map((row) => row.key === target.key ? { ...row, name } : row);
+        writeSessionCards(next);
+        return next;
+      });
+    };
+
+    setRenaming(true);
+    updateName(label);
+    try {
+      let result = await renameSession(target.harnessId, label);
+      const isClaude = (target.agentKind || 'claude') === 'claude' && !target.shell;
+      // A harness process that has not restarted since the rename-sync backend was
+      // deployed still persists the app label, but its response has no
+      // `claudeSynced` field and it does not forward Claude's /rename command. Keep
+      // the phone compatible with that live process so names do not revert while
+      // users still have PTYs they cannot safely restart.
+      if (isClaude && result.alive && !Object.hasOwn(result, 'claudeSynced')) {
+        await sessionInput(target.harnessId, `/rename ${label}`);
+        result = { ...result, claudeSynced: true };
+      }
+      updateName(result.label || label);
+      setRenameTarget(null);
+      setRenameDraft('');
+      if (result.kind === 'claude' && result.alive && !result.claudeSynced) {
+        notify?.('Session renamed in the app, but Claude Remote Control did not update' + (result.syncError ? ': ' + result.syncError : ''));
+      }
+    } catch (err) {
+      updateName(previousName);
+      notify?.('Rename failed: ' + err.message);
+    } finally {
+      setRenaming(false);
+    }
+  }
+
   return (
     <div>
       <header className="topbar">
@@ -310,6 +363,34 @@ export default function Home({ onOpen, onHistory, notify }) {
 
       {showSpend && <SpendModal onClose={() => setShowSpend(false)} />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} notify={notify} />}
+
+      {renameTarget && (
+        <div className="rename-backdrop" onClick={() => { if (!renaming) setRenameTarget(null); }}>
+          <form className="rename-modal" onSubmit={saveRename} onClick={(e) => e.stopPropagation()}>
+            <div className="rename-title">Rename session</div>
+            <div className="rename-help">
+              {(renameTarget.agentKind || 'claude') === 'claude' && !renameTarget.shell
+                ? 'This also updates the title in Claude Code Remote Control.'
+                : 'This updates the session name everywhere in Voice Harness.'}
+            </div>
+            <input
+              autoFocus
+              maxLength={120}
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onFocus={(e) => e.target.select()}
+              aria-label="Session name"
+              disabled={renaming}
+            />
+            <div className="rename-actions">
+              <button type="button" className="ghost" disabled={renaming} onClick={() => setRenameTarget(null)}>Cancel</button>
+              <button type="submit" className="primary" disabled={renaming || !renameDraft.trim()}>
+                {renaming ? 'Renaming…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {sessionLoad !== 'ready' && (
         <div className="load-status" role="status">
@@ -336,7 +417,7 @@ export default function Home({ onOpen, onHistory, notify }) {
               <div className="cc-group-head">{b}</div>
               <div className="cc-list">
                 {rows.map((it) => (
-                  <SessionRow key={it.key} it={it} openable={canOpen(it)} opening={openingKey === it.key} onOpen={openItem} onKill={killItem} onDelete={deleteItem} notify={notify} />
+                  <SessionRow key={it.key} it={it} openable={canOpen(it)} opening={openingKey === it.key} onOpen={openItem} onRename={beginRename} onKill={killItem} onDelete={deleteItem} notify={notify} />
                 ))}
               </div>
             </div>

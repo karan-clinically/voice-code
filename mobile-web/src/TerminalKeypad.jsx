@@ -14,8 +14,8 @@ const SEQ = {
 
 export default function TerminalKeypad({ sendRaw, onClose }) {
   // A momentary press cue so a tap on a phone still feels like it registered.
-  const K = (s, label, cls) => (
-    <button type="button" className={'tk' + (cls ? ' ' + cls : '')} onClick={() => sendRaw(s)}>
+  const K = (s, label, cls, key) => (
+    <button type="button" className={'tk' + (cls ? ' ' + cls : '')} onClick={() => sendRaw(s, key)}>
       {label}
     </button>
   );
@@ -23,7 +23,7 @@ export default function TerminalKeypad({ sendRaw, onClose }) {
     <div className="tkbd">
       <div className="tkbd-rows">
         <div className="tkbd-specials">
-          {K(SEQ.esc, 'Esc')}
+          {K(SEQ.esc, 'Esc', '', 'esc')}
           {K(SEQ.tab, 'Tab')}
           {K(SEQ.stab, '⇧Tab')}
           {K(SEQ.cC, 'Ctrl-C', 'tk-cspan')}
@@ -31,16 +31,16 @@ export default function TerminalKeypad({ sendRaw, onClose }) {
         </div>
         <div className="tkbd-arrows">
           <span />
-          {K(SEQ.up, '↑')}
+          {K(SEQ.up, '↑', '', 'up')}
           <span />
-          {K(SEQ.left, '←')}
-          {K(SEQ.down, '↓')}
-          {K(SEQ.right, '→')}
+          {K(SEQ.left, '←', '', 'left')}
+          {K(SEQ.down, '↓', '', 'down')}
+          {K(SEQ.right, '→', '', 'right')}
         </div>
       </div>
       <div className="tkbd-wide">
         {K(SEQ.space, 'Space', 'tk-space')}
-        {K(SEQ.enter, '⏎  Enter', 'tk-enter')}
+        {K(SEQ.enter, '⏎  Enter', 'tk-enter', 'enter')}
       </div>
       <button type="button" className="tk tk-abc" onClick={onClose}>Abc — back to typing</button>
     </div>

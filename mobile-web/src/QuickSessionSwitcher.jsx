@@ -9,7 +9,7 @@ const SCROLL_SETTLE_MS = 700;
 // A short-lived, phone-friendly equivalent of Alt-Tab. It intentionally only
 // includes live harness tabs: choosing an archived row here must never silently
 // resume or fork a conversation.
-export default function QuickSessionSwitcher({ session, rows, onOpen, onClose, notify }) {
+export default function QuickSessionSwitcher({ session, rows, onOpen, onNew, onClose, notify }) {
   const [openingKey, setOpeningKey] = useState(null);
   const [timerPaused, setTimerPaused] = useState(false);
   const dismissTimer = useRef(null);
@@ -107,7 +107,11 @@ export default function QuickSessionSwitcher({ session, rows, onOpen, onClose, n
               </button>
             );
           })}
-          {tabs.length === 0 && <span className="qsw-empty">No open tabs</span>}
+          <button className="qsw-tab qsw-new" onClick={onNew} disabled={!!openingKey}>
+            <span className="qsw-new-icon">+</span>
+            <span className="qsw-name">New session</span>
+            <span className="qsw-meta">Start another tab</span>
+          </button>
         </div>
         <div className={'qsw-timeout' + (timerPaused ? ' paused' : '')} aria-hidden="true" />
       </div>

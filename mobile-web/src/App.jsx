@@ -43,6 +43,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [openingSession, setOpeningSession] = useState(false);
   const [quickSwitchSignal, setQuickSwitchSignal] = useState(0);
+  const [newSessionRequested, setNewSessionRequested] = useState(false);
   const explicitBack = useRef(false);
 
   // App-wide toast. Everything funnels through here as an error by default;
@@ -180,7 +181,15 @@ export default function App() {
           <span className="load-spinner" /> Opening session…
         </div>
       )}
-      {route === 'home' && <Home onOpen={openSession} onHistory={() => setRoute('history')} notify={notify} />}
+      {route === 'home' && (
+        <Home
+          onOpen={openSession}
+          onHistory={() => setRoute('history')}
+          newSessionRequested={newSessionRequested}
+          onNewSessionRequestHandled={() => setNewSessionRequested(false)}
+          notify={notify}
+        />
+      )}
       {route === 'history' && <History onOpen={openSession} onBack={goHome} notify={notify} />}
       {route === 'shell' && (
         <ShellView
@@ -199,6 +208,10 @@ export default function App() {
           session={session}
           onBack={goHome}
           onOpen={openSession}
+          onNewSession={() => {
+            setNewSessionRequested(true);
+            goHome();
+          }}
           quickSwitchSignal={quickSwitchSignal}
           notify={notify}
         />

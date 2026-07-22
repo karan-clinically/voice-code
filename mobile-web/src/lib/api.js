@@ -97,6 +97,7 @@ export const resumeGrok = (id) => jpost('/api/sessions', { kind: 'grok', resumeG
 // rows — there's no process to kill, so this is the only way to clear one.
 export const deleteGrokConv = (id) => jdelete(`/api/sessions/grok/${id}`);
 export const sessionInfo = (id) => jget(`/api/sessions/${id}`, { timeoutMs: 8000 });
+export const renameSession = (id, label) => jpost(`/api/sessions/${id}/rename`, { label });
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const killLocal = (pid) => jpost('/api/sessions/kill-local', { pid });
 export const muteSession = (id, muted) => jpost(`/api/sessions/${id}/mute`, { muted });
@@ -184,11 +185,31 @@ export const sessionKeySeq = (id, seq) => jpost(`/api/sessions/${id}/key`, { seq
 export const sessionPrompt = (id) => jget(`/api/sessions/${id}/prompt`, { timeoutMs: 8000 });
 // Answer option `index`; resolves with Claude's follow-up reply ({responseText, audioUrl, prompt}).
 export const selectPromptOption = (id, index) => jpost(`/api/sessions/${id}/select`, { index, desktopPlayback: false });
-export const attachFile = (id, file) => {
+// XMLHttpRequest is intentional here: fetch still exposes no upload-byte progress
+// in browsers, while xhr.upload reports it reliably on mobile Safari and Chrome.
+export const attachFile = (id, file, onProgress) => new Promise((resolve, reject) => {
   const fd = new FormData();
   fd.append('file', file, file.name || 'upload');
-  return jform(`/api/sessions/${id}/attach`, fd);
-};
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', base + `/api/sessions/${id}/attach`);
+  for (const [key, value] of Object.entries(H)) xhr.setRequestHeader(key, value);
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) onProgress?.(event.loaded / event.total);
+  };
+  xhr.onload = () => {
+    let data = {};
+    try { data = JSON.parse(xhr.responseText || '{}'); } catch { /* use status below */ }
+    if (xhr.status >= 200 && xhr.status < 300) {
+      onProgress?.(1);
+      resolve(data);
+    } else {
+      reject(new Error(data.error || `HTTP ${xhr.status}`));
+    }
+  };
+  xhr.onerror = () => reject(new Error('Upload failed — check the connection'));
+  xhr.onabort = () => reject(new Error('Upload cancelled'));
+  xhr.send(fd);
+});
 export const listPrompts = () => jget('/api/prompts');
 export const savePrompt = (text, label) => jpost('/api/prompts', { text, label });
 export const deletePrompt = (id) => jdelete(`/api/prompts/${id}`);

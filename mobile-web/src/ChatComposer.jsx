@@ -16,6 +16,15 @@ const MODE_TOAST = {
   plan: 'Plan — read-only, plans first',
   bypass: 'Bypass — no permission prompts',
 };
+const modeStorageKey = (sessionId) => `cvh_permission_mode:${sessionId}`;
+const savedMode = (sessionId) => {
+  try {
+    const value = localStorage.getItem(modeStorageKey(sessionId));
+    return MODES.includes(value) ? value : 'ask';
+  } catch {
+    return 'ask';
+  }
+};
 
 // The "code container" input (phone): rounded card with the text field on top and
 // a control row — mic · "/" · attach · mode · ⋯ · send/stop. The mode button is the
@@ -37,29 +46,42 @@ export default function ChatComposer({
   onKeypad, // terminal-only: renders an extra ⌨ button that calls this
 }) {
   const [text, setText] = useState('');
-  const [mode, setMode] = useState('ask');
+  const [mode, setMode] = useState(() => savedMode(session.id));
   const [showSlash, setShowSlash] = useState(false);
   const [showMore, setShowMore] = useState(false); // ⋯ overflow: permission mode + read-aloud
+  const [attachments, setAttachments] = useState([]); // visible label -> hidden server path
+  const [pendingUploads, setPendingUploads] = useState([]);
+  const [uploading, setUploading] = useState(false);
   const taRef = useRef(null);
   const fileRef = useRef(null);
+  const nextUploadNumber = useRef(1);
   const isBusy = busy !== undefined ? busy : session.state === 'busy';
   const isGrok = (session.kind || '') === 'grok';
   const isCodex = (session.kind || '') === 'codex';
   const agentLabel = isCodex ? 'Codex' : isGrok ? 'Grok' : 'Claude';
-  // Terminal (allowEmptySend) has ONE button that follows the screen: Claude grinding
-  // away -> ■ (Esc, interrupt); a question waiting or something typed -> ➤ (Enter/send).
-  // A pending prompt still reads as "busy", so it has to override the stop state.
-  const showStop = allowEmptySend ? isBusy && !promptPending && !text.trim() : isBusy;
+  // Busy always owns the action button: a draft must never hide the only way to
+  // interrupt a running turn. A pending prompt is the exception because Enter/send
+  // answers it; the draft stays intact while Stop is visible and returns afterwards.
+  const showStop = isBusy && !promptPending;
 
   // True while a tap's mode switch awaits server confirmation. The 4s poll keeps
   // running during that window, and a poll that left BEFORE the key landed comes
   // back carrying the old mode — letting it setMode would stomp the switch right
   // back (the "toggles then reverts" bug). Gate it out while cycling.
   const cycling = useRef(false);
+  const rememberMode = useCallback((next) => {
+    if (!MODES.includes(next)) return;
+    setMode(next);
+    try { localStorage.setItem(modeStorageKey(session.id), next); } catch { /* storage unavailable */ }
+  }, [session.id]);
   const refreshMode = useCallback(() => {
     if (isGrok || isCodex || cycling.current) return; // non-Claude agents have no mode footer
-    sessionMode(session.id).then((r) => { if (!cycling.current && r?.mode) setMode(r.mode); }).catch(() => {});
-  }, [session.id, isGrok, isCodex]);
+    sessionMode(session.id).then((r) => { if (!cycling.current && r?.mode) rememberMode(r.mode); }).catch(() => {});
+  }, [session.id, isGrok, isCodex, rememberMode]);
+
+  useEffect(() => {
+    setMode(savedMode(session.id));
+  }, [session.id]);
 
   useEffect(() => {
     if (isGrok || isCodex) return undefined;
@@ -102,7 +124,7 @@ export default function ChatComposer({
         await new Promise((r) => setTimeout(r, wait));
         const m = (await sessionMode(session.id))?.mode;
         if (m && m !== prev) {
-          setMode(m);
+          rememberMode(m);
           notify(`${MODE_ICON[m]} ${MODE_TOAST[m]}`, 'info');
           return;
         }
@@ -129,14 +151,45 @@ export default function ChatComposer({
   }
 
   async function onFile(e) {
-    const file = e.target.files && e.target.files[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!file) return;
+    if (!files.length) return;
+    const batch = files.map((file) => ({
+      id: `${Date.now()}-${nextUploadNumber.current}`,
+      label: `Upload ${nextUploadNumber.current++}`,
+      file,
+      progress: 0,
+    }));
+    setPendingUploads((prev) => [...prev, ...batch]);
+    setUploading(true);
     try {
-      const { path } = await attachFile(session.id, file);
-      if (path) insert(/\s/.test(path) ? `"${path}" ` : `${path} `);
-    } catch (err) {
-      notify('Attach failed: ' + err.message);
+      const setProgress = (id, progress) => setPendingUploads((prev) => prev.map((item) =>
+        item.id === id ? { ...item, progress: Math.max(item.progress, progress) } : item
+      ));
+      const results = await Promise.allSettled(batch.map((item) =>
+        attachFile(session.id, item.file, (progress) => setProgress(item.id, progress))
+      ));
+      const added = [];
+      let failed = 0;
+      for (let i = 0; i < results.length; i += 1) {
+        const result = results[i];
+        if (result.status === 'fulfilled' && result.value?.path) {
+          added.push({ label: batch[i].label, path: result.value.path });
+        } else {
+          failed += 1;
+        }
+      }
+      // Let the fully-coloured label land visibly before it becomes ordinary text.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (added.length) {
+        setAttachments((prev) => [...prev, ...added]);
+        insert(added.map((item) => `[${item.label}]`).join(' ') + ' ');
+      }
+      if (failed) notify(`${failed} file${failed === 1 ? '' : 's'} could not be uploaded`);
+    } finally {
+      const ids = new Set(batch.map((item) => item.id));
+      setPendingUploads((prev) => prev.filter((item) => !ids.has(item.id)));
+      setUploading(false);
     }
   }
 
@@ -149,14 +202,40 @@ export default function ChatComposer({
   }
 
   function send(override) {
-    const t = (typeof override === 'string' ? override : text).trim();
-    if (!t && !allowEmptySend) return;
+    if (uploading) {
+      notify('Wait for the files to finish uploading');
+      return;
+    }
+    const visibleText = (typeof override === 'string' ? override : text).trim();
+    if (!visibleText && !allowEmptySend) return;
+    const expandedText = attachments.reduce((value, item) => {
+      const token = `[${item.label}]`;
+      const path = `"${String(item.path).replace(/"/g, '\\"')}"`;
+      return value.split(token).join(path);
+    }, visibleText);
     setText('');
-    onSubmit(t);
+    setAttachments([]);
+    nextUploadNumber.current = 1;
+    onSubmit(expandedText);
   }
 
   return (
     <div className="composer">
+      {pendingUploads.length > 0 && (
+        <div className="composer-upload-progress" aria-live="polite">
+          {pendingUploads.map((item) => {
+            const text = `[${item.label}]`;
+            const completeChars = Math.floor(item.progress * text.length);
+            return (
+              <span key={item.id} className="composer-upload-token" aria-label={`${item.label} ${Math.round(item.progress * 100)}%`}>
+                {Array.from(text).map((char, index) => (
+                  <span key={index} className={index < completeChars ? 'uploaded' : ''}>{char}</span>
+                ))}
+              </span>
+            );
+          })}
+        </div>
+      )}
       <textarea
         ref={taRef}
         className="composer-input"
@@ -191,8 +270,15 @@ export default function ChatComposer({
         >
           /
         </button>
-        <button className="cbtn" onClick={() => fileRef.current?.click()} aria-label="Attach">📎</button>
-        <input ref={fileRef} type="file" onChange={onFile} style={{ display: 'none' }} />
+        <button
+          className="cbtn"
+          onClick={() => fileRef.current?.click()}
+          aria-label={uploading ? 'Uploading files' : 'Attach files'}
+          disabled={uploading}
+        >
+          {uploading ? '…' : '📎'}
+        </button>
+        <input ref={fileRef} type="file" multiple onChange={onFile} style={{ display: 'none' }} />
         {onKeypad && (
           <button
             type="button"
@@ -260,7 +346,7 @@ export default function ChatComposer({
           <button
             className="cbtn send"
             onClick={() => send()}
-            disabled={!allowEmptySend && !text.trim()}
+            disabled={uploading || (!allowEmptySend && !text.trim())}
             aria-label={allowEmptySend && !text.trim() ? 'Enter' : 'Send'}
           >
             ➤

@@ -9,18 +9,34 @@ import { readTerminalSnapshot, writeTerminalSnapshot } from './lib/localCache.js
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
 const escapeTerminalHtml = (value) => String(value || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+const comparableText = (value) => String(value || '')
+  .replace(/<[^>]*>/g, ' ')
+  .replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity])
+  .replace(/\s+/g, ' ')
+  .trim()
+  .toLowerCase();
 
-function conversationTranscriptHtml(messages) {
-  if (!messages?.length) return '';
-  const turns = messages
-    .filter((m) => m?.text)
+function messageVisibleInTerminal(message, terminalText) {
+  const text = comparableText(message);
+  if (!text) return true;
+  if (terminalText.includes(text)) return true;
+  // Terminal wrapping and viewport clipping can prevent a whole long reply from
+  // matching. A substantial beginning or ending match still means it is on-screen.
+  if (text.length < 80) return false;
+  return terminalText.includes(text.slice(0, 80)) || terminalText.includes(text.slice(-80));
+}
+
+function conversationTranscriptHtml(messages, terminalHtml) {
+  const terminalText = comparableText(terminalHtml);
+  const turns = (messages || [])
+    .filter((m) => m?.text && !messageVisibleInTerminal(m.text, terminalText))
     .map((m) => {
       const label = m.role === 'user' ? 'You' : 'Claude';
       const turn = `<strong class="terminal-transcript-label">${label}:</strong>\n${escapeTerminalHtml(m.text)}`;
       return m.role === 'user' ? `<span class="terminal-transcript-user">${turn}</span>` : turn;
     })
     .join('\n\n');
-  return `===== Saved conversation transcript =====\n${turns}`;
+  return turns ? `===== Earlier conversation =====\n${turns}` : '';
 }
 
 // Dictation mic bound to a text box: the transcript lands in `text` for review
@@ -376,9 +392,11 @@ export function Terminal({ sessionId, className }) {
       const terminalHtml = [olderTerminalHtml, latestScreen?.html || ''].filter(Boolean).join('\n');
       const seeded = latestScreen?.hasTerminalPrelude
         ?? /===== (?:Live|Earlier) terminal output/.test(terminalHtml);
-      const useTranscript = !terminalPagingUsed && !seeded && transcriptMessages.length > 0;
-      return useTranscript
-        ? `${conversationTranscriptHtml(transcriptMessages)}\n\n===== Current terminal screen =====\n${terminalHtml}`
+      const transcriptHtml = !terminalPagingUsed && !seeded
+        ? conversationTranscriptHtml(transcriptMessages, terminalHtml)
+        : '';
+      return transcriptHtml
+        ? `${transcriptHtml}\n\n===== Current terminal screen =====\n${terminalHtml}`
         : terminalHtml;
     };
     const replaceRendered = ({ preserveTop = false } = {}) => {
@@ -456,9 +474,6 @@ export function Terminal({ sessionId, className }) {
       busy = true;
       lastPaintStarted = Date.now();
       try {
-        // These used to run serially, costing two full network round trips over
-        // Tailscale before the terminal could update. Start both together; the
-        // transcript result is ignored when native terminal history is present.
         const [screen] = await Promise.all([
           sessionScreen(sessionId),
           transcriptFallback(),
@@ -572,13 +587,15 @@ export function Terminal({ sessionId, className }) {
   return (
     <div className={'term-wrap ' + (className || '')}>
       {displayState !== 'live' && (
-        <div className="term-load-status" role="status">
-          <span className="load-spinner" />
-          {displayState === 'cached' ? 'Showing saved terminal · updating…' : 'Loading terminal…'}
+        <div className="term-load-backdrop">
+          <div className="term-load-modal" role="status" aria-live="polite">
+            <span className="load-spinner" />
+            <span>{displayState === 'cached' ? 'Showing saved terminal · updating…' : 'Loading terminal…'}</span>
+          </div>
         </div>
       )}
       {displayState === 'live' && connectionState !== 'live' && !ended && (
-        <div className="term-load-status" role="status">
+        <div className="term-reconnect-status" role="status" aria-live="polite">
           <span className="load-spinner" /> Reconnecting live terminal…
         </div>
       )}

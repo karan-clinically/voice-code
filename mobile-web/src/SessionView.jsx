@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKeySeq } from './lib/api.js';
+import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq } from './lib/api.js';
 import { ATTENTION_SHORT, isAlert } from './lib/attention.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { Terminal, basename } from './components.jsx';
@@ -37,7 +37,7 @@ const VIEWS = [
 // Full-screen Claude session — terminal is the main view. Voice dictates into the
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
 // code is retained in lib/audio.js but not surfaced here.
-export default function SessionView({ session, onBack, onOpen, quickSwitchSignal = 0, notify }) {
+export default function SessionView({ session, onBack, onOpen, onNewSession, quickSwitchSignal = 0, notify }) {
   const isGrok = (session.kind || '') === 'grok';
   const isCodex = (session.kind || '') === 'codex';
   const hasChat = session.capabilities?.chat !== false;
@@ -332,7 +332,15 @@ export default function SessionView({ session, onBack, onOpen, quickSwitchSignal
       keyWs.current = null;
     };
   }, [session.id, mode]);
-  const sendRaw = (seq) => {
+  const sendRaw = (seq, namedKey = null) => {
+    // The server's allowlisted key endpoint is more reliable for navigation keys
+    // than a browser socket after a phone sleep/network handoff: a zombie WebSocket
+    // can still report OPEN while silently dropping writes. Use HTTP directly for
+    // arrows/Esc/Enter; raw-only keys continue over the terminal socket.
+    if (namedKey) {
+      sessionKey(session.id, namedKey).catch((e) => notify('Key failed: ' + e.message));
+      return;
+    }
     const ws = keyWs.current;
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ t: 'in', d: seq }));
@@ -344,7 +352,9 @@ export default function SessionView({ session, onBack, onOpen, quickSwitchSignal
     keyReconnect.current?.();
   };
 
-  const isWorking = state === 'working…' || srvState === 'busy';
+  // `/recent` independently reports whether the PTY is active. Use it alongside
+  // the detail poll so a transient/stale sessionInfo response cannot hide Stop.
+  const isWorking = state === 'working…' || srvState === 'busy' || !!here?.active;
   const isReady = state === 'ready' || srvState === 'response_ready';
   const stateCls = 'sv-state' + (isWorking ? ' busy' : promptPending ? ' waiting' : isReady ? ' ready' : '');
   // Grok shares the command/chat/voice pipeline as Claude (turn-complete hook).
@@ -443,6 +453,7 @@ export default function SessionView({ session, onBack, onOpen, quickSwitchSignal
           session={session}
           rows={rows}
           onOpen={onOpen}
+          onNew={onNewSession}
           onClose={() => setShowQuickSwitch(false)}
           notify={notify}
         />
@@ -465,7 +476,7 @@ export default function SessionView({ session, onBack, onOpen, quickSwitchSignal
               // any other driver (terminal / remote control). `session.state` alone is
               // a snapshot from when the view opened and never flips, so relying on it
               // meant the send button could never become ■ Stop.
-              busy={state === 'working…' || srvState === 'busy'}
+              busy={isWorking}
               plainText
               allowEmptySend
               promptPending={promptPending}
