@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionScreen, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
+import { sessionScreen, sessionMessagePage, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
 import { tapRecord, playUrl } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 import { THEMES, getTheme, applyTheme } from './lib/theme.js';
@@ -17,6 +17,33 @@ function nativeTerminalHtml(html) {
   const value = String(html || '');
   const markerAt = value.lastIndexOf(LEGACY_SCREEN_MARKER);
   return markerAt < 0 ? value : value.slice(markerAt + LEGACY_SCREEN_MARKER.length).replace(/^\r?\n/, '');
+}
+
+const escapeTerminalHtml = (value) => String(value || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+const comparableTerminalText = (value) => String(value || '')
+  .replace(/<[^>]*>/g, ' ')
+  .replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity])
+  .replace(/\s+/g, ' ')
+  .trim()
+  .toLowerCase();
+
+function completedTurnsHtml(messages, terminalHtml) {
+  const visible = comparableTerminalText(terminalHtml);
+  return (messages || [])
+    .filter((message) => {
+      const text = comparableTerminalText(message?.text);
+      if (!text) return false;
+      // Do not duplicate the latest turn when it is still visible in xterm. Long
+      // replies can be clipped/wrapped, so matching either end is sufficient.
+      return !visible.includes(text)
+        && (text.length < 80 || (!visible.includes(text.slice(0, 80)) && !visible.includes(text.slice(-80))));
+    })
+    .map((message) => {
+      const label = message.role === 'user' ? 'You' : 'Claude';
+      const turn = `<strong class="terminal-transcript-label">${label}:</strong>\n${escapeTerminalHtml(message.text)}`;
+      return message.role === 'user' ? `<span class="terminal-transcript-user">${turn}</span>` : turn;
+    })
+    .join('\n\n');
 }
 
 // Dictation mic bound to a text box: the transcript lands in `text` for review
@@ -350,9 +377,32 @@ export function Terminal({ sessionId, className }) {
     });
     let latestScreen = null;
     let olderTerminalHtml = '';
-    // Render only the headless xterm buffer. Parsed chat transcripts and raw PTY
-    // logs are separate representations and must never be stitched into this view.
-    const composedHtml = () => [olderTerminalHtml, nativeTerminalHtml(latestScreen?.html)].filter(Boolean).join('\n');
+    let transcriptMessages = [];
+    let transcriptBefore = null;
+    let transcriptHasOlder = false;
+    let transcriptFetchedAt = 0;
+    const refreshTranscript = async () => {
+      const now = Date.now();
+      if (now - transcriptFetchedAt < 5000) return;
+      transcriptFetchedAt = now;
+      try {
+        const page = await sessionMessagePage(sessionId, { limit: 40 });
+        transcriptMessages = page.messages || [];
+        transcriptBefore = page.before;
+        transcriptHasOlder = !!page.hasOlder;
+      } catch {
+        /* shell/Codex sessions may not have completed conversation turns */
+      }
+    };
+    const composedHtml = () => {
+      const terminalHtml = [olderTerminalHtml, nativeTerminalHtml(latestScreen?.html)].filter(Boolean).join('\n');
+      // Claude's TUI can use an alternate screen with no xterm scrollback. Once
+      // genuine terminal pages are exhausted, completed turns provide clean long
+      // history without raw thinking/tool redraws or synthetic section banners.
+      const terminalHistoryExhausted = latestScreen && (!latestScreen.hasOlder || latestScreen.hasTerminalPrelude);
+      const completedHtml = terminalHistoryExhausted ? completedTurnsHtml(transcriptMessages, terminalHtml) : '';
+      return [completedHtml, terminalHtml].filter(Boolean).join('\n\n');
+    };
     const replaceRendered = ({ preserveTop = false } = {}) => {
       const outer = outerRef.current;
       const inner = innerRef.current;
@@ -379,17 +429,25 @@ export function Terminal({ sessionId, className }) {
       // Never page into that log; after restart this flag is false and native xterm
       // history pages normally.
       const canPageTerminal = !latestScreen?.hasTerminalPrelude && latestScreen?.hasOlder && latestScreen.startLine > 0;
-      if (!canPageTerminal) return;
+      const canPageTranscript = !canPageTerminal && transcriptHasOlder && transcriptBefore != null;
+      if (!canPageTerminal && !canPageTranscript) return;
       pagingOlder = true;
       setLoadingOlder(true);
       try {
-        const page = await sessionScreen(sessionId, { before: latestScreen.startLine, lines: 400 });
-        olderTerminalHtml = [page.html || '', olderTerminalHtml].filter(Boolean).join('\n');
-        latestScreen = {
-          ...latestScreen,
-          startLine: page.startLine,
-          hasOlder: !!page.hasOlder,
-        };
+        if (canPageTerminal) {
+          const page = await sessionScreen(sessionId, { before: latestScreen.startLine, lines: 400 });
+          olderTerminalHtml = [page.html || '', olderTerminalHtml].filter(Boolean).join('\n');
+          latestScreen = {
+            ...latestScreen,
+            startLine: page.startLine,
+            hasOlder: !!page.hasOlder,
+          };
+        } else {
+          const page = await sessionMessagePage(sessionId, { before: transcriptBefore, limit: 40 });
+          transcriptMessages = [...(page.messages || []), ...transcriptMessages];
+          transcriptBefore = page.before;
+          transcriptHasOlder = !!page.hasOlder;
+        }
         replaceRendered({ preserveTop: true });
       } catch {
         /* leave the current page readable; a later upward scroll can retry */
@@ -422,7 +480,10 @@ export function Terminal({ sessionId, className }) {
       busy = true;
       lastPaintStarted = Date.now();
       try {
-        const screen = await sessionScreen(sessionId);
+        const [screen] = await Promise.all([
+          sessionScreen(sessionId),
+          refreshTranscript(),
+        ]);
         const outer = outerRef.current;
         const inner = innerRef.current;
         if (outer && inner) {
@@ -550,7 +611,7 @@ export function Terminal({ sessionId, className }) {
       )}
       {loadingOlder && (
         <div className="term-history-status" role="status">
-          <span className="load-spinner" /> Loading earlier terminal output…
+          <span className="load-spinner" /> Loading earlier output…
         </div>
       )}
       <div className="term-fontctl">

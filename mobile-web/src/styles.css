@@ -350,6 +350,8 @@ button.ghost:hover { background: var(--surface-2); }
 /* Preserve xterm spacing while allowing a stale/wider PTY to fit the phone. Once
    the resize lands, xterm's own line breaks remain the normal wrapping boundary. */
 .screen-inner, .screen span { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.3; }
+.terminal-transcript-user { color: var(--term-user); }
+.terminal-transcript-label { font-weight: 700; }
 /* A−/A+ font stepper, pinned to the terminal's top-right corner */
 .term-fontctl {
   position: absolute; top: 6px; right: 8px; z-index: 2; display: flex; gap: 4px;
