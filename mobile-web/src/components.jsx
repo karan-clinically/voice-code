@@ -396,17 +396,26 @@ export function Terminal({ sessionId, className, promptPending = false }) {
     let transcriptBefore = null;
     let transcriptHasOlder = false;
     let transcriptFetchedAt = 0;
+    let transcriptSignature = '';
     const refreshTranscript = async () => {
       const now = Date.now();
-      if (now - transcriptFetchedAt < 5000) return;
+      if (now - transcriptFetchedAt < 5000) return false;
       transcriptFetchedAt = now;
       try {
         const page = await sessionMessagePage(sessionId, { limit: 40 });
-        transcriptMessages = page.messages || [];
+        const nextMessages = page.messages || [];
+        const nextSignature = nextMessages
+          .map((message) => `${message.id}:${message.role}:${message.text?.length || 0}:${message.text?.slice(-64) || ''}`)
+          .join('|');
+        const changed = nextSignature !== transcriptSignature;
+        transcriptSignature = nextSignature;
+        transcriptMessages = nextMessages;
         transcriptBefore = page.before;
         transcriptHasOlder = !!page.hasOlder;
+        return changed;
       } catch {
         /* shell/Codex sessions may not have completed conversation turns */
+        return false;
       }
     };
     const composedHtml = () => {
@@ -428,7 +437,7 @@ export function Terminal({ sessionId, className, promptPending = false }) {
       const completedHtml = terminalHistoryExhausted ? completedTurnsHtml(transcriptMessages, terminalHtml) : '';
       return [completedHtml, terminalHtml].filter(Boolean).join('\n\n');
     };
-    const replaceRendered = ({ preserveTop = false } = {}) => {
+    const replaceRendered = ({ preserveTop = false, preservePosition = false } = {}) => {
       const outer = outerRef.current;
       const inner = innerRef.current;
       if (!outer || !inner) return;
@@ -440,9 +449,11 @@ export function Terminal({ sessionId, className, promptPending = false }) {
       inner.innerHTML = renderedHtml;
       inner.dataset.h = renderedHtml;
       outer.scrollLeft = sx;
-      outer.scrollTop = preserveTop
-        ? oldTop + (outer.scrollHeight - oldHeight)
-        : outer.scrollHeight;
+      outer.scrollTop = preservePosition
+        ? oldTop
+        : preserveTop
+          ? oldTop + (outer.scrollHeight - oldHeight)
+          : outer.scrollHeight;
       queueSnapshot(renderedHtml);
     };
 
@@ -505,7 +516,7 @@ export function Terminal({ sessionId, className, promptPending = false }) {
       busy = true;
       lastPaintStarted = Date.now();
       try {
-        const [screen] = await Promise.all([
+        const [screen, transcriptChanged] = await Promise.all([
           sessionScreen(sessionId),
           refreshTranscript(),
         ]);
@@ -521,6 +532,11 @@ export function Terminal({ sessionId, className, promptPending = false }) {
             latestScreen = screen;
             olderTerminalHtml = '';
             replaceRendered();
+          } else if (transcriptChanged) {
+            // Completed transcript turns can grow after the final PTY redraw. Do
+            // not freeze that durable history just because the user touched or
+            // scrolled the terminal; update it without moving their viewport.
+            replaceRendered({ preservePosition: true });
           }
         }
         setDisplayState('live');
