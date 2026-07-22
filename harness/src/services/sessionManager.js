@@ -135,7 +135,7 @@ function decorate(row) {
 // original directory or Claude reports "No conversation found". The correlation
 // token is injected as CVH_SESSION_ID so a Stop hook can map back to this session
 // (primary matching is by cwd).
-export async function createSession({ cwd, label = null, kind = 'claude', providerId = null, resumeId = null, externalSessionId = null, grokConv = null, continueSession = false, origin = 'harness', agentView = false, credentialRef = null, terminalPrelude = '' } = {}) {
+export async function createSession({ cwd, label = null, kind = 'claude', providerId = null, resumeId = null, externalSessionId = null, grokConv = null, continueSession = false, origin = 'harness', agentView = false, credentialRef = null } = {}) {
   const adapter = requireAdapter(providerId || kind || 'claude');
   const token = randomUUID();
   // A Grok session's stable conversation id: reuse an existing one to resume with
@@ -169,7 +169,6 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
     removeEnv: credentialEnv.removeEnv,
     command: launch.command,
     args: launch.args || [],
-    terminalPrelude,
   });
   const git = await terminal.getGitInfo(view.cwd);
   const now = new Date().toISOString();

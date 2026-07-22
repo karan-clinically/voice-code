@@ -828,9 +828,7 @@ router.get('/:id/screen', async (req, res) => {
     }
     const resp = { promptCwd: parsePromptCwd(promptScreen) };
     if (includePlain) resp.screen = screen;
-    // Full view = a real terminal's worth of scrollback, not just the last screen.
-    // Keep the cap aligned with terminal.js's larger resume scrollback so historical
-    // transcript seed text is actually reachable from the phone.
+    // Full view = the native xterm scrollback, not parsed chat or raw-output logs.
     if (color && paged) {
       Object.assign(resp, await readScreenColoredPage(req.params.id, {
         before: req.query.before == null ? null : req.query.before,

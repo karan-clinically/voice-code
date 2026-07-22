@@ -23,7 +23,6 @@ import { liveClaudeSessions } from '../../services/claudeSessions.js';
 import { liveHarnessForConversation } from '../../services/sessionIdentity.js';
 import { isLocalhost } from '../auth.js';
 import { backfillFromTranscript } from '../../services/conversation.js';
-import { findTranscriptPath, parseMessages, renderTerminalTranscript } from '../../services/transcript.js';
 import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('archive-route');
@@ -98,23 +97,12 @@ router.post('/:uuid/resume', async (req, res) => {
     return res.json(getSession(processLinked.id));
   }
   try {
-    const transcriptPath = findTranscriptPath(meta.uuid);
-    let terminalPrelude = '';
-    if (transcriptPath) {
-      try {
-        const messages = await parseMessages(transcriptPath);
-        if (messages.length) terminalPrelude = renderTerminalTranscript(messages, { title: meta.title, uuid: meta.uuid });
-      } catch (err) {
-        log.warn(`terminal transcript seed failed for ${meta.uuid}: ${err.message}`);
-      }
-    }
     const session = await createSession({
       cwd: meta.cwd,
       label: meta.title,
       kind: 'claude',
       resumeId: meta.uuid,
       origin: isLocalhost(req) ? 'harness' : 'remote',
-      terminalPrelude,
     });
     recordReuse(reuseKey, session.id);
     // Seed the Chat view with the prior conversation from the on-disk transcript

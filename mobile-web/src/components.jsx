@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionScreen, sessionMessagePage, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
+import { sessionScreen, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
 import { tapRecord, playUrl } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 import { THEMES, getTheme, applyTheme } from './lib/theme.js';
@@ -8,35 +8,15 @@ import { readTerminalSnapshot, writeTerminalSnapshot } from './lib/localCache.js
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
-const escapeTerminalHtml = (value) => String(value || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
-const comparableText = (value) => String(value || '')
-  .replace(/<[^>]*>/g, ' ')
-  .replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity])
-  .replace(/\s+/g, ' ')
-  .trim()
-  .toLowerCase();
-
-function messageVisibleInTerminal(message, terminalText) {
-  const text = comparableText(message);
-  if (!text) return true;
-  if (terminalText.includes(text)) return true;
-  // Terminal wrapping and viewport clipping can prevent a whole long reply from
-  // matching. A substantial beginning or ending match still means it is on-screen.
-  if (text.length < 80) return false;
-  return terminalText.includes(text.slice(0, 80)) || terminalText.includes(text.slice(-80));
-}
-
-function conversationTranscriptHtml(messages, terminalHtml) {
-  const terminalText = comparableText(terminalHtml);
-  const turns = (messages || [])
-    .filter((m) => m?.text && !messageVisibleInTerminal(m.text, terminalText))
-    .map((m) => {
-      const label = m.role === 'user' ? 'You' : 'Claude';
-      const turn = `<strong class="terminal-transcript-label">${label}:</strong>\n${escapeTerminalHtml(m.text)}`;
-      return m.role === 'user' ? `<span class="terminal-transcript-user">${turn}</span>` : turn;
-    })
-    .join('\n\n');
-  return turns ? `===== Earlier conversation =====\n${turns}` : '';
+// Older harness processes prefixed the real xterm screen with a stripped raw PTY
+// log. Apart from duplicating output, that log exposed every intermediate TUI
+// redraw (thinking/tool progress) as ordinary text. Keep the mobile client clean
+// during rolling upgrades by retaining only the native screen after its marker.
+const LEGACY_SCREEN_MARKER = '===== Current terminal screen =====';
+function nativeTerminalHtml(html) {
+  const value = String(html || '');
+  const markerAt = value.lastIndexOf(LEGACY_SCREEN_MARKER);
+  return markerAt < 0 ? value : value.slice(markerAt + LEGACY_SCREEN_MARKER.length).replace(/^\r?\n/, '');
 }
 
 // Dictation mic bound to a text box: the transcript lands in `text` for review
@@ -370,35 +350,9 @@ export function Terminal({ sessionId, className }) {
     });
     let latestScreen = null;
     let olderTerminalHtml = '';
-    let terminalPagingUsed = false;
-    let transcriptMessages = [];
-    let transcriptBefore = null;
-    let transcriptHasOlder = false;
-    let transcriptFetchedAt = 0;
-    const transcriptFallback = async () => {
-      const now = Date.now();
-      if (now - transcriptFetchedAt < 5000) return;
-      transcriptFetchedAt = now;
-      try {
-        const data = await sessionMessagePage(sessionId, { limit: 40 });
-        transcriptMessages = data.messages || [];
-        transcriptBefore = data.before;
-        transcriptHasOlder = !!data.hasOlder;
-      } catch {
-        /* shell/Codex sessions may not expose a parsed conversation */
-      }
-    };
-    const composedHtml = () => {
-      const terminalHtml = [olderTerminalHtml, latestScreen?.html || ''].filter(Boolean).join('\n');
-      const seeded = latestScreen?.hasTerminalPrelude
-        ?? /===== (?:Live|Earlier) terminal output/.test(terminalHtml);
-      const transcriptHtml = !terminalPagingUsed && !seeded
-        ? conversationTranscriptHtml(transcriptMessages, terminalHtml)
-        : '';
-      return transcriptHtml
-        ? `${transcriptHtml}\n\n===== Current terminal screen =====\n${terminalHtml}`
-        : terminalHtml;
-    };
+    // Render only the headless xterm buffer. Parsed chat transcripts and raw PTY
+    // logs are separate representations and must never be stitched into this view.
+    const composedHtml = () => [olderTerminalHtml, nativeTerminalHtml(latestScreen?.html)].filter(Boolean).join('\n');
     const replaceRendered = ({ preserveTop = false } = {}) => {
       const outer = outerRef.current;
       const inner = innerRef.current;
@@ -421,27 +375,21 @@ export function Terminal({ sessionId, className }) {
     const loadOlder = async () => {
       const outer = outerRef.current;
       if (stop || pagingOlder || !outer || outer.scrollTop > 140) return;
-      const canPageTerminal = latestScreen?.hasOlder && latestScreen.startLine > 0;
-      const canPageTranscript = !terminalPagingUsed && transcriptHasOlder && transcriptBefore != null;
-      if (!canPageTerminal && !canPageTranscript) return;
+      // A pre-upgrade server reports its synthetic raw log as a terminal prelude.
+      // Never page into that log; after restart this flag is false and native xterm
+      // history pages normally.
+      const canPageTerminal = !latestScreen?.hasTerminalPrelude && latestScreen?.hasOlder && latestScreen.startLine > 0;
+      if (!canPageTerminal) return;
       pagingOlder = true;
       setLoadingOlder(true);
       try {
-        if (canPageTerminal) {
-          const page = await sessionScreen(sessionId, { before: latestScreen.startLine, lines: 400 });
-          olderTerminalHtml = [page.html || '', olderTerminalHtml].filter(Boolean).join('\n');
-          latestScreen = {
-            ...latestScreen,
-            startLine: page.startLine,
-            hasOlder: !!page.hasOlder,
-          };
-          terminalPagingUsed = true;
-        } else {
-          const page = await sessionMessagePage(sessionId, { before: transcriptBefore, limit: 40 });
-          transcriptMessages = [...(page.messages || []), ...transcriptMessages];
-          transcriptBefore = page.before;
-          transcriptHasOlder = !!page.hasOlder;
-        }
+        const page = await sessionScreen(sessionId, { before: latestScreen.startLine, lines: 400 });
+        olderTerminalHtml = [page.html || '', olderTerminalHtml].filter(Boolean).join('\n');
+        latestScreen = {
+          ...latestScreen,
+          startLine: page.startLine,
+          hasOlder: !!page.hasOlder,
+        };
         replaceRendered({ preserveTop: true });
       } catch {
         /* leave the current page readable; a later upward scroll can retry */
@@ -474,10 +422,7 @@ export function Terminal({ sessionId, className }) {
       busy = true;
       lastPaintStarted = Date.now();
       try {
-        const [screen] = await Promise.all([
-          sessionScreen(sessionId),
-          transcriptFallback(),
-        ]);
+        const screen = await sessionScreen(sessionId);
         const outer = outerRef.current;
         const inner = innerRef.current;
         if (outer && inner) {
@@ -489,7 +434,6 @@ export function Terminal({ sessionId, className }) {
           if (atBottom && !reviewingRef.current) {
             latestScreen = screen;
             olderTerminalHtml = '';
-            terminalPagingUsed = !!screen.hasOlder || !!screen.hasTerminalPrelude;
             replaceRendered();
           }
         }
@@ -606,7 +550,7 @@ export function Terminal({ sessionId, className }) {
       )}
       {loadingOlder && (
         <div className="term-history-status" role="status">
-          <span className="load-spinner" /> Loading earlier transcript…
+          <span className="load-spinner" /> Loading earlier terminal output…
         </div>
       )}
       <div className="term-fontctl">

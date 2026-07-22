@@ -26,11 +26,6 @@ const SCROLLBACK = Math.max(5000, Number(process.env.CVH_TERM_SCROLLBACK) || 200
 // (desktop /ws/term) can paint the existing screen + scrollback on connect.
 const REPLAY_CAP = Math.max(256 * 1024, Number(process.env.CVH_TERM_REPLAY_BYTES) || 1024 * 1024); // bytes retained
 const REPLAY_TRIM_AT = Math.floor(REPLAY_CAP * 1.5); // slice back to CAP once we exceed this
-// Full-screen TUIs render in xterm's alternate buffer, which deliberately has no
-// scrollback. Keep a plain-text history alongside the rendered current screen so
-// opening a session can still show output that has already scrolled away.
-const TEXT_LOG_CAP = Math.max(256 * 1024, Number(process.env.CVH_TERM_TEXT_LOG_BYTES) || 900 * 1024);
-const TEXT_LOG_TRIM_AT = Math.floor(TEXT_LOG_CAP * 1.5);
 const isWin = process.platform === 'win32';
 
 // events: 'data' {id,data}, 'exit' {id,exitCode}, 'spawn' {id}
@@ -60,44 +55,6 @@ function publicView(s) {
     exitCode: s.exitCode ?? null,
     createdAt: s.createdAt,
   };
-}
-
-function normalizeTerminalText(text) {
-  return String(text || '').replace(/\r?\n/g, '\n').replace(/\n+$/g, '');
-}
-
-function withHistoryPrelude(s, body) {
-  const parts = [];
-  if (s?.terminalPrelude) parts.push(s.terminalPrelude);
-  if (s?.terminalLog) {
-    parts.push(['===== Earlier terminal output =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n'));
-  }
-  if (!parts.length) return body;
-  return [...parts, body].filter(Boolean).join('\n');
-}
-
-function terminalDataToText(data) {
-  let text = String(data || '');
-  // Remove terminal control sequences while retaining the text they position.
-  text = text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
-  text = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
-  text = text.replace(/\x1b[()][A-Za-z0-9]/g, '');
-  text = text.replace(/\x1b[=>]/g, '');
-  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  // Apply backspaces before removing the remaining non-printing characters.
-  while (/[^\n]\x08/.test(text)) text = text.replace(/[^\n]\x08/g, '');
-  return text.replace(/[^\x09\x0A\x20-\x7E\u00A0-\uFFFF]/g, '');
-}
-
-function appendTerminalLog(session, data) {
-  const text = terminalDataToText(data);
-  if (!text.trim()) return;
-  session.terminalLog += text;
-  if (session.terminalLog.length <= TEXT_LOG_TRIM_AT) return;
-  session.terminalLog = session.terminalLog.slice(-TEXT_LOG_CAP);
-  // Never expose a partial first line after trimming the bounded history.
-  const firstNewline = session.terminalLog.indexOf('\n');
-  if (firstNewline >= 0) session.terminalLog = session.terminalLog.slice(firstNewline + 1);
 }
 
 function deriveName(cwd, id) {
@@ -145,7 +102,6 @@ export function spawnSession({
   removeEnv = [],
   cols = DEFAULT_COLS,
   rows = DEFAULT_ROWS,
-  terminalPrelude = '',
 } = {}) {
   const id = `s${++counter}`;
   const cmd = command || resolveClaudeCommand();
@@ -178,8 +134,6 @@ export function spawnSession({
     exitCode: null,
     createdAt: new Date().toISOString(),
     replay: '',
-    terminalPrelude: normalizeTerminalText(terminalPrelude),
-    terminalLog: '',
     cols,
     rows,
   };
@@ -187,7 +141,6 @@ export function spawnSession({
   ptyProc.onData((data) => {
     term.write(data);
     session.replay += data;
-    appendTerminalLog(session, data);
     if (session.replay.length > REPLAY_TRIM_AT) session.replay = session.replay.slice(-REPLAY_CAP);
     terminalEvents.emit('data', { id, data });
   });
@@ -241,7 +194,7 @@ export function captureScreen(id, { full = true } = {}) {
     lines.push(line ? line.translateToString(true) : '');
   }
   const body = lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
-  return full ? withHistoryPrelude(s, body) : body;
+  return body;
 }
 
 // Ensure all queued writes are parsed into the buffer before capturing.
@@ -345,38 +298,17 @@ export function captureColoredHtml(id, { full = false, maxLines = 600 } = {}) {
     if (run) html += spanFor(key, run);
     out.push(html.replace(/\s+$/, ''));
   }
-  const body = out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
-  if (full && (s.terminalPrelude || s.terminalLog)) {
-    const history = [];
-    if (s.terminalPrelude) history.push(esc(s.terminalPrelude));
-    if (s.terminalLog) {
-      history.push(esc(['===== Earlier terminal output =====', s.terminalLog.trimEnd(), '===== Current terminal screen ====='].join('\n')));
-    }
-    return [...history, body].filter(Boolean).join('\n');
-  }
-  return body;
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
 }
 
-// Render one cursor-addressable slice of the full terminal history. `before` is
-// an exclusive virtual line index; omitting it returns the newest page. History
-// seeded from a resumed transcript/log participates in the same line space, so
-// even very large resumed sessions do not have to cross the network at once.
+// Render one cursor-addressable slice of the native xterm history. `before` is
+// an exclusive line index; omitting it returns the newest page.
 export function captureColoredHtmlPage(id, { before = null, limit = 400 } = {}) {
   const s = sessions.get(id);
   if (!s) throw new Error(`session ${id} not found`);
   const term = s.term;
   const buf = term.buffer.active;
-  const history = [];
-  if (s.terminalPrelude) history.push(...s.terminalPrelude.split('\n').map(esc));
-  if (s.terminalLog) {
-    history.push(...[
-      '===== Earlier terminal output =====',
-      ...s.terminalLog.trimEnd().split('\n'),
-      '===== Current terminal screen =====',
-    ].map(esc));
-  }
-
-  const totalLines = history.length + buf.length;
+  const totalLines = buf.length;
   const endLine = before == null
     ? totalLines
     : Math.max(0, Math.min(totalLines, Number(before) || 0));
@@ -384,12 +316,8 @@ export function captureColoredHtmlPage(id, { before = null, limit = 400 } = {}) 
   const startLine = Math.max(0, endLine - pageSize);
   const out = [];
 
-  for (let virtualY = startLine; virtualY < endLine; virtualY++) {
-    if (virtualY < history.length) {
-      out.push(history[virtualY]);
-      continue;
-    }
-    const line = buf.getLine(virtualY - history.length);
+  for (let y = startLine; y < endLine; y++) {
+    const line = buf.getLine(y);
     if (!line) {
       out.push('');
       continue;
@@ -419,7 +347,7 @@ export function captureColoredHtmlPage(id, { before = null, limit = 400 } = {}) 
     endLine,
     totalLines,
     hasOlder: startLine > 0,
-    hasTerminalPrelude: history.length > 0,
+    hasTerminalPrelude: false,
   };
 }
 
