@@ -531,7 +531,10 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     const paint = async () => {
       if (stop) return;
       if (busy) { again = true; return; }
-      const delay = 300 - (Date.now() - lastPaintStarted);
+      // Direct keypad input is latency-sensitive: bypass the normal burst throttle
+      // during its short force window so cursor movement feels immediate.
+      const forcedInputPaint = Date.now() < forcePaintUntil;
+      const delay = forcedInputPaint ? 0 : 300 - (Date.now() - lastPaintStarted);
       if (delay > 0) {
         again = true;
         if (!repaintTimer) {

@@ -351,14 +351,9 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     // scrolled-away from bottom. Tell Terminal that this is interactive input so
     // every resulting TUI redraw is shown immediately instead of after keypad exit.
     setTerminalInputSignal((value) => value + 1);
-    // The server's allowlisted key endpoint is more reliable for navigation keys
-    // than a browser socket after a phone sleep/network handoff: a zombie WebSocket
-    // can still report OPEN while silently dropping writes. Use HTTP directly for
-    // arrows/Esc/Enter; raw-only keys continue over the terminal socket.
-    if (namedKey) {
-      sessionKey(session.id, namedKey).catch((e) => notify('Key failed: ' + e.message));
-      return;
-    }
+    // A healthy terminal socket is the lowest-latency path and handles every key,
+    // including arrows/Esc/Enter. HTTP remains the reliable fallback after sleep,
+    // restart, or a network handoff when the socket is no longer open.
     const ws = keyWs.current;
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ t: 'in', d: seq }));
@@ -366,7 +361,8 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     }
     // Channel down (harness restart, zombie socket): deliver over HTTP so the
     // keystroke lands anyway, and rewire the socket for the next one.
-    sessionKeySeq(session.id, seq).catch((e) => notify('Key failed: ' + e.message));
+    const fallback = namedKey ? sessionKey(session.id, namedKey) : sessionKeySeq(session.id, seq);
+    fallback.catch((e) => notify('Key failed: ' + e.message));
     keyReconnect.current?.();
   };
 
