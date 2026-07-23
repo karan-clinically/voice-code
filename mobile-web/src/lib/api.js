@@ -97,6 +97,7 @@ export const resumeGrok = (id) => jpost('/api/sessions', { kind: 'grok', resumeG
 // rows — there's no process to kill, so this is the only way to clear one.
 export const deleteGrokConv = (id) => jdelete(`/api/sessions/grok/${id}`);
 export const sessionInfo = (id) => jget(`/api/sessions/${id}`, { timeoutMs: 8000 });
+export const setSessionModel = (id, alias) => jpost(`/api/sessions/${id}/model`, { alias });
 export const renameSession = (id, label) => jpost(`/api/sessions/${id}/rename`, { label });
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const killLocal = (pid) => jpost('/api/sessions/kill-local', { pid });

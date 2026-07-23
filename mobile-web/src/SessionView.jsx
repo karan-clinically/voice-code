@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq } from './lib/api.js';
+import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq, listProviders, setSessionModel } from './lib/api.js';
 import { ATTENTION_SHORT, isAlert } from './lib/attention.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { Terminal, basename } from './components.jsx';
@@ -50,6 +50,10 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [showSwitch, setShowSwitch] = useState(false); // left session-switcher drawer
   const [showQuickSwitch, setShowQuickSwitch] = useState(false); // native back-swipe Alt-Tab modal
   const [showMenu, setShowMenu] = useState(false); // ⋯ overflow: speak-replies + notifications
+  const [showModels, setShowModels] = useState(false);
+  const [model, setModel] = useState(session.model || 'Model');
+  const [modelOptions, setModelOptions] = useState([]);
+  const [switchingModel, setSwitchingModel] = useState(false);
   // Speak replies aloud? Off = a normal, silent coding session. Persisted so the
   // choice sticks across sessions. TTS renders lazily on first fetch, so muting
   // also means no synthesis is billed for skipped replies.
@@ -83,6 +87,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [srvState, setSrvState] = useState(session.state || 'idle');
   useEffect(() => {
     setLabel(session.label);
+    setModel(session.model || 'Model');
     muteLoaded.current = false;
     let stop = false;
     const pull = () => sessionInfo(session.id)
@@ -90,6 +95,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         if (stop) return;
         if (s?.label) setLabel(s.label);
         if (s?.state) setSrvState(s.state);
+        if (s?.model) setModel(s.model);
         if (!muteLoaded.current && typeof s?.muted === 'boolean') {
           muteLoaded.current = true;
           setMuted(s.muted);
@@ -100,6 +106,35 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     const t = setInterval(pull, 5000);
     return () => { stop = true; clearInterval(t); };
   }, [session.id, session.label]);
+
+  useEffect(() => {
+    if (!session.capabilities?.models) return undefined;
+    let stop = false;
+    listProviders()
+      .then(({ providers = [] }) => {
+        if (stop) return;
+        const provider = providers.find((p) => p.id === (session.provider_id || session.kind || 'claude'));
+        setModelOptions(provider?.models || []);
+      })
+      .catch(() => {});
+    return () => { stop = true; };
+  }, [session.capabilities?.models, session.kind, session.provider_id]);
+
+  async function pickModel(option) {
+    setShowModels(false);
+    if (!option || isCurrentModel(option) || switchingModel) return;
+    setSwitchingModel(true);
+    try {
+      const result = await setSessionModel(session.id, option.alias);
+      setModel(result.model || option.label);
+      notify?.(`Model changed to ${result.model || option.label}`, 'success');
+    } catch (e) {
+      notify?.('Model switch failed: ' + e.message);
+    } finally {
+      setSwitchingModel(false);
+    }
+  }
+  const isCurrentModel = (option) => model === option.label || model.startsWith(option.label + ' ');
   async function toggleMute() {
     const next = !muted;
     setMuted(next); // optimistic
@@ -384,6 +419,18 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
           <span className="sv-title-txt">{title}</span>
           <span className="sv-caret">⌄</span>
         </button>
+        {session.capabilities?.models && (
+          <button
+            className="sv-model-pill"
+            onClick={() => { setShowMenu(false); setShowModels(true); }}
+            disabled={!session.alive || switchingModel}
+            title={`Current model: ${model}. Tap to change.`}
+            aria-haspopup="dialog"
+          >
+            <span className="sv-model-name">{switchingModel ? 'Switching…' : model}</span>
+            <span className="sv-model-caret">▾</span>
+          </button>
+        )}
         {/* One ⋯ owns the whole bar: which of the three views you're in, plus the two
             on/off settings. Keeps the top bar to back · title · ⋯ on a narrow phone. */}
         <button
@@ -434,6 +481,33 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
           </>
         )}
       </div>
+
+      {showModels && (
+        <div className="sv-model-backdrop" role="presentation" onClick={() => setShowModels(false)}>
+          <div className="sv-model-sheet" role="dialog" aria-modal="true" aria-labelledby="sv-model-title" onClick={(e) => e.stopPropagation()}>
+            <div className="sv-model-sheet-head">
+              <div>
+                <div className="sv-menu-head" id="sv-model-title">Model</div>
+                <strong>{model}</strong>
+              </div>
+              <button className="ghost sv-model-close" onClick={() => setShowModels(false)} aria-label="Close model picker">×</button>
+            </div>
+            <div className="sv-model-options">
+              {modelOptions.map((option) => (
+                <button
+                  key={option.alias}
+                  className={'sv-model-option' + (isCurrentModel(option) ? ' on' : '')}
+                  onClick={() => pickModel(option)}
+                >
+                  <span>{option.label}</span>
+                  {isCurrentModel(option) && <span aria-hidden="true">✓</span>}
+                </button>
+              ))}
+              {modelOptions.length === 0 && <div className="sv-model-empty">Model choices are unavailable.</div>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Another session wants you — it finished, errored, or is sitting on a question.
           Tapping opens the switcher so you can go straight to it. */}

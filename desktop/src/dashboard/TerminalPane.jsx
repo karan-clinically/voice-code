@@ -102,9 +102,7 @@ export default function TerminalPane({ session, active, onApi, notify }) {
     const el = wrapRef.current;
 
     // Copy on Ctrl+C when there's a selection (else let it interrupt);
-    // Ctrl+Shift+C always copies. Paste is intentionally NOT intercepted here —
-    // xterm does its own single native text paste, so intercepting would double
-    // it. Images are special-cased in the capture-phase paste listener below.
+    // Ctrl+Shift+C always copies. Paste is handled once in capture phase below.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || !e.ctrlKey) return true;
       if (e.key.toLowerCase() === 'c' && (e.shiftKey || term.hasSelection())) {
@@ -116,19 +114,30 @@ export default function TerminalPane({ session, active, onApi, notify }) {
       return true;
     });
 
-    // Image paste: intercept in capture phase (before xterm's textarea handler).
-    // If the clipboard holds an image, inject a temp-file path Claude Code can
-    // ingest and block the default; plain text falls through to xterm's single
-    // native paste, so there's no double-paste.
+    // Own paste in capture phase, before xterm's hidden textarea sees it. Electron
+    // can otherwise feed clipboard text through both its native edit action and
+    // xterm's listener. Images become temp-file paths; text uses term.paste once.
+    let lastPasteText = '';
+    let lastPasteAt = 0;
     const onPaste = (e) => {
       const cd = e.clipboardData;
       const hasImage =
         !!cd &&
         (Array.from(cd.items || []).some((it) => it.type && it.type.startsWith('image/')) ||
           Array.from(cd.files || []).some((f) => f.type && f.type.startsWith('image/')));
-      if (!hasImage) return;
       e.preventDefault();
       e.stopImmediatePropagation();
+      if (!hasImage) {
+        const text = cd?.getData('text/plain') || '';
+        if (!text) return;
+        const now = Date.now();
+        if (text === lastPasteText && now - lastPasteAt < 300) return;
+        lastPasteText = text;
+        lastPasteAt = now;
+        term.paste(text);
+        term.focus();
+        return;
+      }
       window.cvh
         ?.clipboardImagePath?.()
         .then((p) => {

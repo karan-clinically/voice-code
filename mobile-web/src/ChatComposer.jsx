@@ -55,6 +55,7 @@ export default function ChatComposer({
   const taRef = useRef(null);
   const fileRef = useRef(null);
   const nextUploadNumber = useRef(1);
+  const lastPaste = useRef({ text: '', at: 0 });
   const isBusy = busy !== undefined ? busy : session.state === 'busy';
   const isGrok = (session.kind || '') === 'grok';
   const isCodex = (session.kind || '') === 'codex';
@@ -193,6 +194,28 @@ export default function ChatComposer({
     }
   }
 
+  function onPaste(e) {
+    const pasted = e.clipboardData?.getData('text/plain');
+    if (!pasted) return;
+
+    // Some mobile browsers dispatch both a clipboard paste and a matching input
+    // insertion. Own the insertion here so the clipboard text has one path only.
+    e.preventDefault();
+    const now = Date.now();
+    if (lastPaste.current.text === pasted && now - lastPaste.current.at < 300) return;
+    lastPaste.current = { text: pasted, at: now };
+
+    const ta = e.currentTarget;
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? start;
+    const next = ta.value.slice(0, start) + pasted + ta.value.slice(end);
+    const caret = start + pasted.length;
+    setText(next);
+    requestAnimationFrame(() => {
+      if (taRef.current) taRef.current.setSelectionRange(caret, caret);
+    });
+  }
+
   async function stop() {
     try {
       await sessionKey(session.id, 'stop');
@@ -247,6 +270,7 @@ export default function ChatComposer({
         autoCorrect={plainText ? 'off' : undefined}
         autoComplete={plainText ? 'off' : undefined}
         spellCheck={plainText ? false : undefined}
+        onPaste={onPaste}
         onChange={(e) => {
           const v = e.target.value;
           // Phone keyboard Enter inserts a newline — treat a trailing one as Send.
