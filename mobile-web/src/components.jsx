@@ -314,10 +314,11 @@ export function MicButton({ className, onBlob, notify }) {
 // keeping scroll pinned to the bottom unless the user scrolled up. Resizes the
 // session's PTY to the phone's width so the TUI reflows to fit — full lines are
 // visible at a readable, user-adjustable font (A−/A+, persisted), no sideways scroll.
-export function Terminal({ sessionId, className, promptPending = false, sessionKind = '' }) {
+export function Terminal({ sessionId, className, promptPending = false, sessionKind = '', inputSignal = 0 }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
   const reviewingRef = useRef(false);
+  const forcePaintRef = useRef(null);
   const promptPendingRef = useRef(promptPending);
   useEffect(() => { promptPendingRef.current = promptPending; }, [promptPending]);
   const [displayState, setDisplayState] = useState('loading'); // loading | cached | live
@@ -394,6 +395,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     let repaintTimer = null;
     let lastPaintStarted = 0;
     let cacheTimer = null;
+    let forcePaintUntil = 0;
     let queuedCacheHtml = '';
     const queueSnapshot = (html) => {
       queuedCacheHtml = html;
@@ -556,7 +558,8 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
           // interrupts momentum scrolling on mobile browsers and can snap the user
           // away from the oldest output. Freeze the snapshot while history is being
           // read; the next socket event/backstop poll catches up at the bottom.
-          if (atBottom && !reviewingRef.current) {
+          const forcePaint = Date.now() < forcePaintUntil;
+          if ((atBottom && !reviewingRef.current) || forcePaint) {
             latestScreen = screen;
             olderTerminalHtml = '';
             replaceRendered();
@@ -573,6 +576,15 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       }
       busy = false;
       if (again && !stop) { again = false; paint(); }
+    };
+
+    // Keypad input must behave like a real terminal: redraw immediately even when
+    // opening the keypad changed the viewport and made `atBottom` false. Keep the
+    // force window open long enough for the PTY's asynchronous response bytes too.
+    forcePaintRef.current = () => {
+      reviewingRef.current = false;
+      forcePaintUntil = Date.now() + 900;
+      paint();
     };
 
     // The push socket. Locking the phone suspends the tab: the OS kills this socket
@@ -649,8 +661,13 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('pageshow', onVisible);
       try { ws?.close(); } catch { /* already gone */ }
+      if (forcePaintRef.current) forcePaintRef.current = null;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (inputSignal > 0) forcePaintRef.current?.();
+  }, [inputSignal]);
 
   const bump = (d) => setFontPx((f) => Math.max(8, Math.min(22, f + d)));
   const updateReviewing = () => {

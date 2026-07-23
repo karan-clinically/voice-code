@@ -46,6 +46,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
   const [voice, setVoice] = useState(false); // hands-free overlay
   const [keysMode, setKeysMode] = useState(false); // terminal key-pad replaces the composer input
+  const [terminalInputSignal, setTerminalInputSignal] = useState(0);
   const [showSwitch, setShowSwitch] = useState(false); // left session-switcher drawer
   const [showQuickSwitch, setShowQuickSwitch] = useState(false); // native back-swipe Alt-Tab modal
   const [showMenu, setShowMenu] = useState(false); // ⋯ overflow: speak-replies + notifications
@@ -346,6 +347,10 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     };
   }, [session.id, mode]);
   const sendRaw = (seq, namedKey = null) => {
+    // Opening the keypad changes terminal height and can make the screen look
+    // scrolled-away from bottom. Tell Terminal that this is interactive input so
+    // every resulting TUI redraw is shown immediately instead of after keypad exit.
+    setTerminalInputSignal((value) => value + 1);
     // The server's allowlisted key endpoint is more reliable for navigation keys
     // than a browser socket after a phone sleep/network handoff: a zombie WebSocket
     // can still report OPEN while silently dropping writes. Use HTTP directly for
@@ -498,6 +503,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
             className="sv-term"
             promptPending={promptPending}
             sessionKind={session.kind}
+            inputSignal={terminalInputSignal}
           />
           {keysMode ? (
             <TerminalKeypad sendRaw={sendRaw} onClose={() => setKeysMode(false)} />
