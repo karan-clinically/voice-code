@@ -56,5 +56,8 @@ export default function App() {
   if (route === 'loading') return <Splash text="Starting…" />;
   if (route === 'offline') return <Splash text="Waiting for the harness to start…" />;
   if (route === 'wizard') return <Wizard onDone={refresh} />;
-  return <Dashboard onOpenWizard={() => setRoute('wizard')} />;
+  if (route === 'settings') {
+    return <Wizard onDone={() => setRoute('dashboard')} onExit={() => setRoute('dashboard')} />;
+  }
+  return <Dashboard onOpenWizard={() => setRoute('settings')} />;
 }

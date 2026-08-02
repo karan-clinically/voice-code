@@ -13,7 +13,6 @@ const SEQ = {
 };
 
 export default function TerminalKeypad({ sendRaw, onClose }) {
-  // A momentary press cue so a tap on a phone still feels like it registered.
   const K = (s, label, cls, key) => (
     <button type="button" className={'tk' + (cls ? ' ' + cls : '')} onClick={() => sendRaw(s, key)}>
       {label}

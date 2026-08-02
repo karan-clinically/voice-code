@@ -198,6 +198,20 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
   `);
 
+  // Local project previews exposed through Tailscale Serve. Rows are route
+  // ownership markers, not durable processes: on startup the preview manager
+  // removes any stale routes left by an unclean harness exit before launching
+  // new ones. This keeps it from touching unrelated user-managed Serve routes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS preview_routes (
+      tailscale_port INTEGER PRIMARY KEY,
+      cwd            TEXT NOT NULL,
+      local_port     INTEGER NOT NULL,
+      child_pid      INTEGER,
+      created_at     TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
   // Web Push subscriptions — one row per device that opted into notifications.
   // endpoint is the browser push service URL (unique per device); keys sign the
   // payload. Rows are pruned when the push service reports them gone (404/410).

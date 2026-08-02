@@ -48,8 +48,31 @@ Create `~/.claude-voice-harness/agents/<id>.json` and restart the harness:
 Arguments are passed directly to `node-pty`; no command shell performs token
 substitution. Supported placeholders are `{cwd}` and `{externalSessionId}`.
 
-Manifests are trusted local configuration because they select an executable.
-They cannot be created or changed through the remote API.
+Legacy hand-written manifests are trusted local configuration because they may
+contain fields beyond the app schema. The apps use the narrower validated CRUD
+API described below.
+
+## Adding providers from the apps
+
+Desktop **Settings → Brains → Add brain** and mobile **Settings → Brains**
+create the same persistent custom-provider definitions. They are installed in the
+live registry immediately and written under `~/.claude-voice-harness/agents/`.
+No harness restart is required.
+
+Two connection types are supported:
+
+- **Anthropic-compatible API** — provide an HTTP(S) endpoint, model ID, and API
+  key. The harness launches its installed Claude Code CLI with that endpoint and
+  injects the key only into that provider's child process. The definition file
+  contains no secret.
+- **Installed CLI / OAuth login** — provide an executable plus an optional list
+  of arguments. The CLI owns its browser, device-code, or other login. Arguments
+  are entered one per line and are passed directly to the process without a shell.
+
+Provider IDs and launch fields are validated. Built-ins cannot be overwritten or
+removed, and a custom provider cannot be edited or removed while one of its
+sessions is live. Provider API responses expose only credential-presence status,
+never credential values.
 
 ## Programmatic contract
 

@@ -5,6 +5,8 @@ import { useDictation } from './lib/dictation.js';
 import { THEMES, getTheme, applyTheme } from './lib/theme.js';
 import { keepAwakeEnabled, setKeepAwake } from './lib/wakeLock.js';
 import { readTerminalSnapshot, writeTerminalSnapshot } from './lib/localCache.js';
+import { copyText } from './lib/clipboard.js';
+import { listenForResume } from './lib/resume.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
@@ -47,6 +49,112 @@ function highlightCodexUserTurns(html) {
 }
 
 const escapeTerminalHtml = (value) => String(value || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+const TERMINAL_URL_RE = /https?:\/\/[^\s<>"']+/gi;
+const TERMINAL_URL_TRAILING_RE = /[.,;:!?\]\)}]+$/;
+function linkifyTerminalText(value) {
+  const text = String(value || '');
+  let html = '';
+  let offset = 0;
+  for (const match of text.matchAll(TERMINAL_URL_RE)) {
+    const raw = match[0];
+    const trailing = raw.match(TERMINAL_URL_TRAILING_RE)?.[0] || '';
+    const url = trailing ? raw.slice(0, -trailing.length) : raw;
+    if (!url) continue;
+    html += escapeTerminalHtml(text.slice(offset, match.index));
+    const href = escapeTerminalHtml(url).replace(/"/g, '&quot;');
+    html += `<a class="terminal-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeTerminalHtml(url)}</a>${escapeTerminalHtml(trailing)}`;
+    offset = match.index + raw.length;
+  }
+  return html + escapeTerminalHtml(text.slice(offset));
+}
+
+const TERMINAL_CODE_RE = /```[^\n]*\n([\s\S]*?)```|`([^`\n]+)`/g;
+const escapeTerminalAttr = (value) => escapeTerminalHtml(value).replace(/"/g, '&quot;');
+function copyableTerminalText(value) {
+  const text = String(value || '');
+  let html = '';
+  let offset = 0;
+  for (const match of text.matchAll(TERMINAL_CODE_RE)) {
+    html += linkifyTerminalText(text.slice(offset, match.index));
+    const code = (match[1] ?? match[2] ?? '').replace(/\n$/, '');
+    const block = match[1] != null;
+    html += `<button type="button" class="terminal-copy-code${block ? ' block' : ''}" data-copy="${escapeTerminalAttr(code)}" title="Tap to copy">${escapeTerminalHtml(code)}</button>`;
+    offset = match.index + match[0].length;
+  }
+  return html + linkifyTerminalText(text.slice(offset));
+}
+
+// Rolling upgrades may leave the phone on a newer client while the harness process
+// still serves pre-linkified terminal HTML. Linkify text nodes at render time too;
+// existing anchors are skipped, so this is safe once the server-side renderer has
+// also been restarted. Working at the DOM level avoids ever touching span/style
+// markup with a URL regex.
+function linkifyTerminalHtml(value) {
+  const template = document.createElement('template');
+  template.innerHTML = String(value || '');
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (node.parentElement?.closest('a, .terminal-copy-code') || !/https?:\/\//i.test(node.nodeValue || '')) continue;
+    const text = node.nodeValue || '';
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of text.matchAll(TERMINAL_URL_RE)) {
+      const raw = match[0];
+      const trailing = raw.match(TERMINAL_URL_TRAILING_RE)?.[0] || '';
+      const url = trailing ? raw.slice(0, -trailing.length) : raw;
+      if (!url) continue;
+      fragment.append(document.createTextNode(text.slice(offset, match.index)));
+      const anchor = document.createElement('a');
+      anchor.className = 'terminal-link';
+      anchor.href = url;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+      anchor.textContent = url;
+      fragment.append(anchor, document.createTextNode(trailing));
+      offset = match.index + raw.length;
+    }
+    fragment.append(document.createTextNode(text.slice(offset)));
+    node.replaceWith(fragment);
+  }
+  return copyableLiveTerminalCommands(template.innerHTML);
+}
+
+// Claude's live TUI removes Markdown fences before the rendered terminal reaches
+// the phone. Recover the useful semantic for standalone CLI lines. Keep this list
+// deliberately command-shaped so ordinary prose does not become a copy target.
+const LIVE_COMMAND_RE = /^(?:php\s+artisan|(?:npm|pnpm|yarn|bun)\s+|npx\s+|git\s+|docker(?:\s+compose)?\s+|composer\s+|(?:python3?|node|deno)\s+|(?:curl|wget)\s+|(?:pwsh|powershell)\s+|dotnet\s+|cargo\s+|go\s+|kubectl\s+|terraform\s+|\.\.?[\\/]|[A-Za-z]:[\\/])/i;
+const COMMAND_FLAG_CONTINUATION_RE = /^(?:--[\w-]+(?:=(?:"[^"]*"|'[^']*'|\S+))?)(?:\s+--[\w-]+(?:=(?:"[^"]*"|'[^']*'|\S+))?)*$/;
+function terminalHtmlLineText(line) {
+  const holder = document.createElement('div');
+  holder.innerHTML = line;
+  return (holder.textContent || '').trim();
+}
+function copyableLiveTerminalCommands(html) {
+  const lines = String(html || '').split('\n');
+  const result = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const text = terminalHtmlLineText(line);
+    if (!text || /terminal-copy-code|<a\b/i.test(line) || !LIVE_COMMAND_RE.test(text)) {
+      result.push(line);
+      continue;
+    }
+    const visual = [line];
+    const command = [text];
+    while (i + 1 < lines.length) {
+      const nextText = terminalHtmlLineText(lines[i + 1]);
+      if (!COMMAND_FLAG_CONTINUATION_RE.test(nextText)) break;
+      i += 1;
+      visual.push(lines[i]);
+      command.push(nextText);
+    }
+    const copyValue = command.join(' ');
+    result.push(`<button type="button" class="terminal-copy-code block" data-copy="${escapeTerminalAttr(copyValue)}" title="Tap to copy">${visual.join('\n')}</button>`);
+  }
+  return result.join('\n');
+}
 const comparableTerminalText = (value) => String(value || '')
   .replace(/<[^>]*>/g, ' ')
   .replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity])
@@ -67,7 +175,8 @@ function completedTurnsHtml(messages, terminalHtml) {
     })
     .map((message) => {
       const label = message.role === 'user' ? 'You' : 'Claude';
-      const turn = `<strong class="terminal-transcript-label">${label}:</strong>\n${escapeTerminalHtml(message.text)}`;
+      const body = message.role === 'user' ? linkifyTerminalText(message.text) : copyableTerminalText(message.text);
+      const turn = `<strong class="terminal-transcript-label">${label}:</strong>\n${body}`;
       return message.role === 'user' ? `<span class="terminal-transcript-user">${turn}</span>` : turn;
     })
     .join('\n\n');
@@ -158,14 +267,15 @@ export function SummariseToggle({ notify }) {
   );
 }
 
-// Per-device toggle for holding the screen awake during a hands-free voice session.
+// Per-device toggle for holding the screen awake while awaiting spoken replies or
+// during a hands-free voice session.
 // localStorage-backed (like the theme), since it's about this phone's screen, not a
 // shared harness pref.
 export function KeepAwakeToggle() {
   const [on, setOn] = useState(keepAwakeEnabled);
   const choose = (want) => { setKeepAwake(want); setOn(want); };
   return (
-    <div className="seg" title="Keep the screen on during a hands-free voice session">
+    <div className="seg" title="Keep the screen on while waiting for spoken replies">
       <button className={'seg-btn' + (!on ? ' on' : '')} onClick={() => choose(false)}>Off</button>
       <button className={'seg-btn' + (on ? ' on' : '')} onClick={() => choose(true)}>On</button>
     </div>
@@ -414,8 +524,9 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       const outer = outerRef.current;
       const inner = innerRef.current;
       if (!outer || !inner || inner.dataset.h) return;
-      inner.innerHTML = cached.html;
-      inner.dataset.h = cached.html;
+      const cachedHtml = linkifyTerminalHtml(cached.html);
+      inner.innerHTML = cachedHtml;
+      inner.dataset.h = cachedHtml;
       outer.scrollTop = outer.scrollHeight;
       setDisplayState('cached');
     });
@@ -471,7 +582,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       const outer = outerRef.current;
       const inner = innerRef.current;
       if (!outer || !inner) return;
-      const renderedHtml = composedHtml();
+      const renderedHtml = linkifyTerminalHtml(composedHtml());
       if (inner.dataset.h === renderedHtml) return;
       const oldHeight = outer.scrollHeight;
       const oldTop = outer.scrollTop;
@@ -581,13 +692,15 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       if (again && !stop) { again = false; paint(); }
     };
 
-    // Keypad input must behave like a real terminal: redraw immediately even when
-    // opening the keypad changed the viewport and made `atBottom` false. Keep the
-    // force window open long enough for the PTY's asynchronous response bytes too.
+    // Keypad input must behave like a real terminal even when opening the keypad
+    // changed the viewport and made `atBottom` false. Arm a short force window, but
+    // do not fetch yet: the PTY has not processed the key at this point. Its data
+    // event below starts the paint once the updated cursor/menu actually exists.
+    // Fetching here used to capture the old screen and then require a second network
+    // round trip, which made arrows and Enter feel markedly laggy on a phone.
     forcePaintRef.current = () => {
       reviewingRef.current = false;
       forcePaintUntil = Date.now() + 900;
-      paint();
     };
 
     // The push socket. Locking the phone suspends the tab: the OS kills this socket
@@ -606,48 +719,67 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     //    SAME db row and this terminal must come back to life when it does.
     let ws = null;
     let pongDue = null; // timer armed per ping; fires = no pong in time = zombie
-    const connect = (delayMs = 0) => {
-      if (stop) return;
-      try { ws?.close(); } catch { /* already gone */ }
-      const open = () => {
-        if (stop) return;
-        try {
-          setConnectionState('connecting');
-          ws = new WebSocket(termWsUrl(sessionId));
-          ws.onopen = () => setConnectionState('live');
-          ws.onmessage = (e) => {
-            let m;
-            try { m = JSON.parse(e.data); } catch { return; }
-            if (m.t === 'data') { setEnded(false); paint(); }
-            else if (m.t === 'pong') { clearTimeout(pongDue); pongDue = null; }
-            else if (m.t === 'exit') { setEnded(true); }
-          };
-          ws.onclose = () => {
-            clearTimeout(pongDue); pongDue = null;
-            if (!stop) setConnectionState('reconnecting');
-            if (!stop && !document.hidden) setTimeout(() => connect(), endedRef.current ? 5000 : 1500);
-          };
-        } catch {
-          /* no socket — the backstop interval still drives the view */
+    let reconnectTimer = null;
+    const connect = () => {
+      if (stop || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      try {
+        setConnectionState('connecting');
+        const socket = new WebSocket(termWsUrl(sessionId));
+        ws = socket;
+        socket.onopen = () => { if (ws === socket) setConnectionState('live'); };
+        socket.onmessage = (e) => {
+          if (ws !== socket) return;
+          let m;
+          try { m = JSON.parse(e.data); } catch { return; }
+          if (m.t === 'data') { setEnded(false); paint(); }
+          else if (m.t === 'pong') { clearTimeout(pongDue); pongDue = null; }
+          else if (m.t === 'exit') { setEnded(true); }
+        };
+        socket.onclose = () => {
+          if (ws !== socket) return;
+          ws = null;
+          clearTimeout(pongDue); pongDue = null;
+          if (!stop) setConnectionState('reconnecting');
+          if (!stop && !document.hidden && !reconnectTimer) {
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null;
+              connect();
+            }, endedRef.current ? 5000 : 1500);
+          }
+        };
+      } catch {
+        // The backstop poll keeps the view useful; retry without stacking timers.
+        ws = null;
+        if (!stop && !document.hidden && !reconnectTimer) {
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
         }
-      };
-      delayMs ? setTimeout(open, delayMs) : open();
+      }
     };
     const pinger = setInterval(() => {
       if (stop || document.hidden || !ws || ws.readyState !== 1 || pongDue) return;
       try { ws.send(JSON.stringify({ t: 'ping' })); } catch { return; }
-      pongDue = setTimeout(() => { pongDue = null; try { ws?.close(); } catch { /* dead */ } connect(); }, 8000);
+      const pingedSocket = ws;
+      pongDue = setTimeout(() => {
+        pongDue = null;
+        if (ws === pingedSocket) try { pingedSocket.close(); } catch { /* dead */ }
+      }, 8000);
     }, 20000);
     const onVisible = () => {
       if (stop || document.hidden) return;
       busy = false; again = false; // unwedge a paint frozen by suspend
-      if (!ws || ws.readyState > 1) connect(); // socket died while backgrounded
+      // A mobile network handoff commonly leaves a dead socket reporting OPEN.
+      // Do not wait up to 28s for ping/pong detection after an explicit resume.
+      const stale = ws;
+      ws = null;
+      clearTimeout(pongDue); pongDue = null;
+      clearTimeout(reconnectTimer); reconnectTimer = null;
+      try { stale?.close(); } catch { /* already dead */ }
+      connect();
       paint(); // force an immediate catch-up repaint on resume
     };
-    document.addEventListener('visibilitychange', onVisible);
-    // iOS Safari can restore the page from bfcache with only a pageshow — no
-    // visibilitychange — so without this the key/read sockets stay dead on resume.
-    window.addEventListener('pageshow', onVisible);
+    const stopResume = listenForResume(onVisible);
 
     connect();
     paint();
@@ -657,12 +789,12 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       clearInterval(t);
       clearInterval(pinger);
       clearTimeout(pongDue);
+      clearTimeout(reconnectTimer);
       clearTimeout(repaintTimer);
       clearTimeout(cacheTimer);
       outerRef.current?.removeEventListener('scroll', onHistoryScroll);
       if (queuedCacheHtml) writeTerminalSnapshot(sessionId, queuedCacheHtml);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('pageshow', onVisible);
+      stopResume();
       try { ws?.close(); } catch { /* already gone */ }
       if (forcePaintRef.current) forcePaintRef.current = null;
     };
@@ -676,6 +808,14 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
   const updateReviewing = () => {
     const outer = outerRef.current;
     if (outer) reviewingRef.current = outer.scrollHeight - outer.scrollTop - outer.clientHeight > 2;
+  };
+  const copyTerminalCommand = async (event) => {
+    const button = event.target.closest?.('.terminal-copy-code');
+    if (!button || !outerRef.current?.contains(button)) return;
+    const copied = await copyText(button.dataset.copy || button.textContent || '');
+    if (!copied) return;
+    button.dataset.copied = 'Copied';
+    setTimeout(() => { if (button.isConnected) delete button.dataset.copied; }, 1200);
   };
 
   return (
@@ -715,6 +855,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         onPointerCancel={updateReviewing}
         onWheel={() => { reviewingRef.current = true; }}
         onScroll={updateReviewing}
+        onClick={copyTerminalCommand}
       >
         <div ref={innerRef} className="screen-inner" style={{ fontSize: fontPx + 'px' }} />
       </div>

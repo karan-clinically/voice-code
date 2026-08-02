@@ -31,6 +31,8 @@ const ALLOWED = new Set([
   'dictation_cleanup',
   'cleanup_model',
   'mobile_base_dir',
+  'default_session_dir',
+  'preview_auto_start',
   'apk_url',
 ]);
 
@@ -52,6 +54,8 @@ router.get('/state', (req, res) => {
     playbackTarget: getConfig('tts_playback_target') || 'desktop',
     hasToken: !!getConfig('pairing_token'),
     deviceName: getConfig('device_name') || null,
+    defaultSessionDir: getConfig('default_session_dir') || null,
+    previewAutoStart: getConfig('preview_auto_start', 'on') !== 'off',
   });
 });
 

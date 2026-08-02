@@ -117,10 +117,17 @@ export function playUrl(u) {
   return new Promise((resolve) => {
     try {
       player.src = u;
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
       const finish = () => {
         player.onended = null;
+        player.onerror = null;
         clearActivePlayback(handle);
-        resolve();
+        settle();
       };
       const handle = {
         pause: () => player.pause(),
@@ -129,9 +136,17 @@ export function playUrl(u) {
         isPaused: () => player.paused,
       };
       player.onended = finish;
+      player.onerror = finish;
       setActivePlayback(handle);
       const p = player.play();
-      if (p && p.catch) p.catch(finish);
+      if (p && p.catch) p.catch(() => {
+        // Mobile browsers suspend autoplay while the page is backgrounded. Keep
+        // the requested URL and playback handle intact so the visible Resume
+        // button can continue this exact assistant clip on the next user gesture.
+        // Resolving here avoids leaving callers hung while playback is paused.
+        notifyPlayback();
+        settle();
+      });
     } catch {
       resolve();
     }

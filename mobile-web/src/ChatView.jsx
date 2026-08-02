@@ -3,12 +3,14 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sessionMessages, sendChat, sessionPrompt, selectPromptOption } from './lib/api.js';
 import { ding } from './lib/audio.js';
+import { copyText } from './lib/clipboard.js';
+import { listenForResume } from './lib/resume.js';
 import ChatComposer from './ChatComposer.jsx';
 
 // App-style chat over a live session (phone) — Claude or Grok. Renders the
 // harness conversation log as markdown bubbles and sends messages to the live
 // session. Pearls theme — white rounded bubbles, green accent, no coloured rails.
-export default function ChatView({ session, notify }) {
+export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }) {
   const agentName = session.kind === 'grok' ? 'Grok' : 'Claude';
   const [messages, setMessages] = useState([]);
   const [working, setWorking] = useState(false);
@@ -70,7 +72,8 @@ export default function ChatView({ session, notify }) {
   useEffect(() => {
     poll();
     const t = setInterval(poll, 1600);
-    return () => clearInterval(t);
+    const stopResume = listenForResume(poll);
+    return () => { clearInterval(t); stopResume(); };
   }, [poll]);
 
   useEffect(() => {
@@ -162,6 +165,8 @@ export default function ChatView({ session, notify }) {
         lastAssistantText={lastAssistantText}
         notify={notify}
         busy={working}
+        speakerOn={speakerOn}
+        onToggleSpeaker={onToggleSpeaker}
       />
     </>
   );
@@ -171,7 +176,32 @@ const mdComponents = {
   a: ({ href, children }) => (
     <a href={href} target="_blank" rel="noreferrer">{children}</a>
   ),
+  code: CopyableCode,
 };
+
+function CopyableCode({ children, className }) {
+  const [copied, setCopied] = useState(false);
+  const value = String(children || '').replace(/\n$/, '');
+  const copy = async () => {
+    if (!(await copyText(value))) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+  return (
+    <code
+      className={(className || '') + ' copy-code'}
+      role="button"
+      tabIndex={0}
+      title="Tap to copy"
+      aria-label={`Copy ${value}`}
+      data-copied={copied ? 'Copied' : undefined}
+      onClick={copy}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy(); } }}
+    >
+      {children}
+    </code>
+  );
+}
 
 function Bubble({ role, text }) {
   return (

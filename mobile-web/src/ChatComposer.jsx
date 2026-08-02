@@ -44,13 +44,23 @@ export default function ChatComposer({
   plainText = false, // true = no autocapitalize/autocorrect (terminal commands)
   slashMode = 'prompts', // 'prompts' (saved prompts) | 'commands' (Claude Code's TUI slash menu)
   onKeypad, // terminal-only: renders an extra ⌨ button that calls this
+  speakerOn = false,
+  onToggleSpeaker,
 }) {
   const [text, setText] = useState('');
   const [mode, setMode] = useState(() => savedMode(session.id));
+  const [showModePicker, setShowModePicker] = useState(false);
+  const [modeChanging, setModeChanging] = useState(false);
   const [showSlash, setShowSlash] = useState(false);
   const [showMore, setShowMore] = useState(false); // ⋯ overflow: permission mode + read-aloud
   const [attachments, setAttachments] = useState([]); // visible label -> hidden server path
   const [pendingUploads, setPendingUploads] = useState([]);
+  // Mobile keyboards can report the same Enter twice: once as keydown and once
+  // as an input/change containing a trailing newline. React has not committed
+  // setText('') between those events, so both handlers otherwise submit the same
+  // draft. Only suppress an identical non-empty submission in this short window;
+  // empty double-taps intentionally accept Claude's ghost suggestion.
+  const lastSubmit = useRef({ text: '', at: 0 });
   const [uploading, setUploading] = useState(false);
   const taRef = useRef(null);
   const fileRef = useRef(null);
@@ -115,26 +125,38 @@ export default function ChatComposer({
   // actually reports a different mode (idle and busy sessions both flip within
   // ~300ms), and only then move the icon + toast. An optimistic flip here lied
   // whenever an in-flight background poll raced the tap and reverted it.
-  async function cycleMode() {
-    if (cycling.current) return; // one confirmed step per tap
+  async function chooseMode(target) {
+    setShowModePicker(false);
+    if (!MODES.includes(target) || target === mode || cycling.current) return;
     cycling.current = true;
-    const prev = mode;
+    setModeChanging(true);
+    let current = mode;
     try {
-      await sessionKey(session.id, 'cycle-mode');
-      for (const wait of [350, 450, 700]) {
-        await new Promise((r) => setTimeout(r, wait));
-        const m = (await sessionMode(session.id))?.mode;
-        if (m && m !== prev) {
-          rememberMode(m);
-          notify(`${MODE_ICON[m]} ${MODE_TOAST[m]}`, 'info');
+      // Claude exposes this as a Shift+Tab cycle rather than a direct setter.
+      // Confirm every step from the actual footer, stopping as soon as the chosen
+      // mode lands; this remains correct if Claude changes the cycle order.
+      for (let step = 0; step < MODES.length; step += 1) {
+        await sessionKey(session.id, 'cycle-mode');
+        let next = null;
+        for (const wait of [300, 400, 650]) {
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          const reported = (await sessionMode(session.id))?.mode;
+          if (reported && reported !== current) { next = reported; break; }
+        }
+        if (!next) throw new Error('Mode didn’t switch — try again in a moment');
+        current = next;
+        rememberMode(current);
+        if (current === target) {
+          notify(`${MODE_ICON[current]} ${MODE_TOAST[current]}`, 'info');
           return;
         }
       }
-      notify('Mode didn’t switch — try again in a moment');
+      throw new Error(`Could not switch to ${MODE_LABEL[target]}`);
     } catch (e) {
       notify(e.message);
     } finally {
       cycling.current = false;
+      setModeChanging(false);
     }
   }
 
@@ -151,13 +173,13 @@ export default function ChatComposer({
     }
   }
 
-  async function onFile(e) {
-    const files = Array.from(e.target.files || []);
-    e.target.value = '';
+  async function uploadFiles(files, { pasted = false } = {}) {
+    files = Array.from(files || []);
     if (!files.length) return;
+    if (uploading) return notify('Wait for the current files to finish uploading');
     const batch = files.map((file) => ({
       id: `${Date.now()}-${nextUploadNumber.current}`,
-      label: `Upload ${nextUploadNumber.current++}`,
+      label: `${pasted ? 'Image' : 'Upload'} ${nextUploadNumber.current++}`,
       file,
       progress: 0,
     }));
@@ -194,7 +216,45 @@ export default function ChatComposer({
     }
   }
 
+  async function onFile(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    await uploadFiles(files);
+  }
+
+  function clipboardImages(data) {
+    const out = [];
+    for (const item of Array.from(data?.items || [])) {
+      if (item.kind !== 'file' || !item.type?.startsWith('image/')) continue;
+      const blob = item.getAsFile();
+      if (!blob) continue;
+      // Clipboard blobs are unnamed on some mobile browsers. The attachment API
+      // validates extensions, so give every pasted bitmap a safe image filename.
+      const subtype = (blob.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+      const ext = subtype === 'jpeg' ? 'jpg' : subtype;
+      const name = blob.name && /\.[a-z0-9]+$/i.test(blob.name)
+        ? blob.name
+        : `pasted-image-${Date.now()}-${out.length + 1}.${ext}`;
+      out.push(blob.name === name ? blob : new File([blob], name, { type: blob.type || `image/${ext}` }));
+    }
+    // Some WebKit builds expose clipboard images through `files` but leave
+    // `items` empty. Only use this fallback when the primary list found none so
+    // the same bitmap is not uploaded twice.
+    if (!out.length) {
+      for (const file of Array.from(data?.files || [])) {
+        if (file.type?.startsWith('image/')) out.push(file);
+      }
+    }
+    return out;
+  }
+
   function onPaste(e) {
+    const images = clipboardImages(e.clipboardData);
+    if (images.length) {
+      e.preventDefault();
+      uploadFiles(images, { pasted: true }).catch((err) => notify('Image paste failed: ' + err.message));
+      return;
+    }
     const pasted = e.clipboardData?.getData('text/plain');
     if (!pasted) return;
 
@@ -236,6 +296,11 @@ export default function ChatComposer({
       const path = `"${String(item.path).replace(/"/g, '\\"')}"`;
       return value.split(token).join(path);
     }, visibleText);
+    const now = Date.now();
+    if (expandedText && lastSubmit.current.text === expandedText && now - lastSubmit.current.at < 1500) {
+      return;
+    }
+    if (expandedText) lastSubmit.current = { text: expandedText, at: now };
     setText('');
     setAttachments([]);
     nextUploadNumber.current = 1;
@@ -286,7 +351,17 @@ export default function ChatComposer({
       />
       <div className="composer-bar">
         <div className="composer-spacer" />
-        <DictationMic className="cbtn" text={text} setText={setText} notify={notify} />
+        <DictationMic className="cbtn cbtn-driving" text={text} setText={setText} notify={notify} />
+        <button
+          type="button"
+          className={'cbtn cbtn-driving cbtn-speaker' + (speakerOn ? ' on' : '')}
+          onClick={onToggleSpeaker}
+          aria-label={speakerOn ? 'Turn speaker mode off' : 'Turn speaker mode on and play the latest summary'}
+          aria-pressed={speakerOn}
+          title={speakerOn ? 'Speaker mode on — tap to stop and turn off' : 'Play latest summary and turn speaker mode on'}
+        >
+          {speakerOn ? '🔊' : '🔇'}
+        </button>
         <button
           className="cbtn"
           onClick={() => setShowSlash(true)}
@@ -314,20 +389,47 @@ export default function ChatComposer({
             ⌨
           </button>
         )}
-        {/* Permission-mode switcher — the phone's Shift+Tab. One tap cycles
-            Ask → Auto → Plan → Bypass; the glyph + tint show the current mode and a
-            toast announces each switch. First-class in the row (not in ⋯) because
-            mode changes are frequent mid-conversation. */}
+        {/* Permission mode is first-class in the row. Tapping opens an anchored
+            picker; the selected target is reached through Claude's Shift+Tab cycle. */}
         {!(isGrok || isCodex) && (
-          <button
-            type="button"
-            className={'cbtn cbtn-mode mode-' + mode}
-            onClick={cycleMode}
-            aria-label={`Permission mode: ${MODE_LABEL[mode]} — tap to cycle`}
-            title={`${MODE_LABEL[mode]} mode — tap to cycle (Shift+Tab)`}
-          >
-            {MODE_ICON[mode]}
-          </button>
+          <div className="composer-mode-wrap">
+            <button
+              type="button"
+              className={'cbtn cbtn-mode mode-' + mode}
+              onClick={() => { setShowMore(false); setShowModePicker((value) => !value); }}
+              aria-label={`Permission mode: ${MODE_LABEL[mode]} — tap to choose`}
+              aria-expanded={showModePicker}
+              disabled={modeChanging}
+              title={`${MODE_LABEL[mode]} mode — tap to choose`}
+            >
+              {modeChanging ? '…' : MODE_ICON[mode]}
+            </button>
+            {showModePicker && (
+              <>
+                <div className="composer-more-backdrop" onClick={() => setShowModePicker(false)} />
+                <div className="composer-mode-picker" role="menu" aria-label="Permission mode">
+                  <div className="composer-mode-head">Permission mode</div>
+                  {MODES.map((item) => (
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={item === mode}
+                      className={'composer-mode-option mode-' + item + (item === mode ? ' on' : '')}
+                      key={item}
+                      onClick={() => chooseMode(item)}
+                    >
+                      <span className="composer-mode-icon">{MODE_ICON[item]}</span>
+                      <span className="composer-mode-copy">
+                        <strong>{MODE_LABEL[item]}</strong>
+                        <span>{MODE_TOAST[item].split(' — ')[1]}</span>
+                      </span>
+                      {item === mode && <span className="composer-mode-check">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         )}
         {/* Less-used controls (read-aloud) tuck behind ⋯ so the bar fits a narrow
             phone. */}
@@ -335,7 +437,7 @@ export default function ChatComposer({
           <button
             type="button"
             className="cbtn"
-            onClick={() => setShowMore((v) => !v)}
+            onClick={() => { setShowModePicker(false); setShowMore((v) => !v); }}
             aria-label="More: permission mode and read aloud"
             aria-expanded={showMore}
           >
@@ -348,12 +450,6 @@ export default function ChatComposer({
                 {(isGrok || isCodex) && (
                   <div className="mode-pill" title={`${agentLabel} terminal session`}>{agentLabel}</div>
                 )}
-                <button
-                  className="composer-more-item"
-                  onClick={() => { setShowMore(false); replay('summary'); }}
-                >
-                  <span className="composer-more-ico">🔊</span> Read summary aloud
-                </button>
                 <button
                   className="composer-more-item"
                   onClick={() => { setShowMore(false); replay('full'); }}

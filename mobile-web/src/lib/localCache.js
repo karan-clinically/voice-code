@@ -2,7 +2,11 @@
 // these snapshots in the background after every open.
 
 const SESSION_KEY = 'cvh_connected_sessions_v1';
-const SESSION_MAX_AGE = 2 * 60 * 1000;
+const SESSION_USAGE_KEY = 'cvh_session_usage_v1';
+// Session cards are only an immediate visual snapshot; every mounted list replaces
+// them from the server. Keep them through a normal overnight/background interval
+// so a cold PWA restore never starts with an empty screen while the radio wakes.
+const SESSION_MAX_AGE = 24 * 60 * 60 * 1000;
 const DB_NAME = 'cvh-local-cache';
 const STORE = 'terminal-snapshots';
 const TERMINAL_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
@@ -24,6 +28,33 @@ export function writeSessionCards(rows) {
     localStorage.setItem(SESSION_KEY, JSON.stringify({ savedAt: Date.now(), rows: rows || [] }));
   } catch {
     /* private mode / quota: network behavior remains unchanged */
+  }
+}
+
+export function readSessionUsage() {
+  try {
+    const value = JSON.parse(localStorage.getItem(SESSION_USAGE_KEY) || '{}');
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+export function recordSessionView(sessionId) {
+  if (sessionId == null) return;
+  try {
+    const usage = readSessionUsage();
+    const key = String(sessionId);
+    const previous = usage[key] || {};
+    usage[key] = { views: (Number(previous.views) || 0) + 1, lastViewed: Date.now() };
+    // Session ids are monotonic; bound this preference so years of ended sessions
+    // cannot grow localStorage indefinitely.
+    const bounded = Object.fromEntries(
+      Object.entries(usage).sort((a, b) => (b[1]?.lastViewed || 0) - (a[1]?.lastViewed || 0)).slice(0, 100)
+    );
+    localStorage.setItem(SESSION_USAGE_KEY, JSON.stringify(bounded));
+  } catch {
+    /* private mode / quota: fall back to server ordering */
   }
 }
 

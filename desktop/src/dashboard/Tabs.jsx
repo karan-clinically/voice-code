@@ -1,24 +1,28 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 
 const tabName = (s) =>
   s.label || s.git_repo || (s.cwd || '').split(/[\\/]/).filter(Boolean).pop() || `session ${s.id}`;
+
+const TAB_STATUS = {
+  busy: { kind: 'working', label: 'Working' },
+  awaiting_input: { kind: 'input', label: 'Needs input' },
+  response_ready: { kind: 'finished', label: 'Finished' },
+  failed: { kind: 'failed', label: 'Failed' },
+};
+
+const attentionStatus = (s) => {
+  if (s.attention === 'input') return TAB_STATUS.awaiting_input;
+  if (s.attention === 'finished') return TAB_STATUS.response_ready;
+  if (s.attention === 'failed') return TAB_STATUS.failed;
+  return TAB_STATUS[s.state] || null;
+};
 
 // Terminal-style tab strip: one tab per live session. Double-click renames the
 // harness tab (and Claude session); the color dot opens the native color picker.
 export default function Tabs({ sessions, providers = [], activeId, onSelect, onNew, onRename, onColor, onClose }) {
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState('');
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef(null);
-
-  useEffect(() => {
-    if (!menuOpen) return undefined;
-    const onDoc = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [menuOpen]);
+  const [newProvider, setNewProvider] = useState('claude');
 
   function startEdit(s) {
     setEditing(s.id);
@@ -32,22 +36,19 @@ export default function Tabs({ sessions, providers = [], activeId, onSelect, onN
     setEditing(null);
   }
 
-  function pick(kind) {
-    setMenuOpen(false);
-    onNew(kind);
-  }
-
   return (
     <div className="tabs">
-      {sessions.map((s) => (
-        <div
-          key={s.id}
-          className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '') + (s.tab_color ? ' has-color' : '')}
-          style={s.tab_color ? { '--tab-color': s.tab_color } : undefined}
-          onClick={() => onSelect(s.id)}
-          onDoubleClick={() => startEdit(s)}
-          title={(s.kind === 'grok' ? 'Grok · ' : s.kind === 'codex' ? 'Codex · ' : s.kind === 'shell' ? 'Shell · ' : '') + (s.cwd || '') + '\nDouble-click to rename'}
-        >
+      {sessions.map((s) => {
+        const status = attentionStatus(s);
+        return (
+          <div
+            key={s.id}
+            className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '') + (s.kind === 'kimi-k3' ? ' kimi' : '') + (s.tab_color ? ' has-color' : '')}
+            style={s.tab_color ? { '--tab-color': s.tab_color } : undefined}
+            onClick={() => onSelect(s.id)}
+            onDoubleClick={() => startEdit(s)}
+            title={(s.kind === 'grok' ? 'Grok · ' : s.kind === 'codex' ? 'Codex · ' : s.kind === 'kimi-k3' ? 'Kimi K3 · ' : s.kind === 'shell' ? 'Shell · ' : '') + (s.cwd || '') + (status ? `\n${status.label}` : '') + '\nDouble-click to rename'}
+          >
           {editing === s.id ? (
             <input
               autoFocus
@@ -80,40 +81,49 @@ export default function Tabs({ sessions, providers = [], activeId, onSelect, onN
               />
               {s.kind === 'grok' && <span className="tab-kind" title="Grok">G</span>}
               {s.kind === 'codex' && <span className="tab-kind" title="Codex">C</span>}
+              {s.kind === 'kimi-k3' && <span className="tab-kind" title="Kimi K3">K</span>}
               {tabName(s)}
             </span>
           )}
-          <button
-            className="tab-x"
-            title="Close session"
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose(s.id);
-            }}
-          >
-            ×
-          </button>
-        </div>
-      ))}
-      <div className="tab-new-wrap" ref={menuRef}>
+            {status && (
+              <span className={'tab-status ' + status.kind} title={status.label} aria-label={status.label}>
+                {status.label}
+              </span>
+            )}
+            <button
+              className="tab-x"
+              title="Close session"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(s.id);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
+      <div className="tab-new-wrap">
+        <select
+          className="tab-provider-select"
+          value={newProvider}
+          onChange={(e) => setNewProvider(e.target.value)}
+          aria-label="Provider for new session"
+          title="Provider for new session"
+        >
+          {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {provider.name}{provider.authentication?.status === 'required' ? ' · key required' : ''}
+            </option>
+          ))}
+        </select>
         <button
           className="tab-new"
-          title="New AI CLI session"
-          onClick={() => setMenuOpen((v) => !v)}
-          aria-expanded={menuOpen}
+          title="Start a new session with the selected provider"
+          onClick={() => onNew(newProvider)}
         >
-          +
+          + New session
         </button>
-        {menuOpen && (
-          <div className="tab-new-menu" role="menu">
-            {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider) => (
-              <button key={provider.id} role="menuitem" onClick={() => pick(provider.id)}>
-                {provider.name}
-                {provider.authentication?.status === 'required' ? ' · key required' : ''}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ATTENTION_SHORT, attentionOf } from './lib/attention.js';
 import { canOpenRow, openSessionRow } from './lib/sessionOpen.js';
+import { readSessionUsage } from './lib/localCache.js';
 
 const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '☁️' };
 const DISMISS_MS = 5000;
@@ -16,10 +17,20 @@ export default function QuickSessionSwitcher({ session, rows, onOpen, onNew, onC
   const scrollSettleTimer = useRef(null);
   const remainingMs = useRef(DISMISS_MS);
   const timerStartedAt = useRef(0);
-  const tabs = useMemo(
-    () => rows.filter((it) => canOpenRow(it) && it.kind === 'harness' && it.alive && it.harnessId),
-    [rows]
-  );
+  const usage = useMemo(readSessionUsage, [session.id]);
+  const tabs = useMemo(() => rows
+    .filter((it) => canOpenRow(it) && it.kind === 'harness' && it.alive && it.harnessId)
+    .sort((a, b) => {
+      // Current first, then MRU. View count stabilizes sessions opened at nearly
+      // the same time; untouched sessions retain the server's activity order.
+      if (a.harnessId === session.id) return -1;
+      if (b.harnessId === session.id) return 1;
+      const au = usage[String(a.harnessId)] || {};
+      const bu = usage[String(b.harnessId)] || {};
+      return (bu.lastViewed || 0) - (au.lastViewed || 0)
+        || (bu.views || 0) - (au.views || 0)
+        || Date.parse(b.ts || 0) - Date.parse(a.ts || 0);
+    }), [rows, session.id, usage]);
 
   const resumeTimer = () => {
     if (dismissTimer.current || remainingMs.current <= 0) return;

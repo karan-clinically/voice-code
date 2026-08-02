@@ -37,7 +37,7 @@ const quote = (p) => (/\s/.test(p) ? `"${p}"` : p);
 // stays mounted (hidden when inactive) so scrollback and the socket survive tab
 // switches. Registers an imperative { focus, write, paste } via onApi so the
 // Dashboard can drive the focused terminal (voice, image paste, drag-drop).
-export default function TerminalPane({ session, active, onApi, notify }) {
+export default function TerminalPane({ session, active, onApi, onWorking, notify }) {
   const wrapRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -65,6 +65,23 @@ export default function TerminalPane({ session, active, onApi, notify }) {
 
     const ws = new WebSocket(termWsUrl(session.id));
     wsRef.current = ws;
+    let activityTimer = null;
+
+    const reconcileActivity = () => {
+      clearTimeout(activityTimer);
+      activityTimer = setTimeout(() => {
+        const buf = term.buffer.active;
+        const start = Math.max(0, buf.baseY + term.rows - 35);
+        const lines = [];
+        for (let y = start; y < buf.baseY + term.rows; y += 1) {
+          lines.push(buf.getLine(y)?.translateToString(true) || '');
+        }
+        const tail = lines.join('\n');
+        const stableBusy = /esc to interrupt|thinking…|working…/i.test(tail);
+        const rotatingSpinner = /(?:^|\n)\s*[·✻✽✶*]\s+[^\n…]{1,60}…\s*\([^\n)]*(?:\d+\s*[ms]\b|tokens?\b)[^\n)]*\)/i.test(tail);
+        if (stableBusy || rotatingSpinner) onWorking?.(session.id);
+      }, 80);
+    };
 
     const sendInput = (d) => {
       if (ws.readyState === 1) ws.send(JSON.stringify({ t: 'in', d }));
@@ -87,7 +104,7 @@ export default function TerminalPane({ session, active, onApi, notify }) {
       } catch {
         return;
       }
-      if (m.t === 'data') term.write(m.d);
+      if (m.t === 'data') term.write(m.d, reconcileActivity);
       else if (m.t === 'exit') term.write('\r\n\x1b[2m— session ended —\x1b[0m\r\n');
     };
     ws.onopen = () => sendResize();
@@ -180,6 +197,7 @@ export default function TerminalPane({ session, active, onApi, notify }) {
 
     return () => {
       onApi?.(session.id, null);
+      clearTimeout(activityTimer);
       ro.disconnect();
       dataDisp.dispose();
       el.removeEventListener('paste', onPaste, true);

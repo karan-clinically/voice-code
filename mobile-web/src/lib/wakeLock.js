@@ -1,14 +1,13 @@
 import { useEffect } from 'react';
 
-// Per-device preference (like the theme) for whether hands-free holds the screen
-// awake. Defaults ON — absence of the key means enabled — so it keeps the behaviour
-// it shipped with; the Settings toggle only exists to turn it off.
+// Per-device preference (like the theme) for whether spoken interactions hold the
+// screen awake. Defaults ON — absence of the key means enabled.
 const KEY = 'cvh_keepawake';
 export const keepAwakeEnabled = () => localStorage.getItem(KEY) !== 'off';
 export const setKeepAwake = (on) => localStorage.setItem(KEY, on ? 'on' : 'off');
 
 // Screen Wake Lock: while `active`, ask the browser to keep the screen on so a
-// hands-free reply actually plays out loud instead of the phone sleeping mid-turn
+// spoken reply actually plays out loud instead of the phone sleeping mid-turn
 // (a slept screen backgrounds the page, which throttles the poll and pauses audio).
 //
 // The lock auto-releases whenever the tab is hidden — screen off, app backgrounded,

@@ -14,12 +14,15 @@ import * as terminal from './terminal.js';
 import { guessInitialModel, friendlyModelName } from './models.js';
 import { allAdapters, getAdapter, requireAdapter } from '../agents/registry.js';
 import { spawnEnvironment } from '../agents/credentials.js';
+import { screenShowsWorking } from './activityState.js';
+import { getSessionPreview, previewEvents, startSessionPreview, stopSessionPreview } from './previewManager.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('sessions');
 
 // 'change' (any list change), 'state' {id, state}
 export const sessionEvents = new EventEmitter();
+previewEvents.on('change', () => sessionEvents.emit('change'));
 
 // Unique per harness process, so a fresh 's1' after restart never collides with
 // a previous run's row.
@@ -31,6 +34,7 @@ const tokenByDb = new Map(); // dbId -> CVH_SESSION_ID token
 const dbByToken = new Map(); // token -> dbId
 const modelByDb = new Map(); // dbId -> friendly model label (Claude sessions only)
 const agentViewByDb = new Set(); // exact marker; cwd is not unique to an agent view
+const activityTimers = new Map(); // terminalId -> debounced live-screen check
 
 const insertSession = db.prepare(`
   INSERT INTO sessions (
@@ -76,6 +80,7 @@ terminal.terminalEvents.on('exit', ({ id }) => {
   ptyIdByDb.delete(dbId);
   dbIdByPty.delete(id);
   modelByDb.delete(dbId);
+  stopSessionPreview(dbId).catch((err) => log.warn(`preview cleanup for session db#${dbId} failed: ${err.message}`));
   sessionEvents.emit('state', { id: dbId, state: 'dead' });
   sessionEvents.emit('change');
   log.info(`session db#${dbId} (pty ${id}) marked dead`);
@@ -101,6 +106,29 @@ terminal.terminalEvents.on('data', ({ id, data }) => {
   log.info(`session db#${dbId}: model set to ${label}`);
 });
 
+// Input typed directly in xterm, another attached terminal, or Claude Remote
+// Control bypasses executeCommand(), so it has no explicit "turn started" event.
+// Reconcile from the rendered spinner instead; this prevents a prior Finished
+// state lingering throughout the next turn.
+terminal.terminalEvents.on('data', ({ id }) => {
+  const dbId = dbIdByPty.get(id);
+  if (dbId == null || activityTimers.has(id)) return;
+  activityTimers.set(id, setTimeout(() => {
+    activityTimers.delete(id);
+    const row = selOne.get(dbId);
+    const adapter = row ? getAdapter(row.provider_id || row.kind) : null;
+    if (!row || row.state === 'dead' || !adapter?.completion?.busyPatterns?.length) return;
+    try {
+      const screen = terminal.captureScreen(id, { full: false });
+      if (screenShowsWorking(screen, adapter.completion.busyPatterns) && row.state !== 'busy') {
+        markState(dbId, 'busy');
+      }
+    } catch {
+      /* terminal may have exited between the output event and this check */
+    }
+  }, 120));
+});
+
 function decorate(row) {
   if (!row) return null;
   const providerId = row.provider_id || row.kind || 'claude';
@@ -123,6 +151,7 @@ function decorate(row) {
     agentView: agentViewByDb.has(row.id),
     alive,
     model,
+    preview: getSessionPreview(row.id),
   };
 }
 
@@ -215,6 +244,11 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
   const providerSessionId = launch.externalSessionId || externalSessionId || resumeId || null;
   if (providerSessionId) updExternalId.run(providerSessionId, providerSessionId, dbId);
   log.info(`registered session db#${dbId} (pty ${view.id}) cwd=${view.cwd} repo=${git.repo || '-'}`);
+  if (!agentView && adapter.id !== 'shell') {
+    startSessionPreview(dbId, view.cwd).catch((err) => {
+      log.warn(`preview auto-start for session db#${dbId} failed: ${err.message}`);
+    });
+  }
   sessionEvents.emit('change');
   return getSession(dbId);
 }

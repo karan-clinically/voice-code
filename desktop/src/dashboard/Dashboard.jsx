@@ -9,6 +9,8 @@ import {
   openWs,
   transcribeAudio,
   ttsSayUrl,
+  configState,
+  startSessionPreview,
 } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
 import Tabs from './Tabs.jsx';
@@ -29,6 +31,7 @@ export default function Dashboard({ onOpenWizard }) {
   const [speak, setSpeak] = useState(false);
   const [recording, setRecording] = useState(false);
   const [msg, setMsg] = useState('');
+  const [defaultSessionDir, setDefaultSessionDir] = useState('');
 
   const termApis = useRef({}); // sessionId -> imperative terminal api
   const audioRef = useRef(null);
@@ -55,6 +58,7 @@ export default function Dashboard({ onOpenWizard }) {
   useEffect(() => {
     refresh();
     listProviders().then((d) => setProviders(d.providers || [])).catch(() => {});
+    configState().then((d) => setDefaultSessionDir(d.defaultSessionDir || '')).catch(() => {});
     const ws = openWs((m) => {
       if (m.type === 'sessions') setSessions(m.sessions);
       else if (m.type === 'state')
@@ -103,8 +107,15 @@ export default function Dashboard({ onOpenWizard }) {
     else delete termApis.current[id];
   }
 
+  // The backend is authoritative for completion, but the terminal itself is the
+  // fastest source for a newly-started turn (including input from Remote Control).
+  // Never infer completion here; only correct a stale ready/idle state to busy.
+  const markVisiblyWorking = useCallback((id) => {
+    setSessions((prev) => prev.map((s) => (s.id === id && s.state !== 'busy' ? { ...s, state: 'busy', attention: null } : s)));
+  }, []);
+
   async function newSession(kind = 'claude') {
-    const dir = await window.cvh?.pickFolder();
+    const dir = defaultSessionDir || await window.cvh?.pickFolder();
     if (!dir) return;
     try {
       const base = dir.split(/[\\/]/).filter(Boolean).pop() || 'project';
@@ -114,6 +125,25 @@ export default function Dashboard({ onOpenWizard }) {
       setActiveId(s.id);
     } catch (e) {
       notify('Could not start session: ' + e.message);
+    }
+  }
+
+  async function launchPreview() {
+    if (!activeSession) return;
+    const preview = activeSession.preview;
+    if (preview?.state === 'ready') {
+      const url = preview.localUrl || preview.tailscaleUrl;
+      if (url) await window.cvh?.openExternal(url);
+      return;
+    }
+    try {
+      const result = await startSessionPreview(activeSession.id);
+      setSessions((prev) => prev.map((s) => s.id === activeSession.id ? { ...s, preview: result.preview } : s));
+      if (result.preview?.state === 'ready' && result.preview.localUrl) {
+        await window.cvh?.openExternal(result.preview.localUrl);
+      }
+    } catch (e) {
+      notify('Could not start app: ' + e.message);
     }
   }
 
@@ -202,59 +232,83 @@ export default function Dashboard({ onOpenWizard }) {
   return (
     <div className="term-app">
       <header className="term-topbar">
-        <div className="tabs-scroll">
-          <Tabs
-            sessions={live}
-            activeId={activeId}
-            onSelect={setActiveId}
-            onNew={newSession}
-            onRename={rename}
-            onColor={setColor}
-            onClose={close}
-            providers={providers}
-          />
+        <div className="term-tabs-row">
+          <div className="tabs-scroll">
+            <Tabs
+              sessions={live}
+              activeId={activeId}
+              onSelect={setActiveId}
+              onNew={newSession}
+              onRename={rename}
+              onColor={setColor}
+              onClose={close}
+              providers={providers}
+            />
+          </div>
         </div>
-        <div className="term-tools">
-          {activeId && activeSession?.capabilities?.chat !== false && (
-            <div className="seg" title="Switch the active session between the raw terminal and a chat view">
-              <button
-                className={'seg-btn' + (activeMode !== 'chat' ? ' on' : '')}
-                onClick={() => setMode(activeId, 'terminal')}
-              >
-                Terminal
-              </button>
-              <button
-                className={'seg-btn' + (activeMode === 'chat' ? ' on' : '')}
-                onClick={() => setMode(activeId, 'chat')}
-              >
-                Chat
-              </button>
-            </div>
-          )}
-          {activeSession && <ModelPicker session={activeSession} notify={notify} />}
-          <button
-            className={'tool' + (recording ? ' rec' : '')}
-            onClick={toggleTalk}
-            title="Talk (Ctrl+`) — dictate into the active terminal"
-          >
-            {recording ? '● Listening…' : '🎙 Talk'}
-          </button>
-          <button
-            className={'tool' + (speak ? ' on' : '')}
-            onClick={() => setSpeak((v) => !v)}
-            title="Speak agent replies aloud"
-          >
-            🔊 Speak {speak ? 'on' : 'off'}
-          </button>
-          <button className="tool" onClick={() => setShowHistory(true)} title="Search & resume past sessions">
-            🕘 History
-          </button>
-          <button className="tool" onClick={() => setShowLog((v) => !v)} title="Harness log">
-            {showLog ? 'Hide log' : 'Log'}
-          </button>
-          <button className="tool" onClick={onOpenWizard} title="Settings">
-            ⚙
-          </button>
+        <div className="term-tools" aria-label="Active session options">
+          <div className="session-tools">
+            {activeSession?.capabilities?.chat !== false && activeSession && (
+              <div className="seg" title="Switch the active session between the raw terminal and a chat view">
+                <button
+                  className={'seg-btn' + (activeMode !== 'chat' ? ' on' : '')}
+                  onClick={() => setMode(activeId, 'terminal')}
+                >
+                  Terminal
+                </button>
+                <button
+                  className={'seg-btn' + (activeMode === 'chat' ? ' on' : '')}
+                  onClick={() => setMode(activeId, 'chat')}
+                >
+                  Chat
+                </button>
+              </div>
+            )}
+            {activeSession && <ModelPicker session={activeSession} notify={notify} />}
+            {activeSession && (
+              <>
+                <button
+                  className={'tool' + (activeSession.preview?.state === 'ready' ? ' on' : '')}
+                  onClick={launchPreview}
+                  disabled={activeSession.preview?.state === 'starting'}
+                  title={activeSession.preview?.error || 'Open this project app in your browser'}
+                >
+                  {activeSession.preview?.state === 'starting'
+                    ? 'App starting…'
+                    : activeSession.preview?.state === 'ready'
+                      ? '↗ Open app'
+                      : activeSession.preview?.state === 'error'
+                        ? '↻ Retry app'
+                        : '▷ Start app'}
+                </button>
+                <button
+                  className={'tool' + (recording ? ' rec' : '')}
+                  onClick={toggleTalk}
+                  title="Talk (Ctrl+`) — dictate into the active terminal"
+                >
+                  {recording ? '● Listening…' : '🎙 Talk'}
+                </button>
+                <button
+                  className={'tool' + (speak ? ' on' : '')}
+                  onClick={() => setSpeak((v) => !v)}
+                  title="Speak replies from the active session aloud"
+                >
+                  🔊 Speak {speak ? 'on' : 'off'}
+                </button>
+              </>
+            )}
+          </div>
+          <div className="app-tools">
+            <button className="tool" onClick={() => setShowHistory(true)} title="Search & resume past sessions">
+              🕘 History
+            </button>
+            <button className="tool" onClick={() => setShowLog((v) => !v)} title="Harness log">
+              {showLog ? 'Hide log' : 'Log'}
+            </button>
+            <button className="tool" onClick={onOpenWizard} title="Settings">
+              ⚙
+            </button>
+          </div>
         </div>
       </header>
 
@@ -274,6 +328,7 @@ export default function Dashboard({ onOpenWizard }) {
                 session={s}
                 active={s.id === activeId && (s.capabilities?.chat === false || modeOf(s.id) !== 'chat')}
                 onApi={registerApi}
+                onWorking={markVisiblyWorking}
                 notify={notify}
               />
               {s.capabilities?.chat !== false && modeOf(s.id) === 'chat' && <ChatView session={s} active={s.id === activeId} notify={notify} />}

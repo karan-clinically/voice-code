@@ -32,6 +32,40 @@ export async function ensureServe(port, mode = 'serve') {
   }
 }
 
+// Project previews always use private Serve, even when the phone app itself is
+// published with Funnel. A dedicated HTTPS port lets frameworks keep `/` as
+// their base path (assets, redirects, service workers, and HMR all keep working).
+export async function addPrivateServeProxy(localPort, httpsPort) {
+  await pexec(
+    tailscaleBin(),
+    ['serve', `--https=${Number(httpsPort)}`, '--bg', `http://127.0.0.1:${Number(localPort)}`],
+    { timeout: 15000 }
+  );
+  const detected = await detectTailscale();
+  if (!detected.online || !detected.hostname) throw new Error('Tailscale is not online');
+  return `https://${detected.hostname}:${Number(httpsPort)}/`;
+}
+
+export async function removePrivateServeProxy(httpsPort) {
+  try {
+    await pexec(tailscaleBin(), ['serve', `--https=${Number(httpsPort)}`, 'off'], { timeout: 15000 });
+    return true;
+  } catch (err) {
+    log.warn(`tailscale preview route cleanup failed on :${httpsPort}: ${err.message}`);
+    return false;
+  }
+}
+
+export async function serveHttpsPorts() {
+  try {
+    const { stdout } = await pexec(tailscaleBin(), ['serve', 'status', '--json'], { timeout: 5000 });
+    const status = JSON.parse(stdout);
+    return new Set(Object.keys(status.TCP || {}).map(Number).filter(Number.isFinite));
+  } catch {
+    return new Set();
+  }
+}
+
 export async function detectTailscale(port = 4620) {
   try {
     const { stdout } = await pexec(tailscaleBin(), ['status', '--json'], { timeout: 5000 });

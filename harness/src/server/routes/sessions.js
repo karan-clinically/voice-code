@@ -21,6 +21,7 @@ import {
   getPtyId, markState, reusableSession, recordReuse, setModel, setClaudeSessionId,
   latestSessionByClaudeId,
 } from '../../services/sessionManager.js';
+import { getSessionPreview, startSessionPreview, stopSessionPreview } from '../../services/previewManager.js';
 import { MODEL_OPTIONS } from '../../services/models.js';
 import { isLocalhost } from '../auth.js';
 import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
@@ -447,7 +448,7 @@ router.post('/kill-local', (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const kind = normalizeKind(req.body?.providerId || req.body?.kind);
-    const base = getConfig('mobile_base_dir', 'C:\\AI');
+    const base = getConfig('default_session_dir') || getConfig('mobile_base_dir', 'C:\\AI');
 
     // Resume a saved Grok conversation: reopen a Grok PTY bound to the same conv id
     // so the agent reloads its context file. Reuse a live/already-opened one instead
@@ -520,7 +521,7 @@ router.post('/', async (req, res) => {
 // pty becomes the agent's live session. cwd only sets where the view is spawned.
 router.post('/agent-view', async (req, res) => {
   try {
-    const base = getConfig('mobile_base_dir', 'C:\\AI');
+    const base = getConfig('default_session_dir') || getConfig('mobile_base_dir', 'C:\\AI');
     const rawCwd = (req.body?.cwd || '').trim().replace(/["']/g, '');
     // The agent's own cwd may be a worktree that's since been removed; fall back to
     // the projects base so the view still opens (it lists every agent regardless).
@@ -575,6 +576,38 @@ function liveTitle(session) {
   return matches[0].title;
 }
 
+router.get('/:id/preview', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  res.json({ preview: getSessionPreview(session.id) });
+});
+
+router.post('/:id/preview/start', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.cwd) return res.status(400).json({ error: 'session has no project folder' });
+  try {
+    const preview = await startSessionPreview(session.id, session.cwd, { force: true });
+    if (!preview) return res.status(404).json({ error: 'no previewable app found in this folder' });
+    if (preview.state === 'error' || !preview.tailscaleUrl) {
+      return res.status(502).json({
+        error: preview.error || 'the app started locally, but Tailscale did not expose it',
+        preview,
+      });
+    }
+    res.json({ preview });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:id/preview/stop', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  await stopSessionPreview(session.id);
+  res.json({ ok: true });
+});
+
 router.get('/:id', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
@@ -596,6 +629,16 @@ router.post('/:id/mute', (req, res) => {
   if (!session) return res.status(404).json({ error: 'session not found' });
   const muted = setMutedById(session.id, req.body?.muted !== false);
   res.json({ muted });
+});
+
+// Explicitly acknowledge a cross-session attention banner without opening the
+// session. This is separate from push muting: future finished/input pings should
+// still appear normally.
+router.post('/:id/attention/dismiss', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  clearAttention(session.id);
+  res.json({ ok: true });
 });
 
 router.get('/:id/history', (req, res) => {

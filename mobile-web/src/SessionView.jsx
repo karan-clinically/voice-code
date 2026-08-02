@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq, listProviders, setSessionModel } from './lib/api.js';
+import { commandText, mediaUrl, replyUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq, listProviders, setSessionModel, selectPromptOption, dismissSessionAttention, startSessionPreview } from './lib/api.js';
 import { ATTENTION_SHORT, isAlert } from './lib/attention.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { Terminal, basename } from './components.jsx';
@@ -10,7 +10,9 @@ import TerminalKeypad from './TerminalKeypad.jsx';
 import SessionSwitcher from './SessionSwitcher.jsx';
 import QuickSessionSwitcher from './QuickSessionSwitcher.jsx';
 import { normalizeSpokenSlash } from './lib/slashCommands.js';
-import { readSessionCards, writeSessionCards } from './lib/localCache.js';
+import { readSessionCards, writeSessionCards, recordSessionView } from './lib/localCache.js';
+import { useWakeLock, keepAwakeEnabled } from './lib/wakeLock.js';
+import { listenForResume } from './lib/resume.js';
 
 // Spoken form of a detected prompt (a numbered picker or a bash-permission dialog):
 // the question followed by its numbered options, so it's clear what you're answering.
@@ -34,6 +36,12 @@ const VIEWS = [
   { id: 'voice', label: 'Voice (hands-free)', ico: '🎧' },
 ];
 
+// Drawer/session-card navigation intentionally passes a lightweight session
+// object. Claude is model-switchable even before the detail poll hydrates the
+// full capabilities object.
+const supportsSessionModels = (s) =>
+  s?.capabilities?.models === true || (!s?.capabilities && (!s?.kind || s.kind === 'claude'));
+
 // Full-screen Claude session — terminal is the main view. Voice dictates into the
 // command box for review; only Send reaches the pty. The conversation mode (VAD)
 // code is retained in lib/audio.js but not surfaced here.
@@ -54,17 +62,32 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [model, setModel] = useState(session.model || 'Model');
   const [modelOptions, setModelOptions] = useState([]);
   const [switchingModel, setSwitchingModel] = useState(false);
+  const [modelsSupported, setModelsSupported] = useState(() => supportsSessionModels(session));
+  const [sessionAlive, setSessionAlive] = useState(session.alive !== false);
+  const [preview, setPreview] = useState(session.preview || null);
+  const [previewStarting, setPreviewStarting] = useState(false);
+  useEffect(() => { recordSessionView(session.id); }, [session.id]);
   // Speak replies aloud? Off = a normal, silent coding session. Persisted so the
   // choice sticks across sessions. TTS renders lazily on first fetch, so muting
   // also means no synthesis is billed for skipped replies.
   const [speak, setSpeak] = useState(() => localStorage.getItem('cvh_speak') !== 'off');
   const speakRef = useRef(speak);
-  function toggleSpeak() {
-    const next = !speak;
+  function setSpeakerMode(next) {
     setSpeak(next);
     speakRef.current = next;
     localStorage.setItem('cvh_speak', next ? 'on' : 'off');
     if (!next) stopAudio(); // cut anything mid-sentence right away
+  }
+  function toggleSpeak() {
+    setSpeakerMode(!speakRef.current);
+  }
+  // The composer speaker is both a second entry into speaker mode and an
+  // immediate replay control. Turning it on reads the latest recorded assistant
+  // response; turning it off cuts that replay (or any automatic reply) at once.
+  function toggleSpeakerFromComposer() {
+    const next = !speakRef.current;
+    setSpeakerMode(next);
+    if (next) playUrl(replyUrl(session.id, 'summary'));
   }
   // The label we opened with is a snapshot and drifts as the conversation moves on
   // (Claude re-titles the session). Re-read it so the header names the session you
@@ -79,7 +102,6 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   // The composer needs it: mid-question the session still reads as busy, but its
   // button must offer Enter (answer) rather than Esc (interrupt).
   const [promptPending, setPromptPending] = useState(false);
-  const [terminalActivity, setTerminalActivity] = useState(null);
   // The session is now shared — the terminal or Claude remote control can start a turn
   // this view never saw. The local `state` below only tracks turns THIS phone sent, so
   // without the server's own state the ■ Stop button would never appear for a turn
@@ -88,6 +110,8 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   useEffect(() => {
     setLabel(session.label);
     setModel(session.model || 'Model');
+    setModelsSupported(supportsSessionModels(session));
+    setSessionAlive(session.alive !== false);
     muteLoaded.current = false;
     let stop = false;
     const pull = () => sessionInfo(session.id)
@@ -96,6 +120,9 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         if (s?.label) setLabel(s.label);
         if (s?.state) setSrvState(s.state);
         if (s?.model) setModel(s.model);
+        if (s?.capabilities) setModelsSupported(!!s.capabilities.models);
+        if (typeof s?.alive === 'boolean') setSessionAlive(s.alive);
+        setPreview(s?.preview || null);
         if (!muteLoaded.current && typeof s?.muted === 'boolean') {
           muteLoaded.current = true;
           setMuted(s.muted);
@@ -104,11 +131,12 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       .catch(() => { /* transient */ });
     pull();
     const t = setInterval(pull, 5000);
-    return () => { stop = true; clearInterval(t); };
+    const stopResume = listenForResume(pull);
+    return () => { stop = true; clearInterval(t); stopResume(); };
   }, [session.id, session.label]);
 
   useEffect(() => {
-    if (!session.capabilities?.models) return undefined;
+    if (!modelsSupported) return undefined;
     let stop = false;
     listProviders()
       .then(({ providers = [] }) => {
@@ -118,7 +146,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       })
       .catch(() => {});
     return () => { stop = true; };
-  }, [session.capabilities?.models, session.kind, session.provider_id]);
+  }, [modelsSupported, session.kind, session.provider_id]);
 
   async function pickModel(option) {
     setShowModels(false);
@@ -167,7 +195,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [rows, setRows] = useState(readSessionCards);
   useEffect(() => {
     let stop = false;
-    const load = () => recentSessions().then((d) => {
+    const load = (force = false) => recentSessions({ force }).then((d) => {
       if (stop) return;
       const fresh = d.sessions || [];
       setRows(fresh);
@@ -175,12 +203,106 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     }).catch(() => {});
     load();
     const t = setInterval(load, 5000);
-    return () => { stop = true; clearInterval(t); };
+    const stopResume = listenForResume(() => load(true));
+    return () => { stop = true; clearInterval(t); stopResume(); };
   }, []);
   const here = rows.find((r) => r.harnessId === session.id);
   const title = here?.name || label || basename(session.cwd);
   const alerts = rows.filter((r) => r.harnessId !== session.id && isAlert(r));
+  const activeAlert = alerts[0] || null;
+  const [alertPrompt, setAlertPrompt] = useState(null);
   const seenQuickSwitchSignal = useRef(quickSwitchSignal);
+
+  useEffect(() => {
+    setAlertPrompt(null);
+    if (!activeAlert?.harnessId || activeAlert.attention !== 'input') return undefined;
+    let stop = false;
+    const pull = () => sessionPrompt(activeAlert.harnessId)
+      .then(({ prompt }) => { if (!stop) setAlertPrompt(prompt || null); })
+      .catch(() => {});
+    pull();
+    const timer = setInterval(pull, 2500);
+    return () => { stop = true; clearInterval(timer); };
+  }, [activeAlert?.harnessId, activeAlert?.attention]);
+
+  const alertYes = !alertPrompt?.multi
+    ? alertPrompt?.options?.find((option) => /^(yes|allow|approve)\b/i.test(option.label))
+    : null;
+  const alertNo = !alertPrompt?.multi
+    ? alertPrompt?.options?.find((option) => /^(no|deny|reject)\b/i.test(option.label))
+    : null;
+
+  function removeAlertFromRows(id) {
+    setRows((current) => {
+      const next = current.map((row) => row.harnessId === id ? { ...row, attention: null } : row);
+      writeSessionCards(next);
+      return next;
+    });
+  }
+
+  async function startPreview() {
+    setShowMenu(false);
+    if (previewStarting) return;
+    setPreviewStarting(true);
+    try {
+      const result = await startSessionPreview(session.id);
+      const next = result.preview || null;
+      setPreview(next);
+      if (!next?.tailscaleUrl || next.state === 'error') {
+        throw new Error(next?.error || 'Tailscale did not return a hosted-app URL');
+      }
+      notify?.('Hosted app is ready', 'success');
+    } catch (e) {
+      notify?.('Could not start app: ' + e.message);
+    } finally {
+      setPreviewStarting(false);
+    }
+  }
+
+  async function acknowledgeAlert(id) {
+    try {
+      await dismissSessionAttention(id);
+    } catch {
+      // Compatibility with a harness process that has not restarted onto the new
+      // explicit endpoint yet: reading session detail already acknowledges attention.
+      await sessionInfo(id);
+    }
+  }
+
+  async function openAlertSession() {
+    if (!activeAlert?.harnessId) return;
+    try {
+      onOpen(await sessionInfo(activeAlert.harnessId));
+    } catch (e) {
+      notify?.('Could not open session: ' + e.message);
+    }
+  }
+
+  async function dismissAlert(e) {
+    e.stopPropagation();
+    if (!activeAlert?.harnessId) return;
+    const id = activeAlert.harnessId;
+    removeAlertFromRows(id);
+    try {
+      await acknowledgeAlert(id);
+    } catch (err) {
+      notify?.('Could not dismiss alert: ' + err.message);
+    }
+  }
+
+  async function answerAlert(e, option) {
+    e.stopPropagation();
+    if (!activeAlert?.harnessId || !option) return;
+    const id = activeAlert.harnessId;
+    try {
+      await selectPromptOption(id, option.n, { wait: false });
+      await acknowledgeAlert(id);
+      removeAlertFromRows(id);
+      notify?.(`${option.label} sent to ${activeAlert.name}`, 'info');
+    } catch (err) {
+      notify?.('Could not answer prompt: ' + err.message);
+    }
+  }
 
   useEffect(() => {
     if (quickSwitchSignal > seenQuickSwitchSignal.current) {
@@ -222,10 +344,9 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     let stop = false;
     const tick = async () => {
       try {
-        const { prompt: p, activity = null } = await sessionPrompt(session.id);
+        const { prompt: p } = await sessionPrompt(session.id);
         if (stop) return;
         setPromptPending(!!p);
-        setTerminalActivity(activity);
         if (p) announcePrompt(p);
         // Prompt gone — forget this session's spoken prompts so a genuinely new one
         // (even with the same text) is announced again next time it appears.
@@ -238,17 +359,6 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     const t = setInterval(tick, 1800);
     return () => { stop = true; clearInterval(t); };
   }, [session.id, voice]);
-
-  async function handleTerminalActivity(key) {
-    try {
-      await sessionKey(session.id, key);
-      setTerminalActivity(null);
-      if (key === 'background') notify?.('Shell commands moved to the background', 'info');
-      else notify?.('Stop sent to the foreground command', 'info');
-    } catch (e) {
-      notify?.('Terminal action failed: ' + e.message);
-    }
-  }
 
   async function runResult(promise) {
     setState('working…');
@@ -295,9 +405,9 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       sendRaw('\r');
       return;
     }
-    // Codex is an interactive terminal app; until we add a Codex-specific
-    // completion parser/hook, send everything as raw terminal input and keep the
-    // phone attached to the live PTY.
+    // Terminal-only custom CLIs do not expose a completion contract, so keep their
+    // input raw. Codex advertises chat because its stabilization adapter can delimit
+    // a completed turn and return the final answer for history and speech.
     if (!hasChat) {
       ding('sent');
       sendRaw(norm);
@@ -336,6 +446,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     if (mode !== 'terminal') return undefined;
     let stop = false;
     let pongDue = null;
+    let reconnectTimer = null;
     // Locking the phone suspends the tab and the OS kills this socket; without a
     // rewire, sendRaw reports "Key channel not ready" after every unlock. Reconnect
     // on close (while awake) and on the visibility flip back to foreground. The
@@ -343,15 +454,22 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     // without it, keystrokes go into the void with readyState still saying 1.
     const connect = () => {
       if (stop) return;
-      const ws = new WebSocket(termWsUrl(session.id));
-      keyWs.current = ws;
-      ws.onmessage = (e) => {
+      const current = keyWs.current;
+      if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      const socket = new WebSocket(termWsUrl(session.id));
+      keyWs.current = socket;
+      socket.onmessage = (e) => {
         try { if (JSON.parse(e.data).t === 'pong') { clearTimeout(pongDue); pongDue = null; } } catch { /* ignore */ }
       };
-      ws.onclose = () => {
+      socket.onclose = () => {
         clearTimeout(pongDue); pongDue = null;
-        if (keyWs.current === ws) keyWs.current = null;
-        if (!stop && !document.hidden) setTimeout(connect, 1500);
+        if (keyWs.current !== socket) return;
+        keyWs.current = null;
+        if (!stop && !document.hidden && !reconnectTimer) {
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
+        }
       };
     };
     keyReconnect.current = connect;
@@ -363,20 +481,25 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     }, 20000);
     const onVisible = () => {
       if (stop || document.hidden) return;
-      const ws = keyWs.current;
-      if (!ws || ws.readyState > 1) connect(); // socket died while backgrounded
+      // OPEN is not trustworthy after mobile suspension: a socket that died
+      // without a FIN remains OPEN until the heartbeat eventually notices it.
+      // Replace it immediately on resume so the first key works straight away.
+      const stale = keyWs.current;
+      keyWs.current = null;
+      clearTimeout(pongDue); pongDue = null;
+      clearTimeout(reconnectTimer); reconnectTimer = null;
+      try { stale?.close(); } catch { /* already dead */ }
+      connect();
     };
-    document.addEventListener('visibilitychange', onVisible);
-    // iOS bfcache restores can fire pageshow with no visibilitychange.
-    window.addEventListener('pageshow', onVisible);
+    const stopKeyResume = listenForResume(onVisible);
     connect();
     return () => {
       stop = true;
       clearInterval(pinger);
       clearTimeout(pongDue);
+      clearTimeout(reconnectTimer);
       keyReconnect.current = null;
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('pageshow', onVisible);
+      stopKeyResume();
       try { keyWs.current?.close(); } catch { /* ignore */ }
       keyWs.current = null;
     };
@@ -403,12 +526,14 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
 
   // `/recent` independently reports whether the PTY is active. Use it alongside
   // the detail poll so a transient/stale sessionInfo response cannot hide Stop.
-  const isWorking = state === 'working…' || srvState === 'busy' || !!here?.active || terminalActivity?.kind === 'foreground-shell';
+  const isWorking = state === 'working…' || srvState === 'busy' || !!here?.active;
   const isReady = state === 'ready' || srvState === 'response_ready';
+  // Spoken replies depend on this page staying foregrounded long enough to receive
+  // the completion and start audio. Cover normal terminal/chat sends as well as the
+  // hands-free overlay; previously only VoiceView held a wake lock.
+  useWakeLock(keepAwakeEnabled() && speak && isWorking);
   const stateCls = 'sv-state' + (isWorking ? ' busy' : promptPending ? ' waiting' : isReady ? ' ready' : '');
-  // Grok shares the command/chat/voice pipeline as Claude (turn-complete hook).
-  // Codex is terminal-first for now: no chat/voice views until we add a Codex
-  // completion hook/parser.
+  // Providers with a completion contract share the command/chat/voice pipeline.
   const viewOptions = hasChat ? VIEWS : VIEWS.filter((v) => v.id === 'terminal');
 
   return (
@@ -419,11 +544,11 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
           <span className="sv-title-txt">{title}</span>
           <span className="sv-caret">⌄</span>
         </button>
-        {session.capabilities?.models && (
+        {modelsSupported && (
           <button
             className="sv-model-pill"
             onClick={() => { setShowMenu(false); setShowModels(true); }}
-            disabled={!session.alive || switchingModel}
+            disabled={!sessionAlive || switchingModel}
             title={`Current model: ${model}. Tap to change.`}
             aria-haspopup="dialog"
           >
@@ -471,6 +596,32 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
                 <span className="sv-menu-label">Notifications</span>
                 <span className={'sv-menu-state' + (!muted ? ' on' : '')}>{muted ? 'Off' : 'On'}</span>
               </button>
+              {preview?.state === 'ready' && preview.tailscaleUrl ? (
+                <a
+                  className="sv-menu-item sv-menu-link"
+                  role="menuitem"
+                  href={preview.tailscaleUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setShowMenu(false)}
+                >
+                  <span className="sv-menu-ico">↗</span>
+                  <span className="sv-menu-label">Open hosted app</span>
+                  <span className="sv-menu-state on">Ready</span>
+                </a>
+              ) : (
+                <button
+                  className="sv-menu-item"
+                  role="menuitem"
+                  onClick={startPreview}
+                  disabled={previewStarting || preview?.state === 'starting'}
+                  title={preview?.error || ''}
+                >
+                  <span className="sv-menu-ico">{preview?.state === 'error' ? '↻' : '▷'}</span>
+                  <span className="sv-menu-label">{preview?.state === 'error' ? 'Retry hosted app' : 'Start hosted app'}</span>
+                  <span className="sv-menu-state">{previewStarting || preview?.state === 'starting' ? 'Starting…' : ''}</span>
+                </button>
+              )}
               <div className="sv-menu-sep" />
               <button className="sv-menu-item" role="menuitem" onClick={endSession}>
                 <span className="sv-menu-ico">🛑</span>
@@ -509,33 +660,26 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         </div>
       )}
 
-      {/* Another session wants you — it finished, errored, or is sitting on a question.
-          Tapping opens the switcher so you can go straight to it. */}
-      {alerts.length > 0 && (
-        <button className="sv-alert" onClick={() => setShowSwitch(true)}>
-          <span className={'sv-alert-dot cc-att-' + alerts[0].attention} />
-          <span className="sv-alert-txt">
-            {alerts.length === 1
-              ? `${alerts[0].name} — ${ATTENTION_SHORT[alerts[0].attention].toLowerCase()}`
-              : `${alerts.length} other sessions want you`}
-          </span>
-          <span className="sv-alert-go">Switch ›</span>
-        </button>
-      )}
-
-      {terminalActivity && !promptPending && (
-        <div className={'sv-terminal-activity ' + terminalActivity.kind} role="alert">
-          <div className="sv-terminal-activity-copy">
-            <strong>{terminalActivity.title}</strong>
-            <span>{terminalActivity.detail}</span>
-          </div>
-          <div className="sv-terminal-activity-actions">
-            {terminalActivity.canBackground && (
-              <button type="button" onClick={() => handleTerminalActivity('background')}>Run in background</button>
+      {/* Another session wants you. The banner opens that session directly; a
+          binary permission can be answered in place, and every alert is dismissible. */}
+      {activeAlert && (
+        <div className="sv-alert" role="alert">
+          <button className="sv-alert-main" onClick={openAlertSession}>
+            <span className={'sv-alert-dot cc-att-' + activeAlert.attention} />
+            <span className="sv-alert-txt">
+              {activeAlert.name} — {ATTENTION_SHORT[activeAlert.attention].toLowerCase()}
+              {alerts.length > 1 ? ` · +${alerts.length - 1} more` : ''}
+            </span>
+            <span className="sv-alert-go">Open ›</span>
+          </button>
+          <div className="sv-alert-actions">
+            {alertYes && alertNo && (
+              <>
+                <button type="button" className="answer" onClick={(e) => answerAlert(e, alertYes)}>Yes</button>
+                <button type="button" className="answer" onClick={(e) => answerAlert(e, alertNo)}>No</button>
+              </>
             )}
-            {terminalActivity.canStop && (
-              <button type="button" className="danger" onClick={() => handleTerminalActivity('stop')}>Stop</button>
-            )}
+            <button type="button" className="dismiss" onClick={dismissAlert}>Dismiss</button>
           </div>
         </div>
       )}
@@ -565,7 +709,12 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       )}
 
       {hasChat && mode === 'chat' ? (
-        <ChatView session={session} notify={notify} />
+        <ChatView
+          session={session}
+          notify={notify}
+          speakerOn={speak}
+          onToggleSpeaker={toggleSpeakerFromComposer}
+        />
       ) : (
         <>
           <Terminal
@@ -583,6 +732,8 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
               onSubmit={sendText}
               lastAssistantText={lastReply}
               notify={notify}
+              speakerOn={speak}
+              onToggleSpeaker={toggleSpeakerFromComposer}
               // Busy = a turn this phone sent (instant) OR one the server reports from
               // any other driver (terminal / remote control). `session.state` alone is
               // a snapshot from when the view opened and never flips, so relying on it

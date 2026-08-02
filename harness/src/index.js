@@ -20,6 +20,7 @@ import { startReconciler, stopReconciler } from './services/sessionManager.js';
 import { startNotifier } from './services/notify.js';
 import { startIndexer } from './services/archiveIndex.js';
 import { startHubPresence } from './services/hubPresence.js';
+import { startPreviewManager, stopAllPreviews } from './services/previewManager.js';
 import * as terminal from './services/terminal.js';
 import { makeLogger } from './util/logger.js';
 import { startWatchdog } from './util/watchdog.js';
@@ -43,6 +44,8 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   try { log.error(`unhandledRejection: ${reason?.stack || reason}`); } catch { /* ignore */ }
 });
+
+await startPreviewManager().catch((err) => log.warn(`preview startup cleanup failed: ${err.message}`));
 
 const app = buildApp();
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -84,11 +87,12 @@ if (getConfig('tailscale_serve', 'on') !== 'off') {
 }
 
 let shuttingDown = false;
-function shutdown(signal) {
+async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info(`shutting down (${signal})`);
   stopReconciler();
+  await stopAllPreviews().catch((err) => log.warn(`preview shutdown failed: ${err.message}`));
   terminal.killAll();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();

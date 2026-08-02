@@ -53,6 +53,7 @@ sessionEvents.on('state', ({ id, state }) => {
   prevState.set(id, state);
   if (state === 'busy') {
     lastKind.delete(id); // a new turn started — arm the next notification
+    clearAttention(id); // the previous turn's sticky badge is no longer current
     return;
   }
   if (state === 'awaiting_input') fire(id, 'input');

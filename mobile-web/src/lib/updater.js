@@ -23,13 +23,18 @@ const loaded = (() => {
 let reloading = false;
 
 // Never yank the page out from under a half-typed message — retry on the next tick.
-function midSentence() {
+function unsafeToReload() {
+  // Never reload an active terminal just because a new frontend build appeared.
+  // Apart from interrupting the user, this tears down both terminal sockets and
+  // makes the app look as if it is repeatedly losing its connection. The latest
+  // build is picked up after returning Home or on the next app launch.
+  if (document.hidden || new URLSearchParams(location.search).has('s') || document.querySelector('.session-view')) return true;
   const ta = document.querySelector('.composer-input');
   return !!ta && (ta.value.trim() !== '' || document.activeElement === ta);
 }
 
 async function check() {
-  if (reloading || !loaded || midSentence()) return;
+  if (reloading || !loaded || unsafeToReload()) return;
   try {
     const { build } = await jget('/api/health');
     if (build && build !== loaded) {
@@ -50,6 +55,10 @@ export function startUpdater() {
     if (!document.hidden) check();
   });
   window.addEventListener('focus', check);
+  // Leaving a session via Back removes ?s from the URL. Apply any pending build
+  // immediately on Home instead of making the user wait for the minute poll (or
+  // reopen the session with the old UI still in memory).
+  window.addEventListener('popstate', () => setTimeout(check, 0));
   setInterval(check, 60_000);
   check();
 }

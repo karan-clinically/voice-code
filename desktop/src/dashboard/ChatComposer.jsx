@@ -171,6 +171,21 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
     }
   }
 
+  async function pasteImage(e) {
+    const hasImage = Array.from(e.clipboardData?.items || [])
+      .some((item) => item.kind === 'file' && item.type?.startsWith('image/'))
+      || Array.from(e.clipboardData?.files || []).some((file) => file.type?.startsWith('image/'));
+    if (!hasImage) return; // let the textarea perform an ordinary text paste
+    e.preventDefault();
+    try {
+      const path = (await window.cvh?.clipboardImagePath?.()) || null;
+      if (!path) throw new Error('The clipboard image could not be read');
+      insert(/\s/.test(path) ? `"${path}" ` : `${path} `);
+    } catch (err) {
+      notify?.('Image paste failed: ' + err.message);
+    }
+  }
+
   async function stop() {
     try {
       await sessionKey(session.id, 'stop');
@@ -194,6 +209,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
         rows={1}
         placeholder="Message this session…"
         value={text}
+        onPaste={pasteImage}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {

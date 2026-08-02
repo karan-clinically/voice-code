@@ -69,12 +69,10 @@ function deriveName(cwd, id) {
 // `remoteControlAtStartup` is silently ignored. Strip ONLY those markers so each
 // session boots as a proper top-level session (and auto-connects RC).
 //
-// This is an explicit denylist, NOT a `CLAUDE_CODE_*` prefix sweep, on purpose: that
-// sweep also deleted CLAUDE_CODE_OAUTH_TOKEN — the long-lived `claude setup-token`
-// token — forcing every session back onto the shared, rotating ~/.claude/.credentials
-// file, whose single-use refresh token races across concurrent sessions and logs them
-// out. Auth and user config (…_OAUTH_TOKEN, …_USE_BEDROCK/VERTEX, CLAUDE_PATH,
-// CLAUDE_EFFORT, ANTHROPIC_*) must pass through untouched.
+// This is an explicit denylist, NOT a `CLAUDE_CODE_*` prefix sweep, so unrelated user
+// configuration survives. Provider-specific credential filtering is supplied through
+// removeEnv. In particular, Claude sessions remove inference-only environment tokens
+// so the CLI-managed full-scope login can support Remote Control.
 const SESSION_MARKERS = new Set([
   'CLAUDECODE',
   'CLAUDE_CODE_SESSION_ID',
@@ -237,6 +235,23 @@ function rgbHex(n) {
 function esc(s) {
   return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
 }
+const URL_RE = /https?:\/\/[^\s<>"']+/gi;
+const URL_TRAILING_PUNCTUATION_RE = /[.,;:!?\]\)}]+$/;
+function linkify(text) {
+  let html = '';
+  let offset = 0;
+  for (const match of text.matchAll(URL_RE)) {
+    const raw = match[0];
+    const trailing = raw.match(URL_TRAILING_PUNCTUATION_RE)?.[0] || '';
+    const url = trailing ? raw.slice(0, -trailing.length) : raw;
+    if (!url) continue;
+    html += esc(text.slice(offset, match.index));
+    const href = esc(url).replace(/"/g, '&quot;');
+    html += `<a class="terminal-link" href="${href}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(trailing)}`;
+    offset = match.index + raw.length;
+  }
+  return html + esc(text.slice(offset));
+}
 function cellKey(cell) {
   let fg = null;
   let bg = null;
@@ -252,12 +267,12 @@ function cellKey(cell) {
 }
 function spanFor(key, text) {
   const [fg, bg, bold] = key.split('|');
-  if (!fg && !bg && bold !== '1') return esc(text);
+  if (!fg && !bg && bold !== '1') return linkify(text);
   let style = '';
   if (fg) style += `color:${fg};`;
   if (bg) style += `background:${bg};`;
   if (bold === '1') style += 'font-weight:700;';
-  return `<span style="${style}">${esc(text)}</span>`;
+  return `<span style="${style}">${linkify(text)}</span>`;
 }
 
 // Render the buffer as colored HTML (one <span> run per style change per line),

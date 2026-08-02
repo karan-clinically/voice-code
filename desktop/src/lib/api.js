@@ -122,12 +122,16 @@ export async function previewVoiceUrl(voiceId, provider) {
 // --- sessions / command ---
 export const listSessions = () => apiGet('/api/sessions');
 export const listProviders = () => apiGet('/api/providers');
+export const saveCustomProvider = (definition) => apiPost('/api/providers', definition);
+export const deleteCustomProvider = (id) => apiDelete(`/api/providers/${encodeURIComponent(id)}`);
 export const saveProviderCredential = (id, value) =>
   apiPost(`/api/providers/${encodeURIComponent(id)}/credential`, { value });
 // kind: 'claude' | 'grok' | 'codex' | 'shell' — defaults to claude on the server.
 export const createSession = (cwd, label, providerId = 'claude') =>
   apiPost('/api/sessions', { cwd, label, providerId, forceNew: true });
 export const killSession = (id) => apiPost(`/api/sessions/${id}/kill`, {});
+export const startSessionPreview = (id) => apiPost(`/api/sessions/${id}/preview/start`, {});
+export const stopSessionPreview = (id) => apiPost(`/api/sessions/${id}/preview/stop`, {});
 export const renameSession = (id, label) => apiPost(`/api/sessions/${id}/rename`, { label });
 export const setSessionColor = (id, color) => apiPost(`/api/sessions/${id}/color`, { color });
 export const sendCommand = (sessionId, text) => apiPost('/api/command', { sessionId, text });

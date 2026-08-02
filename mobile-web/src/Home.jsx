@@ -7,6 +7,7 @@ import { MicButton, FolderPicker, basename } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
 import { readSessionCards, writeSessionCards } from './lib/localCache.js';
+import { listenForResume } from './lib/resume.js';
 
 // Where a session was started, as a short text tag. RC = remote control (a terminal
 // Claude reachable via claude.ai); "Local" (set below, off it.local) is the same kind
@@ -179,6 +180,7 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
   const [sessions, setSessions] = useState(readSessionCards);
   const [sessionLoad, setSessionLoad] = useState('loading'); // loading | ready | retrying
   const [providers, setProviders] = useState([]);
+  const [newProviderId, setNewProviderId] = useState('claude');
   const [picking, setPicking] = useState(false);
   const [starting, setStarting] = useState(false);
   const [openingKey, setOpeningKey] = useState(null);
@@ -199,8 +201,8 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
   useEffect(() => {
     let stop = false;
     let first = true;
-    const refresh = () => {
-      recentSessions()
+    const refresh = (force = false) => {
+      recentSessions({ force })
         .then((d) => {
           if (stop) return;
           const rows = d.sessions || [];
@@ -221,15 +223,22 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
       if (first) setSessionLoad('loading');
       refresh();
     }, 5000);
+    const stopResume = listenForResume(() => refresh(true));
     return () => {
       stop = true;
       clearInterval(t);
+      stopResume();
     };
   }, []);
 
-  useEffect(() => {
-    listProviders().then((d) => setProviders(d.providers || [])).catch(() => {});
-  }, []);
+  const refreshProviders = () => listProviders().then((d) => {
+    const next = d.providers || [];
+    setProviders(next);
+    setNewProviderId((current) => next.some((provider) => provider.id === current)
+      ? current
+      : next.find((provider) => provider.id === 'claude')?.id || next[0]?.id || 'claude');
+  });
+  useEffect(() => { refreshProviders().catch(() => {}); }, []);
 
   // Freshen the transcript archive on open so externally-run (remote-controlled)
   // sessions show up promptly — reindex is incremental, so it's cheap.
@@ -362,7 +371,7 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
       </header>
 
       {showSpend && <SpendModal onClose={() => setShowSpend(false)} />}
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} notify={notify} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} notify={notify} onProvidersChanged={() => refreshProviders().catch(() => {})} />}
 
       {renameTarget && (
         <div className="rename-backdrop" onClick={() => { if (!renaming) setRenameTarget(null); }}>
@@ -454,17 +463,24 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
               </div>
               <div className="row">
                 <button style={{ flex: 1 }} onClick={() => setPicking(true)}>📁 Browse…</button>
-                {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider, index) => (
-                  <button
-                    key={provider.id}
-                    className={index === 0 ? 'primary' : ''}
-                    style={{ flex: 1 }}
-                    onClick={() => startProvider(provider)}
-                    disabled={starting}
-                  >
-                    {starting ? 'Starting…' : `Start ${provider.name}`}
-                  </button>
-                ))}
+              </div>
+              <div className="row">
+                <select value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)} style={{ flex: 1 }} aria-label="Brain for new session">
+                  {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider) => (
+                    <option key={provider.id} value={provider.id}>{provider.name}</option>
+                  ))}
+                </select>
+                <button
+                  className="primary"
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    const choices = providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }];
+                    startProvider(choices.find((provider) => provider.id === newProviderId) || choices[0]);
+                  }}
+                  disabled={starting}
+                >
+                  {starting ? 'Starting…' : 'Start session'}
+                </button>
               </div>
             </div>
 

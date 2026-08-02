@@ -15,6 +15,7 @@ import * as sessions from './sessionManager.js';
 import { recordAssistantMessage } from './conversation.js';
 import { summarizeForSpeech } from './summarize.js';
 import { detectPrompt, promptToText } from './prompt.js';
+import { screenShowsWorking } from './activityState.js';
 import { makeLogger } from '../util/logger.js';
 import { requireAdapter } from '../agents/registry.js';
 
@@ -27,13 +28,7 @@ const MIN_ELAPSED_MS = 1500; // ignore the first moment (command echo)
 // The working spinner ("esc to interrupt"). NOT "esc to cancel" — that's the
 // footer of an interactive picker, where Claude is waiting, not working; treating
 // it as "working" would hang detection until the timeout.
-const DEFAULT_WORKING_RE = /esc to interrupt|thinking…|working…/i;
-
-function matchesAny(text, patterns = []) {
-  return patterns.some((pattern) => {
-    try { return new RegExp(pattern, 'im').test(text); } catch { return false; }
-  });
-}
+const DEFAULT_BUSY_PATTERNS = ['esc to interrupt', 'thinking…', 'working…'];
 
 // dbId -> pending completion entry
 const pending = new Map();
@@ -116,13 +111,14 @@ function waitForCompletion(session, ptyId, sentAt, timeoutMs) {
       } catch {
         /* transient */
       }
-      const busy = completion.busyPatterns?.length
-        ? matchesAny(screen, completion.busyPatterns)
-        : DEFAULT_WORKING_RE.test(screen);
+      const busy = screenShowsWorking(
+        screen,
+        completion.busyPatterns?.length ? completion.busyPatterns : DEFAULT_BUSY_PATTERNS
+      );
       if (busy) return;
       if (completion.idlePatterns?.length) {
         const lastLine = [...screen.split('\n')].reverse().find((l) => l.trim()) || '';
-        if (!matchesAny(lastLine, completion.idlePatterns)) return;
+        if (!screenShowsWorking(lastLine, completion.idlePatterns)) return;
       }
       finish({ via: 'stabilization' });
     }, POLL_MS);
@@ -151,12 +147,47 @@ function waitForCompletion(session, ptyId, sentAt, timeoutMs) {
 // transcript UUID. The native Grok agent posts only the token (as its id), so a
 // `sessionId` that resolves to a known token is Grok's and is never stored as a
 // Claude UUID.
-export function signalStop({ sessionId, token = null, cwd, lastAssistantMessage, stopReason, transcriptPath }) {
+export function signalStop({ sessionId, token = null, cwd, lastAssistantMessage, stopReason, transcriptPath, retryCount = 0 }) {
   // `token` is our CVH_SESSION_ID, forwarded by the Stop hook as a header. It is an
   // EXACT per-PTY link and the only thing that can tell two Claude sessions sharing
   // one folder apart — cwd matching silently binds every hook to the newest row.
   // Falls back to cwd for a Claude the harness didn't spawn (no token).
   const rowId = () => findSessionForBroadcast(token, cwd);
+
+  // A child-agent Stop can inherit the parent PTY's correlation token. If the
+  // parent terminal still shows an active spinner, this is not completion of the
+  // session the user is watching. Keep it busy and let the real parent Stop (or
+  // stabilization fallback) complete the turn later.
+  const candidateId = rowId();
+  if (candidateId != null) {
+    const candidate = sessions.getSession(candidateId);
+    const ptyId = sessions.getPtyId(candidateId);
+    const completion = requireAdapter(candidate?.provider_id || candidate?.kind).completion || {};
+    try {
+      const screen = ptyId ? terminal.captureScreen(ptyId, { full: false }) : '';
+      if (screenShowsWorking(screen, completion.busyPatterns || DEFAULT_BUSY_PATTERNS)) {
+        sessions.markState(candidateId, 'busy');
+        log.debug(`stop hook deferred for db#${candidateId}: terminal still working`);
+        // A real parent Stop can arrive a fraction before xterm consumes the final
+        // redraw. Retry briefly so that render lag does not leave a completed turn
+        // stuck as busy; child-agent Stops remain ignored while the parent works.
+        if (retryCount < 12) {
+          setTimeout(() => signalStop({
+            sessionId,
+            token,
+            cwd,
+            lastAssistantMessage,
+            stopReason,
+            transcriptPath,
+            retryCount: retryCount + 1,
+          }), 250);
+        }
+        return false;
+      }
+    } catch {
+      /* screen reconciliation is best-effort; retain the hook fallback */
+    }
+  }
 
   // Claude's transcript UUID rotates (a --resume or /compact starts a new one), so
   // re-read it every turn rather than trusting the value from spawn time. A stale
@@ -256,8 +287,55 @@ async function extractResponse(session, ptyId, signal, sentText) {
   // Fallback: scrape the rendered screen. If answering a picker just returned to a
   // bare screen (e.g. /model closing), the scrape catches the boot banner — don't
   // record or speak that.
-  const scraped = scrapeResponse(screen, sentText);
+  const scraped = adapter.id === 'codex'
+    ? scrapeCodexResponse(screen, sentText)
+    : scrapeResponse(screen, sentText);
   return { text: looksLikeBanner(scraped) ? '' : scraped };
+}
+
+// Codex's TUI redraws the submitted prompt and its reply into the same screen.
+// The generic Claude scraper can therefore fall back to the whole screen when a
+// long/wrapped prompt is no longer present verbatim, making TTS read the user's
+// own prompt. Anchor on Codex's assistant bullet and stop at the next input row.
+export function scrapeCodexResponse(screen, sentText = '') {
+  const lines = String(screen || '').split('\n');
+  const prompt = String(sentText || '').trim().replace(/\s+/g, ' ');
+  let end = lines.length;
+
+  // Ignore the empty composer/footer at the bottom of an idle Codex screen.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*[›>]\s*(?:$|[?/]\s*for\s+shortcuts)/i.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+
+  // The final assistant block is the last bullet before the idle composer. Tool
+  // progress may use earlier bullets; selecting the last one gives the final
+  // user-facing summary instead of traces or the echoed request.
+  let start = -1;
+  for (let i = end - 1; i >= 0; i--) {
+    if (/^\s*[•●]\s?/.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+
+  let body = start >= 0 ? lines.slice(start, end) : [];
+  body = body
+    .map((line) => line.replace(/^\s*[•●]\s?/, '').replace(/^\s*[│┃]\s?/, ''))
+    .filter((line) => {
+      const plain = line.trim().replace(/\s+/g, ' ');
+      if (!plain) return true;
+      if (prompt && (plain === prompt || plain === `› ${prompt}` || plain === `> ${prompt}`)) return false;
+      return !isChrome(line) && !/tokens? used|context left|esc to interrupt|working/i.test(plain);
+    });
+  const result = body.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  // Never return the submitted text as an assistant reply. An empty result is
+  // preferable to synthesizing the wrong speaker; the terminal remains visible.
+  if (prompt && result.replace(/\s+/g, ' ') === prompt) return '';
+  return result;
 }
 
 // The Claude Code welcome/boot banner (drawn at the top of a fresh screen), not a

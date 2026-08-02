@@ -190,6 +190,30 @@ Then in the app: **+ New session** → pick a project folder → Claude Code lau
 command and hear the spoken summary. `tts_playback_target` (`desktop` | `phone` | `both`) controls
 where audio plays.
 
+### Automatic project previews
+
+In **Settings → Projects**, choose a default project folder and leave automatic previews enabled.
+New sessions open that folder immediately. If it contains a Vite/Next app, an npm `dev`/`start`
+script, or a static `index.html`, the harness starts it on localhost and gives it a private
+Tailscale Serve HTTPS URL. The desktop toolbar's **Open app** button launches the local URL; on the
+phone, **⋯ → Open hosted app** opens the Tailscale URL in a new browser tab.
+
+For projects that need an explicit command, add `.voice-harness.json` at the project root:
+
+```json
+{
+  "preview": {
+    "command": "npm",
+    "args": ["run", "dev", "--", "--port", "{port}"],
+    "readyPath": "/"
+  }
+}
+```
+
+`{port}` and `{cwd}` are substituted without invoking a shell. Preview processes are shared by
+parallel sessions in the same folder. Preview URLs use private Tailscale Serve rather than public
+Funnel.
+
 ---
 
 ## Testing the voice pipeline without a phone (plan §8)
@@ -457,6 +481,7 @@ Startup folder. Alternatively, launch the desktop app (it manages the harness in
 | `/api/sessions/:id/history` | GET | interactions |
 | `/api/sessions/:id/screen` | GET | rendered terminal (`?full=1&color=1` for colored HTML; `full` returns up to ~4000 lines of scrollback) |
 | `/api/sessions/:id/mute` | POST | silence phone push for one session `{muted}` (badge still shows; persisted) |
+| `/api/sessions/:id/preview` · `/preview/start` · `/preview/stop` | GET · POST · POST | inspect, start, or stop the project app preview and its private Tailscale URL |
 | `/api/sessions/:id/input` | POST | raw shell input `{text}` |
 | `/api/sessions/:id/launch-claude` | POST | run `claude` in a shell session |
 | `/api/sessions/:id/messages` | GET | Chat-view conversation log — prefers the live on-disk transcript (whole conversation, `full:true`); else the harness table (`?after=<id>` incremental) |

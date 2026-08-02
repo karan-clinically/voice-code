@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { SttModeToggle, SummariseToggle, ElevenVoicePicker, ThemePicker, KeepAwakeToggle } from './components.jsx';
 import { pushSupported, notificationsOn, enableNotifications, disableNotifications } from './lib/push.js';
 import { apiKeyState, saveApiKeys, pushTest } from './lib/api.js';
+import BrainSettings from './BrainSettings.jsx';
 
 // Voice settings, behind the header ☰ menu. Dictation mode + which ElevenLabs
 // voice reads replies. Changes are shared harness-side, so they follow you to the
 // PC too. Notifications is per-device (a push subscription for this phone).
-export default function SettingsModal({ onClose, notify }) {
+export default function SettingsModal({ onClose, notify, onProvidersChanged }) {
   return (
     <div className="pm-sheet">
       <div className="pm-sheet-head">
@@ -20,6 +21,13 @@ export default function SettingsModal({ onClose, notify }) {
             Skin the app after a sci-fi film. Tap one to switch instantly — it sticks on this device.
           </div>
           <ThemePicker />
+        </div>
+        <div className="set-item">
+          <strong>Brains</strong>
+          <div className="muted">
+            Coding agents and their credentials. Add API-backed brains or installed CLIs with OAuth login. The xAI key for Grok belongs here.
+          </div>
+          <BrainSettings notify={notify} onChanged={onProvidersChanged} />
         </div>
         <div className="set-item">
           <strong>Dictation</strong>
@@ -38,10 +46,10 @@ export default function SettingsModal({ onClose, notify }) {
           <SummariseToggle notify={notify} />
         </div>
         <div className="set-item">
-          <strong>API keys</strong>
+          <strong>Speech & rewrite services</strong>
           <div className="muted">
-            Stored in the same local Voice Harness config as the desktop setup wizard. Saved keys are never shown;
-            leave a field blank to keep its existing value.
+            These keys do not add coding brains. They power dictation, spoken replies, and optional text cleanup.
+            Saved values are never shown; leave a field blank to keep it.
           </div>
           <ApiKeysSetting notify={notify} />
         </div>
@@ -53,8 +61,8 @@ export default function SettingsModal({ onClose, notify }) {
         <div className="set-item">
           <strong>Keep screen awake</strong>
           <div className="muted">
-            Hold the screen on during a hands-free voice session so the spoken reply plays instead of the phone
-            sleeping mid-turn. Only while hands-free is running; releases when you stop or leave.
+            Hold the screen on while a coding turn is running with Speak replies enabled, and throughout a
+            hands-free voice session. This lets the completion arrive and play before the phone sleeps.
           </div>
           <KeepAwakeToggle />
         </div>
@@ -72,7 +80,6 @@ export default function SettingsModal({ onClose, notify }) {
 
 function ApiKeysSetting({ notify }) {
   const [state, setState] = useState({});
-  const [xai, setXai] = useState('');
   const [eleven, setEleven] = useState('');
   const [deepgram, setDeepgram] = useState('');
   const [openai, setOpenai] = useState('');
@@ -88,18 +95,15 @@ function ApiKeysSetting({ notify }) {
     setMsg('');
     try {
       const next = await saveApiKeys({
-        xai_api_key: xai,
         elevenlabs_api_key: eleven,
         deepgram_api_key: deepgram,
         openai_api_key: openai,
       });
       setState(next);
-      setXai('');
       setEleven('');
       setDeepgram('');
       setOpenai('');
       const names = (next.saved || []).map((k) => ({
-        xai_api_key: 'xAI/Grok',
         elevenlabs_api_key: 'ElevenLabs',
         deepgram_api_key: 'Deepgram',
         openai_api_key: 'OpenAI',
@@ -114,42 +118,48 @@ function ApiKeysSetting({ notify }) {
   const placeholder = (has, example) => (has ? '•••• saved — blank keeps existing' : example);
   return (
     <div className="stack" style={{ gap: 8 }}>
-      <input
-        type="password"
-        autoComplete="off"
-        placeholder={placeholder(state.hasXai, 'xAI/Grok key: xai-…')}
-        value={xai}
-        onChange={(e) => setXai(e.target.value)}
-      />
-      <input
-        type="password"
-        autoComplete="off"
-        placeholder={placeholder(state.hasElevenLabs, 'ElevenLabs key')}
-        value={eleven}
-        onChange={(e) => setEleven(e.target.value)}
-      />
-      <input
-        type="password"
-        autoComplete="off"
-        placeholder={placeholder(state.hasDeepgram, 'Deepgram key')}
+      <ServiceKeyField
+        name="Deepgram"
+        endpoint="api.deepgram.com"
+        purpose="Live/batch dictation and Aura-2 spoken replies."
+        placeholder={placeholder(state.hasDeepgram, 'Deepgram API key')}
         value={deepgram}
-        onChange={(e) => setDeepgram(e.target.value)}
+        onChange={setDeepgram}
       />
-      <input
-        type="password"
-        autoComplete="off"
-        placeholder={placeholder(state.hasOpenAI, 'OpenAI key: sk-… optional cleanup')}
+      <ServiceKeyField
+        name="ElevenLabs"
+        endpoint="api.elevenlabs.io"
+        purpose="Optional speech recognition and spoken-reply voices."
+        placeholder={placeholder(state.hasElevenLabs, 'ElevenLabs API key')}
+        value={eleven}
+        onChange={setEleven}
+      />
+      <ServiceKeyField
+        name="OpenAI"
+        endpoint="api.openai.com/v1/chat/completions"
+        purpose="Optional dictation cleanup and summaries for long spoken replies—not your Codex login."
+        placeholder={placeholder(state.hasOpenAI, 'OpenAI API key: sk-…')}
         value={openai}
-        onChange={(e) => setOpenai(e.target.value)}
+        onChange={setOpenai}
       />
       <div className="row" style={{ alignItems: 'center' }}>
-        <button type="button" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save API keys'}</button>
+        <button type="button" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save service keys'}</button>
         <span className="muted">
-          Grok {state.hasXai ? '✓' : '—'} · ElevenLabs {state.hasElevenLabs ? '✓' : '—'} · Deepgram {state.hasDeepgram ? '✓' : '—'}
+          Deepgram {state.hasDeepgram ? '✓' : '—'} · ElevenLabs {state.hasElevenLabs ? '✓' : '—'} · OpenAI {state.hasOpenAI ? '✓' : '—'}
         </span>
       </div>
       {msg && <div className="muted">{msg}</div>}
     </div>
+  );
+}
+
+function ServiceKeyField({ name, endpoint, purpose, placeholder, value, onChange }) {
+  return (
+    <label className="service-key-field">
+      <span className="service-key-title">{name} <code>{endpoint}</code></span>
+      <span className="muted">{purpose}</span>
+      <input type="password" autoComplete="off" placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />
+    </label>
   );
 }
 

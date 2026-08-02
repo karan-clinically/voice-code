@@ -15,6 +15,12 @@ import { makeLogger } from '../../util/logger.js';
 
 const log = makeLogger('command');
 const router = Router();
+// A phone can briefly retain/replay an outstanding POST across a network handoff
+// or page lifecycle transition. executeCommand tracks one completion per session,
+// so allowing the replay through would type the prompt twice and replace the first
+// completion waiter. Coalesce an identical in-flight command; reject a genuinely
+// different overlapping command until the current turn has settled.
+const inFlight = new Map(); // session id -> { text, promise }
 
 router.post('/', async (req, res) => {
   try {
@@ -29,17 +35,35 @@ router.post('/', async (req, res) => {
     const sent = (req.body.text || '').trim();
     if (!sent) return res.status(400).json({ error: 'text is required' });
 
-    recordUserInteraction(session.id, sent);
-    recordUserMessage(session.id, sent); // Chat-view conversation log
-
     // Hands-free voice passes a short timeout so a turn that never signals
     // completion fails fast and the loop recovers, instead of the caller waiting
     // out the 10-minute default in dead silence. Clamped to a sane range.
     const raw = Number(req.body.timeoutMs);
     const timeoutMs = Number.isFinite(raw) ? Math.min(Math.max(raw, 10_000), 10 * 60_000) : undefined;
 
-    const result = await executeCommand(session, sent, timeoutMs ? { timeoutMs } : undefined);
-    const payload = await buildReplyResponse(session, result, { desktopPlayback: req.body.desktopPlayback !== false });
+    const current = inFlight.get(session.id);
+    if (current) {
+      if (current.text !== sent) {
+        return res.status(409).json({ error: 'This session is still processing the previous command' });
+      }
+      log.warn(`coalescing duplicate command for session ${session.id}`);
+      return res.json({ transcript: sent, ...await current.promise });
+    }
+
+    const command = (async () => {
+      recordUserInteraction(session.id, sent);
+      recordUserMessage(session.id, sent); // Chat-view conversation log
+      const result = await executeCommand(session, sent, timeoutMs ? { timeoutMs } : undefined);
+      return buildReplyResponse(session, result, { desktopPlayback: req.body.desktopPlayback !== false });
+    })();
+    inFlight.set(session.id, { text: sent, promise: command });
+
+    let payload;
+    try {
+      payload = await command;
+    } finally {
+      if (inFlight.get(session.id)?.promise === command) inFlight.delete(session.id);
+    }
     res.json({ transcript: sent, ...payload });
   } catch (err) {
     log.error(`command error: ${err.message}`);

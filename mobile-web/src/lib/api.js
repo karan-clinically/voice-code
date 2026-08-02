@@ -65,6 +65,9 @@ export const termWsUrl = (id) =>
 
 export const listSessions = () => jget('/api/sessions', { timeoutMs: 8000 });
 export const listProviders = () => jget('/api/providers');
+export const saveCustomProvider = (definition) => jpost('/api/providers', definition);
+export const deleteCustomProvider = (id) => jdelete(`/api/providers/${encodeURIComponent(id)}`);
+export const saveProviderCredential = (id, value) => jpost(`/api/providers/${encodeURIComponent(id)}/credential`, { value });
 // Recent sessions for the Sessions tab: { harness: [...], remote: [...] } — the
 // harness-spawned ones (live + recently ended) and external Claude sessions
 // started in another terminal (driven from claude.ai remote control).
@@ -73,17 +76,30 @@ export const listProviders = () => jget('/api/providers');
 let recentValue = null;
 let recentAt = 0;
 let recentPending = null;
-export const recentSessions = () => {
-  if (recentValue && Date.now() - recentAt < 1500) return Promise.resolve(recentValue);
-  if (recentPending) return recentPending;
-  recentPending = jget('/api/sessions/recent', { timeoutMs: 8000 })
+let recentRequest = 0;
+let recentForceAt = 0;
+export const recentSessions = ({ force = false } = {}) => {
+  const now = Date.now();
+  if (!force && recentValue && now - recentAt < 1500) return Promise.resolve(recentValue);
+  // SessionView and an open switcher can observe the same resume event. They
+  // should share one forced request, while still bypassing a pre-suspend request.
+  if (force && recentPending && now - recentForceAt < 250) return recentPending;
+  if (recentPending && !force) return recentPending;
+  if (force) recentForceAt = now;
+  const requestId = ++recentRequest;
+  const pending = jget('/api/sessions/recent', { timeoutMs: 8000 })
     .then((value) => {
-      recentValue = value;
-      recentAt = Date.now();
-      return value;
+      // A request frozen during suspension may finish after the forced resume
+      // request. It can satisfy its own caller, but must not replace fresher cache.
+      if (requestId === recentRequest) {
+        recentValue = value;
+        recentAt = Date.now();
+      }
+      return requestId === recentRequest ? value : recentValue || value;
     })
-    .finally(() => { recentPending = null; });
-  return recentPending;
+    .finally(() => { if (recentPending === pending) recentPending = null; });
+  recentPending = pending;
+  return pending;
 };
 export const reindexArchive = () => jpost('/api/archive/reindex');
 export const createSession = (body) => jpost('/api/sessions', body);
@@ -97,11 +113,14 @@ export const resumeGrok = (id) => jpost('/api/sessions', { kind: 'grok', resumeG
 // rows — there's no process to kill, so this is the only way to clear one.
 export const deleteGrokConv = (id) => jdelete(`/api/sessions/grok/${id}`);
 export const sessionInfo = (id) => jget(`/api/sessions/${id}`, { timeoutMs: 8000 });
+export const startSessionPreview = (id) => jpost(`/api/sessions/${id}/preview/start`);
+export const stopSessionPreview = (id) => jpost(`/api/sessions/${id}/preview/stop`);
 export const setSessionModel = (id, alias) => jpost(`/api/sessions/${id}/model`, { alias });
 export const renameSession = (id, label) => jpost(`/api/sessions/${id}/rename`, { label });
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const killLocal = (pid) => jpost('/api/sessions/kill-local', { pid });
 export const muteSession = (id, muted) => jpost(`/api/sessions/${id}/mute`, { muted });
+export const dismissSessionAttention = (id) => jpost(`/api/sessions/${id}/attention/dismiss`);
 export const sessionScreen = (id, { before = null, lines = 400 } = {}) => {
   const qs = new URLSearchParams({ full: '1', color: '1', plain: '0', lines: String(lines) });
   if (before != null) qs.set('before', String(before));
@@ -185,7 +204,8 @@ export const sessionKeySeq = (id, seq) => jpost(`/api/sessions/${id}/key`, { seq
 // --- interactive picker (question + numbered options Claude is waiting on) ---
 export const sessionPrompt = (id) => jget(`/api/sessions/${id}/prompt`, { timeoutMs: 8000 });
 // Answer option `index`; resolves with Claude's follow-up reply ({responseText, audioUrl, prompt}).
-export const selectPromptOption = (id, index) => jpost(`/api/sessions/${id}/select`, { index, desktopPlayback: false });
+export const selectPromptOption = (id, index, { wait = true } = {}) =>
+  jpost(`/api/sessions/${id}/select`, { index, wait, desktopPlayback: false });
 // XMLHttpRequest is intentional here: fetch still exposes no upload-byte progress
 // in browsers, while xhr.upload reports it reliably on mobile Safari and Chrome.
 export const attachFile = (id, file, onProgress) => new Promise((resolve, reject) => {
