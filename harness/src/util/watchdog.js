@@ -12,6 +12,7 @@
 
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
+import { crashLog } from './crashLog.js';
 
 const BEAT_MS = 5_000;
 const STALE_MS = 90_000; // ~18 missed beats — nothing legitimate blocks that long
@@ -26,6 +27,9 @@ if (!isMainThread && workerData?.role === 'cvh-watchdog') {
       // console goes to harness.out.log via the supervisor redirect; the SQLite
       // logger lives on the (blocked) main thread and can't be used from here.
       console.error(`[watchdog] main event loop unresponsive for ${Math.round(stale / 1000)}s — killing process for supervisor restart`);
+      // Also stamp crash.log synchronously — the console line rides stdio that
+      // dies with the process and has been lost before.
+      crashLog('watchdog-kill', `event loop unresponsive for ${Math.round(stale / 1000)}s`);
       // NOT process.exit(): inside a worker that stops only THIS thread — the wedged
       // main thread would keep the process alive, which is the exact failure we're
       // here to end. SIGKILL goes through the OS (TerminateProcess) and needs no

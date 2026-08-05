@@ -13,7 +13,7 @@
 import { existsSync } from 'node:fs';
 import { Router } from 'express';
 import {
-  searchArchive, getArchivePrompts, getArchiveMeta, listProjects, reindex,
+  searchArchive, getArchivePrompts, getArchiveMeta, listProjects, reindex, resolveResumeCwd,
 } from '../../services/archiveIndex.js';
 import {
   createSession, getSession, latestSessionByClaudeId, listSessions,
@@ -69,9 +69,14 @@ router.get('/:uuid', async (req, res) => {
 router.post('/:uuid/resume', async (req, res) => {
   const meta = getArchiveMeta(req.params.uuid);
   if (!meta) return res.status(404).json({ error: 'session not found in archive' });
-  if (!meta.cwd) return res.status(422).json({ error: 'archived session has no recorded working directory' });
-  if (!existsSync(meta.cwd)) {
-    return res.status(409).json({ error: `original folder is gone: ${meta.cwd}` });
+  // Resolve the cwd against where the transcript actually lives — a stale
+  // archive row once pointed resumes at the wrong folder, where `claude
+  // --resume` exits 1 because the session id doesn't exist there.
+  const cwd = await resolveResumeCwd(meta.uuid);
+  if (!cwd) return res.status(422).json({ error: 'archived session has no recorded working directory' });
+  if (cwd !== meta.cwd) log.warn(`archive cwd for ${meta.uuid} healed: ${meta.cwd} -> ${cwd}`);
+  if (!existsSync(cwd)) {
+    return res.status(409).json({ error: `original folder is gone: ${cwd}` });
   }
   // Tapping the same archive row again returns the session you already resumed
   // rather than forking a second `claude --resume` on the same transcript.
@@ -98,7 +103,7 @@ router.post('/:uuid/resume', async (req, res) => {
   }
   try {
     const session = await createSession({
-      cwd: meta.cwd,
+      cwd,
       label: meta.title,
       kind: 'claude',
       resumeId: meta.uuid,

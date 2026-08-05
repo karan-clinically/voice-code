@@ -64,6 +64,14 @@ function deriveName(cwd, id) {
   return b || id;
 }
 
+// Last human-readable chunk of a session's raw output: ANSI/control sequences
+// stripped, whitespace collapsed, capped for a single log line.
+const ANSI_OR_CTRL_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(\x07|\x1b\\)|\x1b[=>()][0-9A-Za-z]?|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+function replayTail(replay, maxChars = 500) {
+  const text = String(replay).slice(-4000).replace(ANSI_OR_CTRL_RE, ' ').replace(/\s+/g, ' ').trim();
+  return text.slice(-maxChars);
+}
+
 // The harness is usually launched FROM a Claude Code session, so its environment
 // carries that parent's child-session markers. Inheriting those makes every claude we
 // spawn believe it is a NESTED child: it then never registers in ~/.claude/sessions
@@ -147,8 +155,17 @@ export function spawnSession({
   ptyProc.onExit(({ exitCode }) => {
     session.alive = false;
     session.exitCode = exitCode;
-    log.info(`session ${id} exited (code=${exitCode})`);
-    terminalEvents.emit('exit', { id, exitCode });
+    const uptimeMs = Date.now() - Date.parse(session.createdAt);
+    // A nonzero or near-instant exit means the child failed (e.g. `claude
+    // --resume` not finding the session in this cwd). The output tail is the
+    // only record of WHY — the PTY dies with this process, so log it.
+    const outputTail = exitCode !== 0 || uptimeMs < 20_000 ? replayTail(session.replay) : '';
+    if (outputTail) {
+      log.warn(`session ${id} exited (code=${exitCode}, uptime=${Math.round(uptimeMs / 1000)}s, cwd=${session.cwd}) — last output: ${outputTail}`);
+    } else {
+      log.info(`session ${id} exited (code=${exitCode})`);
+    }
+    terminalEvents.emit('exit', { id, exitCode, outputTail });
   });
 
   sessions.set(id, session);

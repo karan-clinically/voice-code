@@ -24,6 +24,8 @@ import { startPreviewManager, stopAllPreviews } from './services/previewManager.
 import * as terminal from './services/terminal.js';
 import { makeLogger } from './util/logger.js';
 import { startWatchdog } from './util/watchdog.js';
+import { crashLog } from './util/crashLog.js';
+import { startBackups } from './services/backup.js';
 
 const log = makeLogger('index');
 const PORT = Number(getConfig('port', 4620));
@@ -37,13 +39,19 @@ const PORT = Number(getConfig('port', 4620));
 // log unhandledRejection — those are typically stray async errors (a WS write racing
 // a disconnect), not corruption, and killing every live session over one is worse.
 process.on('uncaughtException', (err) => {
+  crashLog('uncaughtException', err?.stack || err); // sync write first — pino/SQLite may never flush
   try { log.error(`FATAL uncaughtException: ${err?.stack || err}`); } catch { /* logging must not mask the exit */ }
   process.exitCode = 1;
   setTimeout(() => process.exit(1), 250).unref(); // let the SQLite write flush
 });
 process.on('unhandledRejection', (reason) => {
+  crashLog('unhandledRejection', reason?.stack || reason);
   try { log.error(`unhandledRejection: ${reason?.stack || reason}`); } catch { /* ignore */ }
 });
+// Stamp EVERY exit. An exit line with no preceding uncaughtException/watchdog
+// entry means the process was ended from outside (OOM kill, TerminateProcess)
+// or something called process.exit() directly — evidence either way.
+process.on('exit', (code) => crashLog('exit', `code=${code}`));
 
 await startPreviewManager().catch((err) => log.warn(`preview startup cleanup failed: ${err.message}`));
 
@@ -60,6 +68,7 @@ server.on('error', (err) => {
 startReconciler();
 startNotifier(); // session-attention → phone push notifications
 startWatchdog(); // a wedged event loop becomes a logged exit-99 + 3s respawn, not a 30-min dead phone
+startBackups(); // daily rotating harness.db snapshots — conversations survive DB corruption
 
 // Build/refresh the session archive (scan ~/.claude/projects/*.jsonl). Runs
 // shortly after boot and periodically; incremental by file mtime so rescans are
@@ -91,6 +100,7 @@ async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info(`shutting down (${signal})`);
+  crashLog('shutdown', `signal=${signal}`);
   stopReconciler();
   await stopAllPreviews().catch((err) => log.warn(`preview shutdown failed: ${err.message}`));
   terminal.killAll();

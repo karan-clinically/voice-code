@@ -19,6 +19,21 @@ const log = makeLogger('archive');
 
 export { PROJECTS_DIR };
 
+// Claude Code names each project folder by slugifying the session's cwd: every
+// character outside [A-Za-z0-9] becomes '-' ("C:\AI\voice harness" ->
+// "C--AI-voice-harness"). The slug is lossy one-way, but slugifying a candidate
+// cwd and comparing to the folder name is an exact consistency check.
+export function slugifyCwd(cwd) {
+  return String(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+// Windows paths are case-insensitive, and the project folder keeps whatever
+// casing the session was launched with ("C--ai-library" holding lines whose
+// cwd reads "C:\AI\library"), so slug comparison must ignore case.
+export function cwdMatchesProjectDir(cwd, projectDir) {
+  return slugifyCwd(cwd).toLowerCase() === String(projectDir).toLowerCase();
+}
+
 // Cap accumulated FTS text per column so a pathologically long session can't
 // bloat the DB. Real prose rarely approaches this; search still finds long
 // sessions via their earlier content + title.
@@ -26,7 +41,7 @@ const MAX_FTS_CHARS = 400_000;
 const SNIPPET_CHARS = 220;
 
 // --- prepared statements (lazy: DB is already migrated at import time) ---
-const selMeta = db.prepare('SELECT file_mtime, file_size FROM archive_sessions WHERE uuid = ?');
+const selMeta = db.prepare('SELECT file_mtime, file_size, cwd FROM archive_sessions WHERE uuid = ?');
 const upsertSession = db.prepare(`
   INSERT INTO archive_sessions
     (uuid, file_path, project_dir, project_name, cwd, git_branch, title,
@@ -59,7 +74,7 @@ const writeOne = db.transaction((meta, prompts, responses) => {
 function parseTranscript(filePath, uuid, projectDir) {
   return new Promise((resolve, reject) => {
     const acc = {
-      cwd: null, gitBranch: null, aiTitle: null, customTitle: null, firstPrompt: null,
+      cwd: null, firstCwd: null, gitBranch: null, aiTitle: null, customTitle: null, firstPrompt: null,
       firstTs: null, lastTs: null, msgCount: 0, userCount: 0,
       skills: new Set(), mcp: new Set(),
     };
@@ -79,7 +94,15 @@ function parseTranscript(filePath, uuid, projectDir) {
         if (!acc.firstTs) acc.firstTs = o.timestamp;
         acc.lastTs = o.timestamp;
       }
-      if (o.cwd) acc.cwd = o.cwd;           // constant per session; last wins is fine
+      // cwd is NOT constant per session: a `claude --resume` run from another
+      // folder appends lines carrying ITS cwd into this same file. Trust only a
+      // cwd that slugifies to the folder the transcript actually lives in —
+      // last-wins here once poisoned the archive with a wrong folder, which made
+      // every later resume spawn where the transcript can't be found (exit 1).
+      if (o.cwd) {
+        if (!acc.firstCwd) acc.firstCwd = o.cwd;
+        if (!acc.cwd && cwdMatchesProjectDir(o.cwd, projectDir)) acc.cwd = o.cwd;
+      }
       if (o.gitBranch) acc.gitBranch = o.gitBranch;
       // The friendly name a session actually shows: a user-set custom-title wins,
       // else Claude's generated ai-title. Both appear as their own line types;
@@ -117,12 +140,13 @@ function parseTranscript(filePath, uuid, projectDir) {
       // Title: Claude's aiTitle if present, else a short lead from the first
       // prompt (kept tab-label-sized), else the uuid stub.
       const titleFallback = snippet ? snippet.slice(0, 80).trim() : uuid.slice(0, 8);
+      const cwd = acc.cwd || acc.firstCwd; // slug-consistent cwd, else best effort
       const meta = {
         uuid,
         file_path: filePath,
         project_dir: projectDir,
-        project_name: acc.cwd ? basename(acc.cwd) : projectDir,
-        cwd: acc.cwd,
+        project_name: cwd ? basename(cwd) : projectDir,
+        cwd,
         git_branch: acc.gitBranch,
         title: acc.customTitle || acc.aiTitle || titleFallback,
         first_prompt_snippet: snippet,
@@ -171,7 +195,10 @@ export async function reindex() {
         seen.add(uuid);
         const mtime = Math.floor(st.mtimeMs);
         const prev = selMeta.get(uuid);
-        if (prev && prev.file_mtime === mtime && prev.file_size === st.size) { unchanged++; continue; }
+        // A slug-inconsistent stored cwd is a row poisoned by the old last-wins
+        // extractor — reparse it even when the file itself hasn't changed.
+        const prevCwdOk = !prev?.cwd || cwdMatchesProjectDir(prev.cwd, projectDir);
+        if (prev && prev.file_mtime === mtime && prev.file_size === st.size && prevCwdOk) { unchanged++; continue; }
         try {
           const { meta, prompts, responses } = await parseTranscript(filePath, uuid, projectDir);
           meta.file_mtime = mtime;
@@ -335,6 +362,30 @@ export function listProjects() {
     SELECT project_dir AS dir, project_name AS name, COUNT(*) AS count, MAX(last_ts) AS lastTs
     FROM archive_sessions GROUP BY project_dir ORDER BY lastTs DESC
   `).all();
+}
+
+// Resume-safe working directory for an archived session. `claude --resume`
+// only finds a transcript when launched from the folder it lives under, so a
+// row whose recorded cwd doesn't slugify to its project_dir would spawn claude
+// somewhere the session doesn't exist (immediate exit 1). In that case re-scan
+// the transcript for the first line-level cwd that IS consistent with the
+// containing folder. Returns null only when the row is unknown.
+export async function resolveResumeCwd(uuid) {
+  const row = selOneArchive.get(uuid);
+  if (!row) return null;
+  if (row.cwd && cwdMatchesProjectDir(row.cwd, row.project_dir)) return row.cwd;
+  if (!row.file_path || !existsSync(row.file_path)) return row.cwd || null;
+  let first = null;
+  const rl = createInterface({ input: createReadStream(row.file_path, 'utf8'), crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line) continue;
+    let o;
+    try { o = JSON.parse(line); } catch { continue; }
+    if (!o.cwd) continue;
+    if (!first) first = o.cwd;
+    if (cwdMatchesProjectDir(o.cwd, row.project_dir)) { rl.close(); return o.cwd; }
+  }
+  return first || row.cwd || null;
 }
 
 // First N real user prompts for a detail preview (re-reads the file, cheap).
