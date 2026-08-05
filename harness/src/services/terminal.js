@@ -27,6 +27,8 @@ const SCROLLBACK = Math.max(5000, Number(process.env.CVH_TERM_SCROLLBACK) || 200
 const REPLAY_CAP = Math.max(256 * 1024, Number(process.env.CVH_TERM_REPLAY_BYTES) || 1024 * 1024); // bytes retained
 const REPLAY_TRIM_AT = Math.floor(REPLAY_CAP * 1.5); // slice back to CAP once we exceed this
 const isWin = process.platform === 'win32';
+const PASTE_THRESHOLD = 512;
+const INPUT_CHUNK_SIZE = 2048;
 
 // events: 'data' {id,data}, 'exit' {id,exitCode}, 'spawn' {id}
 export const terminalEvents = new EventEmitter();
@@ -155,17 +157,43 @@ export function spawnSession({
   return publicView(session);
 }
 
-// Write text into a session's stdin. Strips C0 control chars (defense-in-depth
-// against untrusted transcripts) and submits with a carriage return after a
-// short delay so the Ink-based TUI registers the input before Enter.
+export function prepareTextInput(text, chunkSize = INPUT_CHUNK_SIZE) {
+  // Keep tabs and line breaks as paste content, but remove control sequences that
+  // could operate the TUI. CRLF is normalised before bracketed-paste framing.
+  const clean = String(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+  const bracketed = clean.length >= PASTE_THRESHOLD || /[\n\t]/.test(clean);
+  const chunks = [];
+  for (let start = 0; start < clean.length;) {
+    let end = Math.min(clean.length, start + chunkSize);
+    // Do not split a UTF-16 surrogate pair between ConPTY writes.
+    if (end < clean.length && /[\uD800-\uDBFF]/.test(clean[end - 1]) && /[\uDC00-\uDFFF]/.test(clean[end])) end -= 1;
+    chunks.push(clean.slice(start, end));
+    start = end;
+  }
+  return { clean, chunks, bracketed };
+}
+
+// Write text into a session's stdin. Large and multiline prompts use terminal
+// bracketed-paste mode and paced chunks; a single oversized ConPTY write can be
+// partially dropped by Ink/readline before the trailing Enter is processed.
 export async function sendText(id, text, { submit = true, submitDelayMs = 80 } = {}) {
   const s = sessions.get(id);
   if (!s) throw new Error(`session ${id} not found`);
   if (!s.alive) throw new Error(`session ${id} is dead`);
-  const clean = String(text).replace(/[\x00-\x1F\x7F]/g, '');
-  s.pty.write(clean);
+  const input = prepareTextInput(text);
+  if (input.bracketed) s.pty.write('\x1b[200~');
+  for (let i = 0; i < input.chunks.length; i += 1) {
+    s.pty.write(input.chunks[i]);
+    if (input.bracketed && i < input.chunks.length - 1) await delay(8);
+  }
+  if (input.bracketed) s.pty.write('\x1b[201~');
   if (submit) {
-    await delay(submitDelayMs);
+    const settleMs = input.bracketed
+      ? Math.max(submitDelayMs, 120 + Math.min(500, Math.ceil(input.clean.length / 200)))
+      : submitDelayMs;
+    await delay(settleMs);
     s.pty.write('\r');
   }
 }

@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('cvh', {
   pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pickFolder', defaultPath),
   pickFile: () => ipcRenderer.invoke('dialog:pickFile'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  clipboardText: () => ipcRenderer.invoke('clipboard:readText'),
   clipboardImagePath: () => ipcRenderer.invoke('clipboard:imageToTemp'),
   onHarnessLog: (cb) => {
     const h = (_e, text) => cb(text);

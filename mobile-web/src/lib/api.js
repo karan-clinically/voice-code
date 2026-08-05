@@ -48,6 +48,12 @@ async function fetchTimeout(url, opts, timeoutMs) {
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     return await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (err) {
+    // Chromium variants disagree on the message for a reason-less abort; Samsung
+    // Internet currently exposes "signal is aborted without reason". Give every
+    // timed request a stable, actionable error while preserving real fetch errors.
+    if (ctrl.signal.aborted) throw new Error('Connection timed out — please try again');
+    throw err;
   } finally {
     clearTimeout(t);
   }

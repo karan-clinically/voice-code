@@ -23,7 +23,9 @@ export default function VoiceView({ session, onBack, notify }) {
   const [prompt, setPrompt] = useState(null); // interactive picker Claude is waiting on
   const hfRef = useRef(null);
   const logRef = useRef(null);
+  const logPinned = useRef(true);
   const lastId = useRef(0);
+  const lastSig = useRef('');
   const localSeq = useRef(0);
 
   // Voice mode shows the SAME persisted conversation the Chat view does, so history
@@ -35,7 +37,23 @@ export default function VoiceView({ session, onBack, notify }) {
     setTurns((t) => [...t, { id: `local-${++localSeq.current}`, role: 'user', text }].slice(-40));
   const poll = useCallback(async () => {
     try {
-      const { messages: fresh, lastId: last } = await sessionMessages(session.id, lastId.current);
+      const { messages: fresh, lastId: last, full } = await sessionMessages(session.id, lastId.current);
+      if (full) {
+        const tail = fresh[fresh.length - 1];
+        const sig = `${fresh.length}|${tail?.id || ''}|${tail?.text?.slice(-64) || ''}`;
+        if (sig !== lastSig.current) {
+          setTurns((prev) => {
+            const locals = prev.filter(
+              (m) => String(m.id).startsWith('local-')
+                && !fresh.some((f) => f.role === 'user' && f.text === m.text)
+            );
+            return [...fresh.map((f) => ({ ...f, id: `t${f.id}` })), ...locals].slice(-40);
+          });
+          lastSig.current = sig;
+        }
+        lastId.current = last || tail?.id || 0;
+        return;
+      }
       if (fresh.length) {
         lastId.current = last;
         setTurns((prev) => {
@@ -58,8 +76,15 @@ export default function VoiceView({ session, onBack, notify }) {
   }, [poll]);
 
   useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
-  }, [turns, state]);
+    if (!logPinned.current) return;
+    const log = logRef.current;
+    if (log) log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+  }, [turns]);
+
+  const onLogScroll = () => {
+    const log = logRef.current;
+    if (log) logPinned.current = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+  };
 
   // Never leave the mic open behind us.
   useEffect(() => () => hfRef.current?.stop(), []);
@@ -116,7 +141,7 @@ export default function VoiceView({ session, onBack, notify }) {
         <button className="ghost" onClick={onBack} aria-label="Close">✕</button>
       </div>
 
-      <div className="voice-log" ref={logRef}>
+      <div className="voice-log" ref={logRef} onScroll={onLogScroll}>
         {turns.length === 0 && (
           <p className="voice-hint">
             Hands-free. Start talking and it sends itself — no Send button, no tapping between turns. Talk over Claude
@@ -137,6 +162,8 @@ export default function VoiceView({ session, onBack, notify }) {
 
       {prompt && (
         <div className="voice-prompt">
+          {prompt.context && <p className="prompt-context">{prompt.context}</p>}
+          {prompt.question && <p className="prompt-question">{prompt.question}</p>}
           {prompt.multi ? (
             <p className="voice-hint">Claude is asking a multi-part question — open the Terminal view to answer it.</p>
           ) : (
@@ -146,7 +173,10 @@ export default function VoiceView({ session, onBack, notify }) {
                 {prompt.options.map((o) => (
                   <button key={o.n} className="voice-opt" onClick={() => hfRef.current?.chooseOption(o.n)} disabled={!live}>
                     <span className="voice-opt-n">{o.n}</span>
-                    <span className="voice-opt-label">{o.label}</span>
+                      <span className="voice-opt-label">
+                        {o.label}
+                        {o.description && <small>{o.description}</small>}
+                      </span>
                   </button>
                 ))}
               </div>

@@ -9,12 +9,46 @@
 // numbered options as clean data the client can show, speak, and answer.
 
 const FOOTER_RE = /esc to cancel/i; // the active selection footer (NOT "esc to interrupt", which is the working spinner)
-const OPTION_RE = /^\s*(❯|›|>|\*)?\s*(\d{1,2})\.\s+(.*\S)\s*$/; // "❯ 1. Label   description"
+const OPTION_RE = /^\s*[│┃]?\s*(❯|›|>|\*)?\s*(\d{1,2})\.\s+(.*?)(?:\s*[│┃])?\s*$/; // "│ ❯ 1. Label   description │"
 const RULE_RE = /^[\s─—_-]{6,}$/; // horizontal rule
 const CHROME_RE = /^[\s│┃╭╮╰╯─┌┐└┘├┤┬┴┼]*$/; // box borders / blank line
 
+function cleanPromptLine(line) {
+  return String(line || '')
+    .replace(/^\s*[│┃]\s?/, '')
+    .replace(/\s*[│┃]\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function splitPromptProse(proseLines) {
+  const prose = proseLines.join(' ').replace(/\s+/g, ' ').trim();
+  if (!prose) return { question: '', context: '' };
+
+  // Claude often puts an explanation above the actual question, separated by a
+  // blank line. Work from the punctuation rather than the visual gap because a
+  // narrow terminal wraps both paragraphs over several rows.
+  const questionEnd = prose.lastIndexOf('?') + 1;
+  if (questionEnd > 0) {
+    const boundaryAt = Math.max(
+      prose.lastIndexOf('.', questionEnd - 2),
+      prose.lastIndexOf('!', questionEnd - 2),
+      prose.lastIndexOf('?', questionEnd - 2),
+    );
+    const start = boundaryAt + 1;
+    const question = prose.slice(start, questionEnd).trim();
+    const context = (prose.slice(0, start) + ' ' + prose.slice(questionEnd))
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { question, context };
+  }
+
+  const question = proseLines.at(-1) || prose;
+  return { question, context: proseLines.slice(0, -1).join(' ').trim() };
+}
+
 // Returns null when the screen isn't sitting on a picker, else
-// { question, options:[{n,label,selected,cursor}], cursorN, multi, hint }.
+// { question, context, options:[{n,label,description,selected,cursor}], ... }.
 export function detectPrompt(screen) {
   if (!screen) return null;
   const lines = screen.split('\n');
@@ -33,39 +67,46 @@ export function detectPrompt(screen) {
     const m = lines[i].match(OPTION_RE);
     if (!m) continue;
     if (firstOpt === -1) firstOpt = i;
-    const rest = m[3];
+    const rest = m[3].replace(/[✔✓]\s*$/, '').trim();
     // Title is the text before the description column (a run of 2+ spaces) or a ·/— separator.
-    const label = rest.split(/\s{2,}|\s·\s|\s—\s/)[0].replace(/[✔✓]\s*$/, '').trim();
-    options.push({ n: Number(m[2]), label, selected: /✔|✓/.test(rest), cursor: !!m[1] });
+    const parts = rest.split(/\s{2,}|\s·\s|\s—\s/).map((part) => part.trim()).filter(Boolean);
+    const label = parts.shift() || rest;
+    options.push({
+      n: Number(m[2]),
+      label,
+      description: parts.join(' '),
+      selected: /✔|✓/.test(m[3]),
+      cursor: !!m[1],
+    });
   }
   if (options.length < 2) return null; // a lone "1." line isn't a picker
 
-  // Question: the nearest text lines above the first option, up to a rule/blank gap.
-  const qlines = [];
-  for (let i = firstOpt - 1; i >= 0; i--) {
-    if (RULE_RE.test(lines[i])) break;
-    const t = lines[i].trim();
-    if (!t || CHROME_RE.test(lines[i])) { if (qlines.length) break; else continue; }
-    if (OPTION_RE.test(lines[i])) break;
-    if (/^\s*❯\s*\//.test(lines[i])) continue; // the "❯ /model" command echo
-    qlines.unshift(t);
-    if (qlines.length >= 3) break;
+  // Keep the explanatory paragraph as well as the final question. Blank rows are
+  // layout inside Claude's picker, not a reliable boundary between the two.
+  const proseLines = [];
+  for (let i = firstOpt - 1; i >= Math.max(0, firstOpt - 16); i--) {
+    if (RULE_RE.test(lines[i])) { if (proseLines.length) break; else continue; }
+    const t = cleanPromptLine(lines[i]);
+    if (!t || CHROME_RE.test(lines[i]) || OPTION_RE.test(lines[i])) continue;
+    if (/^(?:❯\s*\/|esc to |enter to |tab\/arrow|ctrl\+)/i.test(t)) continue;
+    proseLines.unshift(t);
   }
-  const question = qlines.join(' ').replace(/\s+/g, ' ').trim();
+  const { question, context: promptContext } = splitPromptProse(proseLines);
 
   const cursorN = (options.find((o) => o.cursor) || options.find((o) => o.selected) || options[0]).n;
-  const context = lines.slice(Math.max(0, firstOpt - 5), footer + 1).join('\n');
-  const multi = /tab\/arrow|tab to (?:move|switch)|[☐◻▢]/i.test(context);
+  const pickerText = lines.slice(Math.max(0, firstOpt - 8), footer + 1).join('\n');
+  const multi = /tab\/arrow|tab to (?:move|switch)|[☐◻▢]/i.test(pickerText);
 
-  return { question, options, cursorN, multi, hint: lines[footer].trim() };
+  return { question, context: promptContext, options, cursorN, multi, hint: lines[footer].trim() };
 }
 
 // Speakable / displayable one-liner for the prompt — used as the recorded reply
 // text and the TTS input so the question is never silently lost.
 export function promptToText(p) {
   const q = p.question || 'Please choose an option.';
-  const opts = p.options.map((o) => `${o.n}. ${o.label}`).join('. ');
-  return `Claude is asking: ${q}\n\nOptions — ${opts}.`;
+  const context = p.context ? `Context: ${p.context}\n\n` : '';
+  const opts = p.options.map((o) => `${o.n}. ${o.label}${o.description ? ` — ${o.description}` : ''}`).join('. ');
+  return `${context}Claude is asking: ${q}\n\nOptions — ${opts}.`;
 }
 
 // Detect terminal states that are actionable but are not numbered prompts. Claude

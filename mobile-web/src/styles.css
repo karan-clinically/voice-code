@@ -985,9 +985,12 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
 /* Rolling transcript — reads like a chat, so you can glance back at what was said. */
 .voice-log {
   flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 0;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 .voice-hint {
   color: var(--muted);
@@ -1130,6 +1133,9 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
   padding: 10px 12px 4px;
   border-top: 1px solid var(--border);
 }
+.prompt-context, .prompt-question { margin: 0; line-height: 1.4; }
+.prompt-context { color: var(--muted); font-size: 13px; }
+.prompt-question { color: var(--text); font-weight: 650; }
 .voice-prompt-hint, .chat-prompt-hint {
   font-size: 12px;
   font-weight: 600;
@@ -1138,6 +1144,7 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
   color: var(--muted);
 }
 .voice-prompt-opts { display: flex; flex-direction: column; gap: 8px; }
+.voice-opt-label small { display: block; margin-top: 2px; color: var(--muted); font-weight: 400; }
 .voice-opt, .chat-opt {
   display: flex;
   align-items: center;

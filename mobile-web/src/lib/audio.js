@@ -113,7 +113,7 @@ export function ding(kind = 'success') {
   }
 }
 
-export function playUrl(u) {
+export function playUrl(u, { onStart } = {}) {
   return new Promise((resolve) => {
     try {
       player.src = u;
@@ -139,7 +139,7 @@ export function playUrl(u) {
       player.onerror = finish;
       setActivePlayback(handle);
       const p = player.play();
-      if (p && p.catch) p.catch(() => {
+      if (p && p.then) p.then(() => onStart?.()).catch(() => {
         // Mobile browsers suspend autoplay while the page is backgrounded. Keep
         // the requested URL and playback handle intact so the visible Resume
         // button can continue this exact assistant clip on the next user gesture.
@@ -147,6 +147,7 @@ export function playUrl(u) {
         notifyPlayback();
         settle();
       });
+      else onStart?.();
     } catch {
       resolve();
     }

@@ -122,6 +122,16 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
   return shell.openExternal(parsed.href);
 });
 
+// Chromium's paste event can omit clipboardData inside Electron/xterm. Keep the
+// clipboard read in the trusted main process and expose only the resulting text.
+ipcMain.handle('clipboard:readText', () => {
+  try {
+    return clipboard.readText() || '';
+  } catch {
+    return '';
+  }
+});
+
 // If the clipboard holds an image, write it to a temp PNG and return the path so
 // the terminal can hand the path to Claude Code (which ingests images by path).
 // Returns null when the clipboard has no image (caller then pastes text).

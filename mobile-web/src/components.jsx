@@ -168,10 +168,13 @@ function completedTurnsHtml(messages, terminalHtml) {
     .filter((message) => {
       const text = comparableTerminalText(message?.text);
       if (!text) return false;
-      // Do not duplicate the latest turn when it is still visible in xterm. Long
-      // replies can be clipped/wrapped, so matching either end is sufficient.
-      return !visible.includes(text)
-        && (text.length < 80 || (!visible.includes(text.slice(0, 80)) && !visible.includes(text.slice(-80))));
+      // Only suppress a completed turn when the WHOLE normalized message remains
+      // in xterm. As soon as a new query starts, Claude's TUI often replaces the
+      // preceding answer with a shortened first/last fragment. Treating either
+      // fragment as a full match made that previous answer visibly "compress".
+      // Keeping the durable transcript copy is preferable to a little overlap at
+      // the live-screen boundary: terminal history must never lose answer text.
+      return !visible.includes(text);
     })
     .map((message) => {
       const label = message.role === 'user' ? 'You' : 'Claude';
@@ -433,6 +436,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
   useEffect(() => { promptPendingRef.current = promptPending; }, [promptPending]);
   const [displayState, setDisplayState] = useState('loading'); // loading | cached | live
   const [connectionState, setConnectionState] = useState('connecting'); // connecting | live | reconnecting
+  const [showReconnect, setShowReconnect] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   // The session's PTY is gone (server sent {t:'exit'}). Shown as a banner over the
   // stale screen instead of freezing silently; cleared the moment data flows again
@@ -490,6 +494,17 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     window.addEventListener('resize', onResize); // rotation (a real width change) re-fits
     return () => { clearTimeout(t); clearTimeout(rt); window.removeEventListener('resize', onResize); };
   }, [fitPty]);
+
+  // Normal resume handshakes complete in a few hundred milliseconds. Avoid
+  // flashing a scary reconnect banner for those; retain it for a genuine delay.
+  useEffect(() => {
+    if (displayState !== 'live' || connectionState === 'live' || ended) {
+      setShowReconnect(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setShowReconnect(true), 1500);
+    return () => clearTimeout(timer);
+  }, [displayState, connectionState, ended]);
 
   // Push, not poll. /ws/term streams every PTY byte the instant it lands, so use it
   // as a change signal and repaint straight away instead of waiting out a timer. The
@@ -720,6 +735,11 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     let ws = null;
     let pongDue = null; // timer armed per ping; fires = no pong in time = zombie
     let reconnectTimer = null;
+    let connectDeadline = null;
+    const retrySoon = () => {
+      if (stop || document.hidden || reconnectTimer) return;
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 500);
+    };
     const connect = () => {
       if (stop || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return;
       clearTimeout(reconnectTimer);
@@ -728,7 +748,20 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         setConnectionState('connecting');
         const socket = new WebSocket(termWsUrl(sessionId));
         ws = socket;
-        socket.onopen = () => { if (ws === socket) setConnectionState('live'); };
+        connectDeadline = setTimeout(() => {
+          if (ws !== socket || socket.readyState === WebSocket.OPEN) return;
+          // Chrome/WebKit can leave a post-suspend handshake in CONNECTING forever,
+          // with neither error nor close. Detach it and start a clean attempt.
+          ws = null;
+          try { socket.close(); } catch { /* stuck handshake */ }
+          setConnectionState('reconnecting');
+          retrySoon();
+        }, 4000);
+        socket.onopen = () => {
+          if (ws !== socket) return;
+          clearTimeout(connectDeadline); connectDeadline = null;
+          setConnectionState('live');
+        };
         socket.onmessage = (e) => {
           if (ws !== socket) return;
           let m;
@@ -737,9 +770,13 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
           else if (m.t === 'pong') { clearTimeout(pongDue); pongDue = null; }
           else if (m.t === 'exit') { setEnded(true); }
         };
+        socket.onerror = () => {
+          if (ws === socket) try { socket.close(); } catch { /* onclose/deadline retries */ }
+        };
         socket.onclose = () => {
           if (ws !== socket) return;
           ws = null;
+          clearTimeout(connectDeadline); connectDeadline = null;
           clearTimeout(pongDue); pongDue = null;
           if (!stop) setConnectionState('reconnecting');
           if (!stop && !document.hidden && !reconnectTimer) {
@@ -752,9 +789,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       } catch {
         // The backstop poll keeps the view useful; retry without stacking timers.
         ws = null;
-        if (!stop && !document.hidden && !reconnectTimer) {
-          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
-        }
+        retrySoon();
       }
     };
     const pinger = setInterval(() => {
@@ -774,6 +809,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       const stale = ws;
       ws = null;
       clearTimeout(pongDue); pongDue = null;
+      clearTimeout(connectDeadline); connectDeadline = null;
       clearTimeout(reconnectTimer); reconnectTimer = null;
       try { stale?.close(); } catch { /* already dead */ }
       connect();
@@ -789,6 +825,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       clearInterval(t);
       clearInterval(pinger);
       clearTimeout(pongDue);
+      clearTimeout(connectDeadline);
       clearTimeout(reconnectTimer);
       clearTimeout(repaintTimer);
       clearTimeout(cacheTimer);
@@ -828,7 +865,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
           </div>
         </div>
       )}
-      {displayState === 'live' && connectionState !== 'live' && !ended && (
+      {showReconnect && (
         <div className="term-reconnect-status" role="status" aria-live="polite">
           <span className="load-spinner" /> Reconnecting live terminal…
         </div>

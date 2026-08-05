@@ -141,6 +141,8 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
       </div>
       {prompt && session.kind !== 'grok' && (
         <div className="chat-prompt">
+          {prompt.context && <p className="prompt-context">{prompt.context}</p>}
+          {prompt.question && <p className="prompt-question">{prompt.question}</p>}
           {prompt.multi ? (
             <p className="muted">Claude is asking a multi-part question — open the Terminal view to answer it.</p>
           ) : (
@@ -149,7 +151,10 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
               {prompt.options.map((o) => (
                 <button key={o.n} className="chat-opt" onClick={() => choose(o.n)} disabled={working}>
                   <span className="voice-opt-n">{o.n}</span>
-                  <span className="voice-opt-label">{o.label}</span>
+                  <span className="voice-opt-label">
+                    {o.label}
+                    {o.description && <small>{o.description}</small>}
+                  </span>
                 </button>
               ))}
             </>

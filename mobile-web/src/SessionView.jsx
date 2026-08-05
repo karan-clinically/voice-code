@@ -17,9 +17,11 @@ import { listenForResume } from './lib/resume.js';
 // Spoken form of a detected prompt (a numbered picker or a bash-permission dialog):
 // the question followed by its numbered options, so it's clear what you're answering.
 function promptSpeech(p) {
-  const q = (p.question || 'Claude needs your input.').trim();
-  const opts = (p.options || []).map((o) => `${o.n}. ${o.label}`).join('. ');
-  return opts ? `Claude is asking: ${q}. Options: ${opts}.` : `Claude is asking: ${q}`;
+  const q = (p.question || 'Please choose how Claude should proceed.').trim();
+  const context = String(p.context || '').trim();
+  const intro = context ? `Claude needs a decision. Here is the context: ${context}. The question is: ${q}.` : `Claude is asking: ${q}.`;
+  const opts = (p.options || []).map((o) => `${o.n}. ${o.label}${o.description ? `. ${o.description}` : ''}`).join('. ');
+  return opts ? `${intro} Options: ${opts}.` : intro;
 }
 
 // Prompts already spoken this app session, keyed `${sessionId}::${sig}`. Persisting
@@ -269,13 +271,22 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     }
   }
 
-  async function openAlertSession() {
+  function openAlertSession() {
     if (!activeAlert?.harnessId) return;
-    try {
-      onOpen(await sessionInfo(activeAlert.harnessId));
-    } catch (e) {
-      notify?.('Could not open session: ' + e.message);
-    }
+    // This banner is built from /recent, so it already has everything required
+    // to attach to a live harness PTY. Do not gate navigation on another detail
+    // fetch: after phone sleep/network handoff that request can remain frozen
+    // until its AbortController fires, producing "signal is aborted" even though
+    // the target session is healthy. SessionView hydrates the remaining fields in
+    // its normal background poll after the switch.
+    onOpen({
+      id: activeAlert.harnessId,
+      kind: activeAlert.shell ? 'shell' : (activeAlert.agentKind || 'claude'),
+      label: activeAlert.name,
+      cwd: activeAlert.cwd,
+      alive: true,
+      state: activeAlert.active ? 'busy' : 'idle',
+    });
   }
 
   async function dismissAlert(e) {
@@ -447,6 +458,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     let stop = false;
     let pongDue = null;
     let reconnectTimer = null;
+    let connectDeadline = null;
     // Locking the phone suspends the tab and the OS kills this socket; without a
     // rewire, sendRaw reports "Key channel not ready" after every unlock. Reconnect
     // on close (while awake) and on the visibility flip back to foreground. The
@@ -460,13 +472,30 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       reconnectTimer = null;
       const socket = new WebSocket(termWsUrl(session.id));
       keyWs.current = socket;
+      connectDeadline = setTimeout(() => {
+        if (keyWs.current !== socket || socket.readyState === WebSocket.OPEN) return;
+        keyWs.current = null;
+        try { socket.close(); } catch { /* stuck handshake */ }
+        if (!stop && !document.hidden && !reconnectTimer) {
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 500);
+        }
+      }, 4000);
+      socket.onopen = () => {
+        if (keyWs.current !== socket) return;
+        clearTimeout(connectDeadline);
+        connectDeadline = null;
+      };
       socket.onmessage = (e) => {
         try { if (JSON.parse(e.data).t === 'pong') { clearTimeout(pongDue); pongDue = null; } } catch { /* ignore */ }
+      };
+      socket.onerror = () => {
+        if (keyWs.current === socket) try { socket.close(); } catch { /* onclose/deadline retries */ }
       };
       socket.onclose = () => {
         clearTimeout(pongDue); pongDue = null;
         if (keyWs.current !== socket) return;
         keyWs.current = null;
+        clearTimeout(connectDeadline); connectDeadline = null;
         if (!stop && !document.hidden && !reconnectTimer) {
           reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
         }
@@ -487,6 +516,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       const stale = keyWs.current;
       keyWs.current = null;
       clearTimeout(pongDue); pongDue = null;
+      clearTimeout(connectDeadline); connectDeadline = null;
       clearTimeout(reconnectTimer); reconnectTimer = null;
       try { stale?.close(); } catch { /* already dead */ }
       connect();
@@ -497,6 +527,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       stop = true;
       clearInterval(pinger);
       clearTimeout(pongDue);
+      clearTimeout(connectDeadline);
       clearTimeout(reconnectTimer);
       keyReconnect.current = null;
       stopKeyResume();

@@ -73,9 +73,9 @@ const SILENCE_MS = 1200; // quiet needed to call the turn finished
 const MIN_SPEECH_MS = 350; // ignore coughs/clicks
 const MAX_TURN_MS = 60000; // hard stop on a runaway turn
 
-const BARGE_RMS = 0.055; // louder than normal — the speaker is also in the room
-const BARGE_HOLD_MS = 250; // must be sustained, not a transient
-const BARGE_GUARD_MS = 700; // ignore the reply's own onset
+const BARGE_RMS = 0.065; // louder than normal — the speaker is also in the room
+const BARGE_HOLD_MS = 350; // must be sustained, not a transient
+const BARGE_GUARD_MS = 900; // learn/ignore the reply's own onset
 
 const TICK_MS = 60;
 
@@ -415,20 +415,18 @@ export class HandsFree {
     clearActivePlayback(); // hide the global control even if 'ended' didn't fire
   }
 
-  // Play the reply, watching for barge-in the whole time.
-  //
-  // playRouted streams the ElevenLabs reply through the AudioContext so it starts
-  // on the first frames (~1s), falling back to buffered decode if routing/autoplay
-  // is refused. Barge-in is armed only AFTER audio actually starts (playFrom, set
-  // by the onStart hook), so the brief render/fetch wait can't be mistaken for you
-  // talking over the reply and cut it before a word plays. 'thinking' shows while
-  // it loads, 'speaking' the instant sound starts.
+  // Play through the exact shared <audio> path used by Terminal/Chat replies. The
+  // mic remains live only as a barge-in monitor; it no longer owns or routes the
+  // reply audio, which was allowing speaker feedback to cancel the spoken answer.
   async speak(url) {
     this.setState('thinking');
     let playFrom = 0;
-    const playing = this.playRouted(url, () => {
-      playFrom = performance.now();
-      this.setState('speaking');
+    let playbackBaseline = 0;
+    const playing = playUrl(url, {
+      onStart: () => {
+        playFrom = performance.now();
+        this.setState('speaking');
+      },
     });
     let loudSince = 0;
 
@@ -449,7 +447,20 @@ export class HandsFree {
         const rms = this.level();
         this.onLevel(Math.min(1, rms / 0.25));
 
-        if (playFrom && now - playFrom > BARGE_GUARD_MS && rms > BARGE_RMS) {
+        const playAge = playFrom ? now - playFrom : 0;
+        // During the guard window, learn how much of the phone's own speaker is
+        // leaking into the mic after echo cancellation. A real interruption must
+        // rise materially above both that baseline and the absolute voice floor.
+        if (playFrom && playAge <= BARGE_GUARD_MS) {
+          playbackBaseline = playbackBaseline
+            ? playbackBaseline * 0.88 + rms * 0.12
+            : rms;
+        }
+        const bargeThreshold = Math.min(
+          0.14,
+          Math.max(BARGE_RMS, playbackBaseline * 1.5, playbackBaseline + 0.02)
+        );
+        if (playFrom && playAge > BARGE_GUARD_MS && rms > bargeThreshold) {
           if (!loudSince) loudSince = now;
           else if (now - loudSince > BARGE_HOLD_MS) {
             this.stopPlayback(); // you talked over it — cut the reply

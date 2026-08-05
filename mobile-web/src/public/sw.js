@@ -132,9 +132,11 @@ self.addEventListener('push', (event) => {
 // Spoken form of a picker: the question, then its numbered options — the same thing the
 // session view reads out, so a notification sounds like being in the session.
 function promptSpeech(p) {
-  const q = String(p.question || 'Claude needs your input.').trim();
-  const opts = (p.options || []).map((o) => `${o.n}. ${o.label}`).join('. ');
-  return opts ? `Claude is asking: ${q}. Options: ${opts}.` : `Claude is asking: ${q}`;
+  const q = String(p.question || 'Please choose how Claude should proceed.').trim();
+  const context = String(p.context || '').trim();
+  const intro = context ? `Claude needs a decision. Here is the context: ${context}. The question is: ${q}.` : `Claude is asking: ${q}.`;
+  const opts = (p.options || []).map((o) => `${o.n}. ${o.label}${o.description ? `. ${o.description}` : ''}`).join('. ');
+  return opts ? `${intro} Options: ${opts}.` : intro;
 }
 
 // Open (or focus) the app on this session. Prefer messaging a live client — it switches

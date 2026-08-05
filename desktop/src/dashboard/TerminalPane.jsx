@@ -136,6 +136,24 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
     // xterm's listener. Images become temp-file paths; text uses term.paste once.
     let lastPasteText = '';
     let lastPasteAt = 0;
+    const insertPastedText = (text) => {
+      if (!text) return;
+      const now = Date.now();
+      if (text === lastPasteText && now - lastPasteAt < 300) return;
+      lastPasteText = text;
+      lastPasteAt = now;
+      term.paste(text);
+      term.focus();
+    };
+    const pasteFromSystem = async () => {
+      const imagePath = await window.cvh?.clipboardImagePath?.();
+      if (imagePath) {
+        sendInput(quote(imagePath) + ' ');
+        term.focus();
+        return;
+      }
+      insertPastedText(await window.cvh?.clipboardText?.());
+    };
     const onPaste = (e) => {
       const cd = e.clipboardData;
       const hasImage =
@@ -146,13 +164,8 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
       e.stopImmediatePropagation();
       if (!hasImage) {
         const text = cd?.getData('text/plain') || '';
-        if (!text) return;
-        const now = Date.now();
-        if (text === lastPasteText && now - lastPasteAt < 300) return;
-        lastPasteText = text;
-        lastPasteAt = now;
-        term.paste(text);
-        term.focus();
+        if (text) insertPastedText(text);
+        else pasteFromSystem().catch(() => {});
         return;
       }
       window.cvh
@@ -165,7 +178,17 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
         })
         .catch(() => {});
     };
+    // Electron does not consistently dispatch a populated paste event to xterm's
+    // hidden textarea. Handle keyboard paste directly through the preload bridge;
+    // context-menu paste still comes through onPaste above.
+    const onPasteKey = (e) => {
+      if (e.type !== 'keydown' || (!e.ctrlKey && !e.metaKey) || e.altKey || e.key.toLowerCase() !== 'v') return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      pasteFromSystem().catch(() => {});
+    };
     el.addEventListener('paste', onPaste, true);
+    el.addEventListener('keydown', onPasteKey, true);
 
     // Drag a file (or several) in → drop their paths at the prompt.
     const onDragOver = (e) => {
@@ -201,6 +224,7 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
       ro.disconnect();
       dataDisp.dispose();
       el.removeEventListener('paste', onPaste, true);
+      el.removeEventListener('keydown', onPasteKey, true);
       el.removeEventListener('dragover', onDragOver);
       el.removeEventListener('drop', onDrop);
       try {
