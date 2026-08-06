@@ -15,6 +15,7 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
   const [messages, setMessages] = useState([]);
   const [working, setWorking] = useState(false);
   const [prompt, setPrompt] = useState(null); // interactive picker Claude is waiting on
+  const [queuedTexts, setQueuedTexts] = useState([]); // parked behind the running turn; tap to push now
   const lastId = useRef(0);
   const lastSig = useRef(''); // change-signature for the full-transcript path
   const scrollRef = useRef(null);
@@ -23,7 +24,8 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
 
   const poll = useCallback(async () => {
     try {
-      const { messages: fresh, lastId: last, state, full } = await sessionMessages(session.id, lastId.current);
+      const { messages: fresh, lastId: last, state, full, queuedCommands } = await sessionMessages(session.id, lastId.current);
+      setQueuedTexts(Array.isArray(queuedCommands) ? queuedCommands : []);
       // Prefer the server's busy state (once deployed); until then, clear the
       // indicator when the assistant's reply lands.
       if (state !== undefined) setWorking(state === 'busy');
@@ -91,11 +93,30 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
     setWorking(true); // immediate feedback; the poll keeps it in sync
     pinned.current = true;
     try {
-      await sendChat(session.id, t);
-      ding('sent'); // the harness accepted it — Claude is now working
+      const r = await sendChat(session.id, t);
+      ding('sent'); // the harness accepted it — Claude is working (or holding it queued)
+      if (r?.queued) {
+        setQueuedTexts((prev) => (prev.includes(t) ? prev : [...prev, t]));
+        notify('Queued behind the running turn — tap it to push now');
+      } else if (r?.injected) {
+        setQueuedTexts((prev) => prev.filter((q) => q !== t));
+      }
     } catch (e) {
       setWorking(false);
       ding('error');
+      notify(e.message);
+    }
+  }
+
+  // Tap on a queued bubble: re-send the same text, which the server treats as
+  // "push it into the running turn now".
+  async function pushNow(t) {
+    try {
+      await sendChat(session.id, t);
+      ding('sent');
+      setQueuedTexts((prev) => prev.filter((q) => q !== t));
+      poll();
+    } catch (e) {
       notify(e.message);
     }
   }
@@ -128,8 +149,20 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
             </span>
           </p>
         ) : (
-          messages.map((m) => <Bubble key={m.id} role={m.role} text={m.text} />)
+          messages
+            // A queued turn renders as its own tappable bubble below, not as a
+            // normal (already-sent-looking) optimistic user bubble.
+            .filter((m) => !(String(m.id).startsWith('local-') && queuedTexts.includes(m.text)))
+            .map((m) => <Bubble key={m.id} role={m.role} text={m.text} />)
         )}
+        {queuedTexts.map((t) => (
+          <div key={'q-' + t} className="chat-msg user">
+            <button className="chat-bubble chat-queued" onClick={() => pushNow(t)} title="Push into the running turn now">
+              <div className="chat-plain">{t}</div>
+              <span className="chat-queued-tag">queued · tap to send now</span>
+            </button>
+          </div>
+        ))}
         {working && (
           <div className="chat-msg assistant">
             <div className="chat-bubble chat-working">

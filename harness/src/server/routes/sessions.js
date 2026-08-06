@@ -36,6 +36,7 @@ import { getLiveConversation, getConversationPage, recordUserMessage, recordAssi
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
 import { detectPrompt, detectTerminalActivity } from '../../services/prompt.js';
 import { buildReplyResponse, recordUserInteraction } from '../../services/reply.js';
+import { getQueuedCommands, submitChatCommand } from './command.js';
 import { makeLogger } from '../../util/logger.js';
 import { getAdapter } from '../../agents/registry.js';
 
@@ -619,7 +620,7 @@ router.get('/:id', (req, res) => {
   // Viewing a session is acknowledging its ping — clear the sticky badge. SessionView
   // polls this every 5s while open, so the badge drops the moment you're looking.
   clearAttention(session.id);
-  res.json({ ...session, muted: isMutedById(session.id) });
+  res.json({ ...session, muted: isMutedById(session.id), queuedCommands: getQueuedCommands(session.id) });
 });
 
 // Silence (or unsilence) phone push for one session. The badge still shows; only
@@ -668,30 +669,31 @@ router.get('/:id/messages', async (req, res) => {
       before: req.query.before,
       limit: req.query.limit,
     });
-    return res.json({ ...page, state: session.state });
+    return res.json({ ...page, state: session.state, queuedCommands: getQueuedCommands(session.id) });
   }
   const after = Number(req.query.after) || 0;
   const conv = await getLiveConversation(session, after);
-  // `state` lets the chat show a "working…" indicator while Claude is busy.
-  res.json({ ...conv, state: session.state });
+  // `state` lets the chat show a "working…" indicator while Claude is busy;
+  // `queuedCommands` lets it render not-yet-sent turns as queued bubbles.
+  res.json({ ...conv, state: session.state, queuedCommands: getQueuedCommands(session.id) });
 });
 
-// Chat-view send: record the user turn and run it through the completion pipeline
-// in the background (types it in, waits, extracts the reply via the Stop hook or a
-// screen scrape — the same proven path as /command). The assistant reply is
-// recorded when the turn completes and shows up on the next /messages poll.
-// Responds immediately so the chat box stays snappy.
+// Chat-view send: run the text through the shared command pipeline (same queue
+// semantics as /api/command — a turn in flight queues this one; re-sending a
+// queued text pushes it into the running turn). Responds immediately so the
+// chat box stays snappy; the reply shows up on the next /messages poll.
 router.post('/:id/chat', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
   if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
   const text = (req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'text is required' });
-  recordUserMessage(session.id, text);
-  executeCommand(session, text)
-    .then((result) => recordAssistantMessage(session.id, result.text))
-    .catch((err) => log.warn(`chat turn failed for db#${session.id}: ${err.message}`));
-  res.json({ ok: true });
+  try {
+    const outcome = await submitChatCommand(session, text);
+    res.json({ ok: true, ...outcome });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
 });
 
 // Send an allowlisted control key to the session (mode-cycle / stop).

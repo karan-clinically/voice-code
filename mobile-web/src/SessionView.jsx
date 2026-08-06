@@ -74,6 +74,9 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [sessionAlive, setSessionAlive] = useState(session.alive !== false);
   const [preview, setPreview] = useState(session.preview || null);
   const [previewStarting, setPreviewStarting] = useState(false);
+  // Commands parked server-side while a turn runs; sent automatically when it
+  // settles, or pushed into the running turn by a second Send.
+  const [queuedCmds, setQueuedCmds] = useState([]);
   useEffect(() => { recordSessionView(session.id); }, [session.id]);
   // Speak replies aloud? Off = a normal, silent coding session. Persisted so the
   // choice sticks across sessions. TTS renders lazily on first fetch, so muting
@@ -131,6 +134,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         if (s?.capabilities) setModelsSupported(!!s.capabilities.models);
         if (typeof s?.alive === 'boolean') setSessionAlive(s.alive);
         setPreview(s?.preview || null);
+        if (Array.isArray(s?.queuedCommands)) setQueuedCmds(s.queuedCommands);
         if (!muteLoaded.current && typeof s?.muted === 'boolean') {
           muteLoaded.current = true;
           setMuted(s.muted);
@@ -390,6 +394,20 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     setState('working…');
     try {
       const d = await promise;
+      // A 202: the command was queued behind the running turn, or a re-send
+      // pushed a queued command into it. Neither carries a reply payload — the
+      // in-flight turn's own await handles completion.
+      if (d.queued || d.injected) {
+        setState('idle');
+        ding('sent');
+        if (d.queued) {
+          setQueuedCmds((prev) => (prev.includes(d.transcript) ? prev : [...prev, d.transcript]));
+          notify('Queued — press Send again to push it into the running turn');
+        } else {
+          setQueuedCmds((prev) => prev.filter((t) => t !== d.transcript));
+        }
+        return;
+      }
       setState('ready');
       ding('success'); // turn landed — audible even when spoken replies are muted
       if (d.responseText) setLastReply(d.responseText);
@@ -409,6 +427,15 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     // slash compact" becomes "/compact" — but only when it names a real command.
     const norm = normalizeSpokenSlash((t || '').trim());
     if (!norm) {
+      // "Press Enter again" with a command queued = push it into the running turn
+      // now (the server injects a re-sent queued text mid-turn). A pending
+      // interactive prompt takes priority — there, bare Enter must keep meaning
+      // "confirm what Claude is asking".
+      if (queuedCmds.length > 0 && !promptPending) {
+        ding('sent');
+        runResult(commandText(session.id, queuedCmds[0]));
+        return;
+      }
       // Bare Enter with nothing typed = confirm what Claude is asking on screen (a
       // numbered picker, a permission dialog, a "press Enter to continue"). Send a
       // raw carriage return to the pty instead of dropping it — the same thing the
@@ -770,6 +797,22 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
             sessionKind={session.kind}
             inputSignal={terminalInputSignal}
           />
+          {queuedCmds.length > 0 && (
+            <div className="sv-queued" role="status">
+              {queuedCmds.map((t) => (
+                <button
+                  key={t}
+                  className="sv-queued-chip"
+                  title="Push into the running turn now"
+                  onClick={() => runResult(commandText(session.id, t))}
+                >
+                  <span className="sv-queued-tag">QUEUED</span>
+                  <span className="sv-queued-text">{t.length > 80 ? t.slice(0, 80) + '…' : t}</span>
+                  <span className="sv-queued-now">send now</span>
+                </button>
+              ))}
+            </div>
+          )}
           {keysMode ? (
             <TerminalKeypad sendRaw={sendRaw} onClose={() => setKeysMode(false)} />
           ) : (
