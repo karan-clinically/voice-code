@@ -212,6 +212,19 @@ function migrate(db) {
     );
   `);
 
+  // Sticky preview port assignments — one row per project folder, so a hosted
+  // app keeps the SAME localhost + Tailscale port (and therefore the same
+  // https://<host>:<port>/ link) across preview restarts and harness restarts.
+  // Rows persist indefinitely; they are assignments, not live state.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS preview_ports (
+      cwd            TEXT PRIMARY KEY,   -- normalized folder key
+      local_port     INTEGER NOT NULL,
+      tailscale_port INTEGER NOT NULL,
+      updated_at     TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
   // Web Push subscriptions — one row per device that opted into notifications.
   // endpoint is the browser push service URL (unique per device); keys sign the
   // payload. Rows are pruned when the push service reports them gone (404/410).

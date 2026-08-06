@@ -38,6 +38,12 @@ const VIEWS = [
   { id: 'voice', label: 'Voice (hands-free)', ico: '🎧' },
 ];
 
+// The hosted-app port is sticky per folder, so showing it in the menu tells the
+// user which stable link this project owns (e.g. ":10444").
+function previewPortLabel(url) {
+  try { return ':' + new URL(url).port; } catch { return ''; }
+}
+
 // Drawer/session-card navigation intentionally passes a lightweight session
 // object. Claude is model-switchable even before the detail poll hydrates the
 // full capabilities object.
@@ -253,7 +259,16 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       if (!next?.tailscaleUrl || next.state === 'error') {
         throw new Error(next?.error || 'Tailscale did not return a hosted-app URL');
       }
-      notify?.('Hosted app is ready', 'success');
+      // Take the user straight to the app. Popup blockers may refuse an open()
+      // this long after the tap; reopen the menu instead — its "Open hosted app"
+      // link is a direct gesture and always works.
+      const opened = window.open(next.tailscaleUrl, '_blank', 'noopener');
+      if (opened) {
+        notify?.('Hosted app is ready', 'success');
+      } else {
+        notify?.('Hosted app is ready — tap "Open hosted app"', 'success');
+        setShowMenu(true);
+      }
     } catch (e) {
       notify?.('Could not start app: ' + e.message);
     } finally {
@@ -638,7 +653,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
                 >
                   <span className="sv-menu-ico">↗</span>
                   <span className="sv-menu-label">Open hosted app</span>
-                  <span className="sv-menu-state on">Ready</span>
+                  <span className="sv-menu-state on">{previewPortLabel(preview.tailscaleUrl) || 'Ready'}</span>
                 </a>
               ) : (
                 <button

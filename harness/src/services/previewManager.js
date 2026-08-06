@@ -32,6 +32,13 @@ const routeInsert = db.prepare(`
 `);
 const routeDelete = db.prepare('DELETE FROM preview_routes WHERE tailscale_port = ?');
 const routeAll = db.prepare('SELECT * FROM preview_routes');
+const portsGet = db.prepare('SELECT local_port, tailscale_port FROM preview_ports WHERE cwd = ?');
+const portsPut = db.prepare(`
+  INSERT INTO preview_ports(cwd, local_port, tailscale_port, updated_at)
+  VALUES(?, ?, ?, datetime('now'))
+  ON CONFLICT(cwd) DO UPDATE SET local_port=excluded.local_port,
+    tailscale_port=excluded.tailscale_port, updated_at=excluded.updated_at
+`);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -140,6 +147,19 @@ function availablePort(start, occupied = new Set()) {
   });
 }
 
+// Prefer a folder's previously-assigned port so its hosted-app link stays
+// stable across restarts; fall back to scanning from `start` when the sticky
+// port is taken by something else.
+function allocatePort(preferred, start, occupied) {
+  if (!preferred || occupied.has(preferred)) return availablePort(start, occupied);
+  return new Promise((resolvePort) => {
+    const probe = createNetServer();
+    probe.unref();
+    probe.once('error', () => resolvePort(availablePort(start, occupied)));
+    probe.listen(preferred, '127.0.0.1', () => probe.close(() => resolvePort(preferred)));
+  });
+}
+
 function staticServer(cwd) {
   const root = realpathSync(resolve(cwd));
   return createServer((req, res) => {
@@ -237,13 +257,18 @@ export async function startSessionPreview(sessionId, cwd, { force = false } = {}
 
   try {
     const occupied = await serveHttpsPorts();
-    preview.localPort = await availablePort(Number(getConfig('preview_local_port_start', 5173)), reservedLocalPorts);
+    const sticky = portsGet.get(key);
+    preview.localPort = await allocatePort(
+      sticky?.local_port, Number(getConfig('preview_local_port_start', 5173)), reservedLocalPorts
+    );
     reservedLocalPorts.add(preview.localPort);
-    preview.tailscalePort = await availablePort(
+    preview.tailscalePort = await allocatePort(
+      sticky?.tailscale_port,
       Number(getConfig('preview_tailscale_port_start', 10443)),
       new Set([...occupied, ...reservedTailscalePorts])
     );
     reservedTailscalePorts.add(preview.tailscalePort);
+    portsPut.run(key, preview.localPort, preview.tailscalePort);
     preview.localUrl = `http://127.0.0.1:${preview.localPort}/`;
     const localPort = preview.localPort;
     if (config.type === 'static') {
