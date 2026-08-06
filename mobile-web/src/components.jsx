@@ -427,6 +427,13 @@ export function MicButton({ className, onBlob, notify }) {
 // keeping scroll pinned to the bottom unless the user scrolled up. Resizes the
 // session's PTY to the phone's width so the TUI reflows to fit — full lines are
 // visible at a readable, user-adjustable font (A−/A+, persisted), no sideways scroll.
+// How close to the bottom (px) still counts as "following the tail". Shared by
+// the repaint gate and the reviewing lock — they MUST agree: a tighter reviewing
+// threshold once left a dead band (at-bottom per paint, reviewing per the lock)
+// where fractional mobile scrollTop settled after a touch and live repaints
+// froze permanently until a pixel-perfect scroll to the bottom.
+const FOLLOW_TAIL_PX = 60;
+
 export function Terminal({ sessionId, className, promptPending = false, sessionKind = '', inputSignal = 0 }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
@@ -682,7 +689,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         const outer = outerRef.current;
         const inner = innerRef.current;
         if (outer && inner) {
-          const atBottom = outer.scrollHeight - outer.scrollTop - outer.clientHeight < 60;
+          const atBottom = outer.scrollHeight - outer.scrollTop - outer.clientHeight < FOLLOW_TAIL_PX;
           // Replacing the entire rendered screen while a finger/wheel is moving
           // interrupts momentum scrolling on mobile browsers and can snap the user
           // away from the oldest output. Freeze the snapshot while history is being
@@ -844,7 +851,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
   const bump = (d) => setFontPx((f) => Math.max(8, Math.min(22, f + d)));
   const updateReviewing = () => {
     const outer = outerRef.current;
-    if (outer) reviewingRef.current = outer.scrollHeight - outer.scrollTop - outer.clientHeight > 2;
+    if (outer) reviewingRef.current = outer.scrollHeight - outer.scrollTop - outer.clientHeight > FOLLOW_TAIL_PX;
   };
   const copyTerminalCommand = async (event) => {
     const button = event.target.closest?.('.terminal-copy-code');
