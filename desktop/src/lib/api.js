@@ -1,14 +1,23 @@
 // Thin client to the harness REST + WS API. On localhost the harness bypasses
-// auth, so no token is needed from the desktop app.
+// auth, so no token is needed from the desktop app. Served as a plain web page
+// (harness /desktop route — no Electron bridge), it targets its own origin
+// instead: auth there is the transport's job (Cloudflare Access cookie or
+// tailnet identity), so no token handling is needed here either.
 
 let baseUrl = 'http://localhost:4620';
 
 export async function initApi() {
   try {
     const info = await window.cvh?.appInfo();
-    if (info?.port) baseUrl = `http://localhost:${info.port}`;
+    if (info?.port) {
+      baseUrl = `http://localhost:${info.port}`;
+      return baseUrl;
+    }
   } catch {
     /* keep default */
+  }
+  if (!window.cvh && import.meta.env.PROD && /^https?:/.test(location.origin)) {
+    baseUrl = location.origin;
   }
   return baseUrl;
 }

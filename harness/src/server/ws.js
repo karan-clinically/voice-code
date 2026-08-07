@@ -7,7 +7,7 @@
 //   {type:'log', level, message}               for the desktop LiveLog
 
 import { WebSocketServer } from 'ws';
-import { isLocalhost, isTailnetPeer, hasValidToken } from './auth.js';
+import { authorizeRequest } from './auth.js';
 import { sessionEvents, listSessions } from '../services/sessionManager.js';
 import { events as claudeEvents } from '../services/claudeCode.js';
 import { createTermWss } from './wsTerm.js';
@@ -31,7 +31,7 @@ export function attachWs(server) {
   attachHeartbeat(wssTerm);
   attachHeartbeat(wssStt);
 
-  server.on('upgrade', (req, socket, head) => {
+  server.on('upgrade', async (req, socket, head) => {
     let pathname = '';
     try {
       pathname = new URL(req.url, 'http://localhost').pathname;
@@ -44,7 +44,13 @@ export function attachWs(server) {
       socket.destroy();
       return;
     }
-    if (!authorizeWs(req)) {
+    let allowed = false;
+    try {
+      allowed = await authorizeRequest(req); // Access-JWT tier needs the async check
+    } catch {
+      allowed = false;
+    }
+    if (!allowed) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
@@ -72,10 +78,6 @@ export function attachWs(server) {
 
 // Same trust tiers as the HTTP side (auth.js): true localhost, a tailnet peer
 // proxied by tailscaled, or the pairing token (?token= — funnel clients).
-function authorizeWs(req) {
-  return isLocalhost(req) || isTailnetPeer(req) || hasValidToken(req);
-}
-
 export function broadcastResponse({ sessionId, interactionId, summary, audioUrl }) {
   broadcast({ type: 'response', sessionId, interactionId, summary, audioUrl });
 }

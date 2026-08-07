@@ -94,6 +94,14 @@ export function buildApp() {
   app.use('/m', express.static(mobileDist, { index: false }));
   app.get(['/m', '/m/', '/mobile'], (req, res) => res.sendFile(join(mobileDist, 'index.html')));
 
+  // Desktop client (the Electron renderer) served as a plain web app — the
+  // full xterm terminal UI in any browser, e.g. via the cloudflared front door
+  // at code.cnly.au/desktop. Built with base './', so it mounts fine here; when
+  // no Electron bridge is present it targets the page's own origin for API/WS.
+  const desktopDist = join(__dirname, '../../../desktop/dist');
+  app.use('/desktop', express.static(desktopDist, { index: false }));
+  app.get(['/desktop', '/desktop/'], (req, res) => res.sendFile(join(desktopDist, 'index.html')));
+
   app.use('/api/sessions', sessionsRouter);
   app.use('/api/transcribe', transcribeRouter);
   app.use('/api/settings', settingsRouter);
