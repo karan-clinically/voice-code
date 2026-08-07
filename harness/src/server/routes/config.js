@@ -1,6 +1,9 @@
-// Config read/write for the wizard. Localhost-only (touches secrets). GET
-// /state returns non-secret status flags for routing + prefilling; POST saves
-// an allowlisted set of keys.
+// Config read/write for the wizard. Localhost-only (touches secrets), EXCEPT
+// GET /state: non-secret status flags only (has-key booleans, provider names),
+// and it is the served desktop client's boot gate — a remote browser behind
+// Cloudflare Access must be able to read it or /desktop hangs on the splash.
+// It is registered BEFORE the localhostOnly guard, so it is protected by the
+// standard /api auth tiers; everything below the guard stays localhost-only.
 
 import { Router } from 'express';
 import { localhostOnly } from '../auth.js';
@@ -9,7 +12,6 @@ import { activeProviderName, providers } from '../../services/tts/index.js';
 import { activeProviderName as activeSttProvider } from '../../services/stt/index.js';
 
 const router = Router();
-router.use(localhostOnly);
 
 const ALLOWED = new Set([
   'deepgram_api_key',
@@ -58,6 +60,9 @@ router.get('/state', (req, res) => {
     previewAutoStart: getConfig('preview_auto_start', 'on') !== 'off',
   });
 });
+
+// Everything below touches secrets (API keys) — true-localhost only.
+router.use(localhostOnly);
 
 router.post('/', (req, res) => {
   const body = req.body || {};

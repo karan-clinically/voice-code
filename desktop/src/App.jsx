@@ -20,6 +20,7 @@ function Splash({ text }) {
 
 export default function App() {
   const [route, setRoute] = useState('loading');
+  const [lastError, setLastError] = useState('');
 
   const refresh = useCallback(async () => {
     try {
@@ -39,8 +40,11 @@ export default function App() {
         try {
           const s = await configState();
           if (!stop) setRoute(s.firstRun ? 'wizard' : 'dashboard');
-        } catch {
+        } catch (e) {
           if (!stop) {
+            // Shown on the offline splash — a served (non-Electron) client can't
+            // read devtools on a phone, so the screen is the diagnostic surface.
+            setLastError(String(e?.message || e));
             setRoute('offline');
             setTimeout(tick, 2000); // harness still booting
           }
@@ -54,7 +58,9 @@ export default function App() {
   }, []);
 
   if (route === 'loading') return <Splash text="Starting…" />;
-  if (route === 'offline') return <Splash text="Waiting for the harness to start…" />;
+  if (route === 'offline') {
+    return <Splash text={'Waiting for the harness to start…' + (lastError ? ` (${lastError})` : '')} />;
+  }
   if (route === 'wizard') return <Wizard onDone={refresh} />;
   if (route === 'settings') {
     return <Wizard onDone={() => setRoute('dashboard')} onExit={() => setRoute('dashboard')} />;
