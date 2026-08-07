@@ -63,6 +63,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [voice, setVoice] = useState(false); // hands-free overlay
   const [keysMode, setKeysMode] = useState(false); // terminal key-pad replaces the composer input
   const [terminalInputSignal, setTerminalInputSignal] = useState(0);
+  const [pendingEcho, setPendingEcho] = useState(''); // just-sent command, shown until the PTY echoes it
   const [showSwitch, setShowSwitch] = useState(false); // left session-switcher drawer
   const [showQuickSwitch, setShowQuickSwitch] = useState(false); // native back-swipe Alt-Tab modal
   const [showMenu, setShowMenu] = useState(false); // ⋯ overflow: speak-replies + notifications
@@ -458,6 +459,10 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       sendRaw('\r');
       return;
     }
+    // Optimistic echo: the real echo needs a full round trip (send -> PTY ->
+    // repaint), so show the typed command in the view IMMEDIATELY and arm the
+    // terminal's fast-repaint window so the genuine echo replaces it quickly.
+    showEcho(norm);
     // Terminal-only custom CLIs do not expose a completion contract, so keep their
     // input raw. Codex advertises chat because its stabilization adapter can delimit
     // a completed turn and return the final answer for history and speech.
@@ -488,6 +493,17 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     }
     runResult(commandText(session.id, norm));
   }
+
+  // Pending-echo strip above the composer: visible from the moment of Send until
+  // the PTY's own echo has had time to land (or the next send replaces it).
+  const echoTimer = useRef(null);
+  function showEcho(text) {
+    clearTimeout(echoTimer.current);
+    setPendingEcho(text);
+    setTerminalInputSignal((n) => n + 1); // force immediate repaints while the echo lands
+    echoTimer.current = setTimeout(() => setPendingEcho(''), 3500);
+  }
+  useEffect(() => () => clearTimeout(echoTimer.current), []);
 
   // Raw-key channel for answering the TUI's interactive prompts (permission
   // dialogs, "press Enter", multi-select menus). Reuses the deployed /ws/term
@@ -797,6 +813,13 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
             sessionKind={session.kind}
             inputSignal={terminalInputSignal}
           />
+          {pendingEcho && (
+            <div className="sv-echo" role="status" aria-live="polite">
+              <span className="sv-echo-prompt">❯</span>
+              <span className="sv-echo-text">{pendingEcho}</span>
+              <span className="sv-echo-hint">sent</span>
+            </div>
+          )}
           {queuedCmds.length > 0 && (
             <div className="sv-queued" role="status">
               {queuedCmds.map((t) => (

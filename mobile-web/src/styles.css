@@ -772,6 +772,19 @@ button.ghost:hover { background: var(--surface-2); }
   letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
 }
 
+/* optimistic echo of a just-sent command, shown until the PTY echoes it */
+.sv-echo {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 0 0 auto;
+  padding: 6px 10px; border-radius: var(--radius);
+  background: var(--term-bg, #0d1117); border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 13px; color: var(--term-fg, #e6edf3);
+}
+.sv-echo-prompt { flex: 0 0 auto; color: var(--accent); font-weight: 700; }
+.sv-echo-text {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sv-echo-hint { flex: 0 0 auto; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+
 /* queued command chips above the terminal composer */
 .sv-queued { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; padding: 2px 0; }
 .sv-queued-chip {
