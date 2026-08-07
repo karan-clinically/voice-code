@@ -1,14 +1,19 @@
-// Keep the phone off a stale bundle.
+// Keep the phone off a stale bundle — without ever yanking the page mid-flow.
 //
 // The app is an installed PWA: it holds its loaded page in memory across
 // backgrounding, and its app-shell cache is deliberately stale-while-revalidate,
-// so a rebuilt frontend could otherwise sit unseen for hours. That gap produced three separate
-// "bugs" in a single session — an invisible Enter key, a stale sessions list, and a
-// chat that looked lost — all of which were just an old bundle.
+// so a rebuilt frontend could otherwise sit unseen for hours. That gap produced
+// three separate "bugs" in a single session — an invisible Enter key, a stale
+// sessions list, and a chat that looked lost — all of which were just an old
+// bundle. The first fix reloaded on every return to Home, which swapped the
+// staleness problem for a flow problem: each shipped build caused a visible
+// reload right when the user came back to the app.
 //
-// Fix: compare the hashed bundle THIS page loaded against the one the server is
-// serving now, and reload when they diverge. Checked when the app returns to the
-// foreground (exactly when the staleness bites) and on a slow background poll.
+// Now: detection stays eager, application is polite —
+//   * backgrounded (nothing on screen) -> reload immediately, invisibly, unless
+//     a message draft would be lost;
+//   * foregrounded -> a small "↻ Update ready" pill the user taps whenever;
+//   * next backgrounding applies a pending update automatically anyway.
 
 import { jget } from './api.js';
 
@@ -21,25 +26,52 @@ const loaded = (() => {
 })();
 
 let reloading = false;
+let pending = false; // the server has a newer bundle than this page
 
-// Never yank the page out from under a half-typed message — retry on the next tick.
-function unsafeToReload() {
-  // Never reload an active terminal just because a new frontend build appeared.
-  // Apart from interrupting the user, this tears down both terminal sockets and
-  // makes the app look as if it is repeatedly losing its connection. The latest
-  // build is picked up after returning Home or on the next app launch.
-  if (document.hidden || new URLSearchParams(location.search).has('s') || document.querySelector('.session-view')) return true;
+function draftInComposer() {
   const ta = document.querySelector('.composer-input');
-  return !!ta && (ta.value.trim() !== '' || document.activeElement === ta);
+  return !!ta && ta.value.trim() !== '';
+}
+
+function applyNow() {
+  if (reloading) return;
+  reloading = true; // ?s stays in the URL, so a session view returns to the same PTY
+  location.reload();
+}
+
+function showPill() {
+  if (document.getElementById('cvh-update-pill')) return;
+  const b = document.createElement('button');
+  b.id = 'cvh-update-pill';
+  b.type = 'button';
+  b.textContent = '↻ Update ready';
+  b.title = 'A new version of the app is available — tap to apply';
+  b.style.cssText = [
+    'position:fixed', 'left:50%', 'transform:translateX(-50%)',
+    'bottom:calc(env(safe-area-inset-bottom, 0px) + 76px)', 'z-index:9999',
+    'padding:8px 14px', 'border-radius:999px',
+    'border:1px solid var(--border, #c9c9c9)',
+    'background:var(--surface, #ffffff)', 'color:var(--fg, #111111)',
+    'font:600 12.5px/1 system-ui, sans-serif',
+    'box-shadow:0 4px 14px rgba(0,0,0,0.22)', 'cursor:pointer',
+  ].join(';');
+  b.addEventListener('click', applyNow);
+  document.body.appendChild(b);
 }
 
 async function check() {
-  if (reloading || !loaded || unsafeToReload()) return;
+  if (reloading || !loaded) return;
+  if (pending) {
+    // Already know about it — just re-offer the pill if it isn't showing.
+    if (!document.hidden) showPill();
+    return;
+  }
   try {
     const { build } = await jget('/api/health');
     if (build && build !== loaded) {
-      reloading = true; // a rebuild shipped — pick it up
-      location.reload();
+      pending = true;
+      if (document.hidden && !draftInComposer()) applyNow(); // invisible apply
+      else showPill();
     }
   } catch {
     /* offline / transient — the next check retries */
@@ -48,17 +80,15 @@ async function check() {
 
 export function startUpdater() {
   if (!loaded) return; // dev server (unhashed bundle): nothing to compare against
-  // Returning to the app is the moment staleness shows. iOS fires these two
-  // inconsistently for an installed PWA, so listen for both — check() is cheap and
-  // self-guarding, and a duplicate call is harmless.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) check();
+    if (document.hidden) {
+      // The moment the user looks away is the free window to apply an update.
+      if (pending && !draftInComposer()) applyNow();
+    } else {
+      check(); // returning is when staleness would bite — detect, offer the pill
+    }
   });
   window.addEventListener('focus', check);
-  // Leaving a session via Back removes ?s from the URL. Apply any pending build
-  // immediately on Home instead of making the user wait for the minute poll (or
-  // reopen the session with the old UI still in memory).
-  window.addEventListener('popstate', () => setTimeout(check, 0));
   setInterval(check, 60_000);
   check();
 }
