@@ -864,12 +864,21 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
 
   return (
     <div className={'term-wrap ' + (className || '')}>
-      {displayState !== 'live' && (
+      {displayState === 'loading' && (
         <div className="term-load-backdrop">
           <div className="term-load-modal" role="status" aria-live="polite">
             <span className="load-spinner" />
-            <span>{displayState === 'cached' ? 'Showing saved terminal · updating…' : 'Loading terminal…'}</span>
+            <span>Loading terminal…</span>
           </div>
+        </div>
+      )}
+      {displayState === 'cached' && (
+        // Cached output is real content the user can read RIGHT NOW — never dim
+        // or block it behind a modal while the live refresh happens. A small
+        // pill (same spot as the reconnect status; the two states are mutually
+        // exclusive) is enough to signal freshness.
+        <div className="term-reconnect-status" role="status" aria-live="polite">
+          <span className="load-spinner" /> Saved view · updating…
         </div>
       )}
       {showReconnect && (
