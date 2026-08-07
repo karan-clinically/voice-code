@@ -4,7 +4,7 @@
 
 import { EventEmitter } from 'node:events';
 import { spawn, execFile } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { createReadStream, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { createServer as createNetServer } from 'node:net';
@@ -147,6 +147,52 @@ function availablePort(start, occupied = new Set()) {
   });
 }
 
+// Host-rewriting proxy in front of a preview. Dev servers with DNS-rebinding
+// protection (Vite's server.allowedHosts, Next's allowedDevOrigins) reject
+// requests whose Host is the ts.net name that tailscale serve forwards; instead
+// of asking every project to allowlist the tailnet host, present the Host they
+// already trust. Proxies WebSocket upgrades too — Vite HMR needs them.
+function hostRewriteProxy(targetPort) {
+  const upstreamHeaders = (req) => ({ ...req.headers, host: `127.0.0.1:${targetPort}` });
+  const server = createServer((req, res) => {
+    const up = httpRequest(
+      { host: '127.0.0.1', port: targetPort, path: req.url, method: req.method, headers: upstreamHeaders(req) },
+      (r) => {
+        res.writeHead(r.statusCode, r.headers);
+        r.pipe(res);
+      }
+    );
+    up.on('error', () => {
+      if (!res.headersSent) res.writeHead(502);
+      res.end('preview upstream error');
+    });
+    req.pipe(up);
+  });
+  server.on('upgrade', (req, socket, head) => {
+    const up = httpRequest({
+      host: '127.0.0.1', port: targetPort, path: req.url, method: req.method, headers: upstreamHeaders(req),
+    });
+    up.end();
+    up.on('upgrade', (r, upstream, upstreamHead) => {
+      const lines = ['HTTP/1.1 101 Switching Protocols'];
+      for (const [k, v] of Object.entries(r.headers)) lines.push(`${k}: ${v}`);
+      socket.write(lines.join('\r\n') + '\r\n\r\n');
+      if (upstreamHead?.length) socket.write(upstreamHead);
+      if (head?.length) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+      const drop = () => {
+        socket.destroy();
+        upstream.destroy();
+      };
+      socket.on('error', drop);
+      upstream.on('error', drop);
+    });
+    up.on('error', () => socket.destroy());
+  });
+  return server;
+}
+
 // Prefer a folder's previously-assigned port so its hosted-app link stays
 // stable across restarts; fall back to scanning from `start` when the sticky
 // port is taken by something else.
@@ -201,7 +247,9 @@ async function waitUntilReady(preview, timeoutMs = 45000) {
 
 async function expose(preview) {
   try {
-    preview.tailscaleUrl = await addPrivateServeProxy(preview.localPort, preview.tailscalePort);
+    // Tailscale forwards to the host-rewrite proxy, not the app itself, so the
+    // app always sees a Host it trusts (see hostRewriteProxy).
+    preview.tailscaleUrl = await addPrivateServeProxy(preview.proxyPort ?? preview.localPort, preview.tailscalePort);
     routeInsert.run({
       cwd: preview.cwd, localPort: preview.localPort, tailscalePort: preview.tailscalePort,
       childPid: preview.child?.pid || null,
@@ -247,8 +295,8 @@ export async function startSessionPreview(sessionId, cwd, { force = false } = {}
 
   const preview = {
     cwd: resolve(cwd), config, source: config.source, state: 'starting', error: config.error || null,
-    localPort: null, tailscalePort: null, localUrl: null, tailscaleUrl: null,
-    sessions: new Set([sessionId]), child: null, server: null, exited: false, output: '',
+    localPort: null, tailscalePort: null, proxyPort: null, localUrl: null, tailscaleUrl: null,
+    sessions: new Set([sessionId]), child: null, server: null, proxyServer: null, exited: false, output: '',
   };
   projects.set(key, preview);
   projectBySession.set(sessionId, key);
@@ -298,6 +346,13 @@ export async function startSessionPreview(sessionId, cwd, { force = false } = {}
       });
     }
     await waitUntilReady(preview);
+    preview.proxyServer = hostRewriteProxy(localPort);
+    preview.proxyPort = await availablePort(localPort + 1000, reservedLocalPorts);
+    reservedLocalPorts.add(preview.proxyPort);
+    await new Promise((ok, fail) => {
+      preview.proxyServer.once('error', fail);
+      preview.proxyServer.listen(preview.proxyPort, '127.0.0.1', ok);
+    });
     if (!(await expose(preview))) throw new Error(preview.error);
     preview.state = 'ready';
     changed(preview);
@@ -317,6 +372,8 @@ async function stopProject(key) {
   preview.state = 'stopping';
   changed(preview);
   preview.server?.close();
+  preview.proxyServer?.close();
+  if (preview.proxyPort != null) reservedLocalPorts.delete(preview.proxyPort);
   if (preview.child && !preview.exited) {
     if (process.platform === 'win32' && preview.child.pid) {
       await execFileAsync('taskkill', ['/T', '/F', '/PID', String(preview.child.pid)], { windowsHide: true }).catch(() => {});
