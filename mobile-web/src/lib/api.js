@@ -93,7 +93,15 @@ export const recentSessions = ({ force = false } = {}) => {
   if (recentPending && !force) return recentPending;
   if (force) recentForceAt = now;
   const requestId = ++recentRequest;
-  const pending = jget('/api/sessions/recent', { timeoutMs: 8000 })
+  // The forced (resume-from-background) request is the one users stare at: a
+  // fetch fired while the radio is still waking can ride a dead connection and
+  // burn the whole timeout. Fail it fast and retry once on the warmed-up
+  // network instead of making the Home screen wait out 8 quiet seconds.
+  const fetchRecent = force
+    ? jget('/api/sessions/recent', { timeoutMs: 2500 })
+        .catch(() => jget('/api/sessions/recent', { timeoutMs: 6000 }))
+    : jget('/api/sessions/recent', { timeoutMs: 8000 });
+  const pending = fetchRecent
     .then((value) => {
       // A request frozen during suspension may finish after the forced resume
       // request. It can satisfy its own caller, but must not replace fresher cache.
