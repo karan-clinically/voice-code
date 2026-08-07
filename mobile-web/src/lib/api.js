@@ -58,7 +58,31 @@ async function fetchTimeout(url, opts, timeoutMs) {
     clearTimeout(t);
   }
 }
-export const jget = async (p, { timeoutMs } = {}) => parse(await fetchTimeout(base + p, { headers: H }, timeoutMs));
+// After a resume (screen back on, app foregrounded, network back), the first
+// request on each connection can ride a socket that died during suspension: it
+// neither fails nor completes until its own timeout, so the screen shows stale
+// content the whole time. For a short window after every resume, ALL reads get
+// an impatient first attempt with one immediate retry on the woken-up network.
+// Reads only — auto-retrying a POST could double-run a command.
+const RESUME_WINDOW_MS = 6000;
+let resumedAt = 0;
+if (typeof document !== 'undefined') {
+  const mark = () => { if (!document.hidden) resumedAt = Date.now(); };
+  document.addEventListener('visibilitychange', mark);
+  window.addEventListener('pageshow', mark); // also fires on initial load — cold starts benefit too
+  window.addEventListener('online', () => { resumedAt = Date.now(); });
+}
+
+export const jget = async (p, { timeoutMs } = {}) => {
+  if (resumedAt && Date.now() - resumedAt < RESUME_WINDOW_MS) {
+    try {
+      return parse(await fetchTimeout(base + p, { headers: H }, Math.min(timeoutMs || 2500, 2500)));
+    } catch {
+      return parse(await fetchTimeout(base + p, { headers: H }, timeoutMs || 8000));
+    }
+  }
+  return parse(await fetchTimeout(base + p, { headers: H }, timeoutMs));
+};
 export const jpost = async (p, b) =>
   parse(await fetch(base + p, { method: 'POST', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }));
 export const jform = async (p, fd) => parse(await fetch(base + p, { method: 'POST', headers: H, body: fd }));
@@ -93,15 +117,8 @@ export const recentSessions = ({ force = false } = {}) => {
   if (recentPending && !force) return recentPending;
   if (force) recentForceAt = now;
   const requestId = ++recentRequest;
-  // The forced (resume-from-background) request is the one users stare at: a
-  // fetch fired while the radio is still waking can ride a dead connection and
-  // burn the whole timeout. Fail it fast and retry once on the warmed-up
-  // network instead of making the Home screen wait out 8 quiet seconds.
-  const fetchRecent = force
-    ? jget('/api/sessions/recent', { timeoutMs: 2500 })
-        .catch(() => jget('/api/sessions/recent', { timeoutMs: 6000 }))
-    : jget('/api/sessions/recent', { timeoutMs: 8000 });
-  const pending = fetchRecent
+  // jget itself handles the post-resume fast-retry now (see RESUME_WINDOW_MS).
+  const pending = jget('/api/sessions/recent', { timeoutMs: 8000 })
     .then((value) => {
       // A request frozen during suspension may finish after the forced resume
       // request. It can satisfy its own caller, but must not replace fresher cache.
