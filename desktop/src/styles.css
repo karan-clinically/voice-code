@@ -493,28 +493,60 @@ label {
   align-self: center;
   margin-left: 4px;
 }
-.tab-provider-select {
-  width: auto;
-  min-width: 112px;
-  height: 28px;
-  padding: 3px 26px 3px 8px;
-  border-color: var(--term-line);
-  border-radius: 6px;
-  background: var(--term-chrome);
-  color: var(--term-fg);
-  font-size: 12px;
-}
 .tab-new {
+  width: 28px;
   height: 28px;
-  padding: 3px 9px;
+  padding: 0;
   background: transparent;
   color: var(--term-muted);
   border: 1px solid var(--term-line);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 16px;
+  line-height: 1;
   white-space: nowrap;
 }
 .tab-new:hover { color: var(--term-fg); border-color: var(--term-muted); }
+/* "+" opens a CLI picker. The wrap lives OUTSIDE the scrolling tab strip
+   (always visible; its dropdown can't be clipped by the strip's overflow). */
+.tab-new-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: 6px;
+}
+.tab-new-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0; /* the "+" sits at the header's right edge — open leftwards */
+  z-index: 40;
+  min-width: 180px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--term-chrome);
+  border: 1px solid var(--term-line);
+  border-radius: 9px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.tab-new-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--term-fg);
+  border: none;
+  border-radius: 6px;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+}
+.tab-new-item:hover { background: rgba(255, 255, 255, 0.07); }
+.tab-new-note { font-size: 10.5px; color: var(--term-muted); }
+.tab.dragging { opacity: 0.45; }
 .tab-kind {
   display: inline-flex;
   align-items: center;
@@ -539,31 +571,71 @@ label {
   border-bottom-color: #f0b429;
 }
 
-.term-tools {
+/* Header is a single row: tabs + "+" on the left, ☰ on the right. Every other
+   control lives in the burger dropdown. */
+.term-burger-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: 6px;
+}
+.burger-btn {
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  color: var(--term-muted);
+  border: 1px solid var(--term-line);
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+.burger-btn:hover { color: var(--term-fg); border-color: var(--term-muted); }
+.burger-btn.rec {
+  color: #ffa198;
+  border-color: #f85149;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.burger-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 230px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--term-chrome);
+  border: 1px solid var(--term-line);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.burger-row { display: flex; padding: 4px 4px 6px; }
+.burger-row .model-pill { width: 100%; justify-content: space-between; display: inline-flex; }
+.burger-row.seg { gap: 0; }
+.burger-row.seg .seg-btn { flex: 1; }
+.burger-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  min-height: 44px;
-  padding: 6px 10px;
-  background: var(--term-chrome);
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--term-fg);
+  border: none;
+  border-radius: 6px;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
 }
-.session-tools,
-.app-tools {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.session-tools {
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-.app-tools {
-  flex: 0 0 auto;
-  padding-left: 6px;
-  border-left: 1px solid var(--term-line);
-}
+.burger-item:hover { background: rgba(255, 255, 255, 0.07); }
+.burger-item.on { color: var(--brand-lit); }
+.burger-item.rec { color: #ffa198; }
+.burger-item:disabled { opacity: 0.55; }
+.burger-hint { font-size: 10.5px; color: var(--term-muted); }
+.burger-sep { height: 1px; margin: 4px 2px; background: var(--term-line); }
 .tool {
   padding: 5px 10px;
   font-size: 12.5px;

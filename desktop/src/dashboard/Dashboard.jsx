@@ -13,12 +13,14 @@ import {
   startSessionPreview,
 } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
-import Tabs from './Tabs.jsx';
+import Tabs, { NewTabButton } from './Tabs.jsx';
 import TerminalPane from './TerminalPane.jsx';
 import ChatView from './ChatView.jsx';
 import LiveLog from './LiveLog.jsx';
 import HistoryOverlay from './HistoryOverlay.jsx';
 import ModelPicker from './ModelPicker.jsx';
+
+const TAB_ORDER_KEY = 'cvh-tab-order';
 
 export default function Dashboard({ onOpenWizard }) {
   const [sessions, setSessions] = useState([]);
@@ -27,19 +29,35 @@ export default function Dashboard({ onOpenWizard }) {
   const [logs, setLogs] = useState([]);
   const [showLog, setShowLog] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showMenu, setShowMenu] = useState(false); // the ☰ dropdown
   const [viewModes, setViewModes] = useState({}); // sessionId -> 'terminal' | 'chat'
   const [speak, setSpeak] = useState(false);
   const [recording, setRecording] = useState(false);
   const [msg, setMsg] = useState('');
   const [defaultSessionDir, setDefaultSessionDir] = useState('');
+  // Manual tab order (drag to reorder), persisted per device.
+  const [tabOrder, setTabOrder] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(TAB_ORDER_KEY)) || []; } catch { return []; }
+  });
 
   const termApis = useRef({}); // sessionId -> imperative terminal api
   const audioRef = useRef(null);
   const recRef = useRef(null);
   const speakRef = useRef(false);
   const activeRef = useRef(null);
+  const menuRef = useRef(null);
   speakRef.current = speak;
   activeRef.current = activeId;
+
+  // Close the ☰ menu on any outside click.
+  useEffect(() => {
+    if (!showMenu) return undefined;
+    const onDoc = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setShowMenu(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [showMenu]);
 
   const notify = useCallback((m) => {
     setMsg(String(m || ''));
@@ -76,15 +94,33 @@ export default function Dashboard({ onOpenWizard }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
 
-  // Keep an active tab pointed at a live session.
+  // Keep an active tab pointed at a live session. Tabs render in the user's
+  // dragged order (unknown ids keep their arrival order — Array.sort is stable).
   const live = sessions.filter((s) => s.alive);
+  const orderedLive = [...live].sort((a, b) => {
+    const ia = tabOrder.indexOf(a.id);
+    const ib = tabOrder.indexOf(b.id);
+    return (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) - (ib === -1 ? Number.MAX_SAFE_INTEGER : ib);
+  });
+  const reorderTabs = useCallback((fromId, toId) => {
+    setTabOrder((prev) => {
+      const ids = orderedLive.map((s) => s.id);
+      const from = ids.indexOf(fromId);
+      const to = ids.indexOf(toId);
+      if (from === -1 || to === -1 || from === to) return prev;
+      ids.splice(to, 0, ids.splice(from, 1)[0]);
+      try { localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(ids)); } catch { /* private mode */ }
+      return ids;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions, tabOrder]);
   const activeSession = live.find((s) => s.id === activeId) || null;
   const modeOf = (id) => viewModes[id] || 'terminal';
   const activeMode = activeSession?.capabilities?.chat === false ? 'terminal' : modeOf(activeId);
   const setMode = (id, m) => setViewModes((prev) => ({ ...prev, [id]: m }));
   useEffect(() => {
     if (activeId && live.some((s) => s.id === activeId)) return;
-    setActiveId(live.length ? live[0].id : null);
+    setActiveId(orderedLive.length ? orderedLive[0].id : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions]);
 
@@ -235,79 +271,96 @@ export default function Dashboard({ onOpenWizard }) {
         <div className="term-tabs-row">
           <div className="tabs-scroll">
             <Tabs
-              sessions={live}
+              sessions={orderedLive}
               activeId={activeId}
               onSelect={setActiveId}
-              onNew={newSession}
               onRename={rename}
               onColor={setColor}
               onClose={close}
-              providers={providers}
+              onReorder={reorderTabs}
             />
           </div>
-        </div>
-        <div className="term-tools" aria-label="Active session options">
-          <div className="session-tools">
-            {activeSession?.capabilities?.chat !== false && activeSession && (
-              <div className="seg" title="Switch the active session between the raw terminal and a chat view">
-                <button
-                  className={'seg-btn' + (activeMode !== 'chat' ? ' on' : '')}
-                  onClick={() => setMode(activeId, 'terminal')}
-                >
-                  Terminal
+          <NewTabButton providers={providers} onNew={newSession} />
+          <div className="term-burger-wrap" ref={menuRef}>
+            <button
+              className={'burger-btn' + (recording ? ' rec' : '')}
+              onClick={() => setShowMenu((v) => !v)}
+              title={recording ? 'Menu — recording in progress' : 'Menu'}
+              aria-expanded={showMenu}
+              aria-label="Menu"
+            >
+              ☰
+            </button>
+            {showMenu && (
+              <div className="burger-menu" role="menu" aria-label="Session and app options">
+                {activeSession && (
+                  <>
+                    {activeSession.capabilities?.chat !== false && (
+                      <div className="burger-row seg" title="Switch the active session between the raw terminal and a chat view">
+                        <button
+                          className={'seg-btn' + (activeMode !== 'chat' ? ' on' : '')}
+                          onClick={() => setMode(activeId, 'terminal')}
+                        >
+                          Terminal
+                        </button>
+                        <button
+                          className={'seg-btn' + (activeMode === 'chat' ? ' on' : '')}
+                          onClick={() => setMode(activeId, 'chat')}
+                        >
+                          Chat
+                        </button>
+                      </div>
+                    )}
+                    <div className="burger-row">
+                      <ModelPicker session={activeSession} notify={notify} />
+                    </div>
+                    <button
+                      className={'burger-item' + (activeSession.preview?.state === 'ready' ? ' on' : '')}
+                      role="menuitem"
+                      onClick={() => { setShowMenu(false); launchPreview(); }}
+                      disabled={activeSession.preview?.state === 'starting'}
+                      title={activeSession.preview?.error || 'Open this project app in your browser'}
+                    >
+                      {activeSession.preview?.state === 'starting'
+                        ? 'App starting…'
+                        : activeSession.preview?.state === 'ready'
+                          ? '↗ Open app'
+                          : activeSession.preview?.state === 'error'
+                            ? '↻ Retry app'
+                            : '▷ Start app'}
+                    </button>
+                    <button
+                      className={'burger-item' + (recording ? ' rec' : '')}
+                      role="menuitem"
+                      onClick={() => { setShowMenu(false); toggleTalk(); }}
+                      title="Dictate into the active terminal"
+                    >
+                      {recording ? '● Stop listening' : '🎙 Talk'}
+                      <span className="burger-hint">Ctrl+`</span>
+                    </button>
+                    <button
+                      className={'burger-item' + (speak ? ' on' : '')}
+                      role="menuitem"
+                      onClick={() => setSpeak((v) => !v)}
+                      title="Speak replies from the active session aloud"
+                    >
+                      🔊 Speak replies
+                      <span className="burger-hint">{speak ? 'on' : 'off'}</span>
+                    </button>
+                    <div className="burger-sep" />
+                  </>
+                )}
+                <button className="burger-item" role="menuitem" onClick={() => { setShowMenu(false); setShowHistory(true); }} title="Search & resume past sessions">
+                  🕘 History
                 </button>
-                <button
-                  className={'seg-btn' + (activeMode === 'chat' ? ' on' : '')}
-                  onClick={() => setMode(activeId, 'chat')}
-                >
-                  Chat
+                <button className={'burger-item' + (showLog ? ' on' : '')} role="menuitem" onClick={() => { setShowMenu(false); setShowLog((v) => !v); }} title="Harness log">
+                  {showLog ? 'Hide log' : 'Log'}
+                </button>
+                <button className="burger-item" role="menuitem" onClick={() => { setShowMenu(false); onOpenWizard(); }} title="Settings">
+                  ⚙ Settings
                 </button>
               </div>
             )}
-            {activeSession && <ModelPicker session={activeSession} notify={notify} />}
-            {activeSession && (
-              <>
-                <button
-                  className={'tool' + (activeSession.preview?.state === 'ready' ? ' on' : '')}
-                  onClick={launchPreview}
-                  disabled={activeSession.preview?.state === 'starting'}
-                  title={activeSession.preview?.error || 'Open this project app in your browser'}
-                >
-                  {activeSession.preview?.state === 'starting'
-                    ? 'App starting…'
-                    : activeSession.preview?.state === 'ready'
-                      ? '↗ Open app'
-                      : activeSession.preview?.state === 'error'
-                        ? '↻ Retry app'
-                        : '▷ Start app'}
-                </button>
-                <button
-                  className={'tool' + (recording ? ' rec' : '')}
-                  onClick={toggleTalk}
-                  title="Talk (Ctrl+`) — dictate into the active terminal"
-                >
-                  {recording ? '● Listening…' : '🎙 Talk'}
-                </button>
-                <button
-                  className={'tool' + (speak ? ' on' : '')}
-                  onClick={() => setSpeak((v) => !v)}
-                  title="Speak replies from the active session aloud"
-                >
-                  🔊 Speak {speak ? 'on' : 'off'}
-                </button>
-              </>
-            )}
-          </div>
-          <div className="app-tools">
-            <button className="tool" onClick={() => setShowHistory(true)} title="Search & resume past sessions">
-              🕘 History
-            </button>
-            <button className="tool" onClick={() => setShowLog((v) => !v)} title="Harness log">
-              {showLog ? 'Hide log' : 'Log'}
-            </button>
-            <button className="tool" onClick={onOpenWizard} title="Settings">
-              ⚙
-            </button>
           </div>
         </div>
       </header>

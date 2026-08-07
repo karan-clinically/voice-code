@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 const tabName = (s) =>
   s.label || s.git_repo || (s.cwd || '').split(/[\\/]/).filter(Boolean).pop() || `session ${s.id}`;
@@ -17,12 +17,14 @@ const attentionStatus = (s) => {
   return TAB_STATUS[s.state] || null;
 };
 
-// Terminal-style tab strip: one tab per live session. Double-click renames the
-// harness tab (and Claude session); the color dot opens the native color picker.
-export default function Tabs({ sessions, providers = [], activeId, onSelect, onNew, onRename, onColor, onClose }) {
+// Terminal-style tab strip: one tab per live session. Drag a tab to reorder
+// (order is the caller's concern via onReorder). Double-click renames; the
+// color dot opens the native color picker. "+" opens a CLI picker so each new
+// tab chooses its provider at the moment of creation.
+export default function Tabs({ sessions, activeId, onSelect, onRename, onColor, onClose, onReorder }) {
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState('');
-  const [newProvider, setNewProvider] = useState('claude');
+  const [dragId, setDragId] = useState(null);
 
   function startEdit(s) {
     setEditing(s.id);
@@ -43,11 +45,24 @@ export default function Tabs({ sessions, providers = [], activeId, onSelect, onN
         return (
           <div
             key={s.id}
-            className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '') + (s.kind === 'kimi-k3' ? ' kimi' : '') + (s.tab_color ? ' has-color' : '')}
+            className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '') + (s.kind === 'kimi-k3' ? ' kimi' : '') + (s.tab_color ? ' has-color' : '') + (s.id === dragId ? ' dragging' : '')}
             style={s.tab_color ? { '--tab-color': s.tab_color } : undefined}
+            draggable={editing !== s.id}
+            onDragStart={(e) => {
+              setDragId(s.id);
+              e.dataTransfer.effectAllowed = 'move';
+              try { e.dataTransfer.setData('text/plain', String(s.id)); } catch { /* IE-era quirk */ }
+            }}
+            onDragEnd={() => setDragId(null)}
+            onDragOver={(e) => {
+              // Reorder live while hovering — the strip previews its final order.
+              e.preventDefault();
+              if (dragId != null && dragId !== s.id) onReorder?.(dragId, s.id);
+            }}
+            onDrop={(e) => e.preventDefault()}
             onClick={() => onSelect(s.id)}
             onDoubleClick={() => startEdit(s)}
-            title={(s.kind === 'grok' ? 'Grok · ' : s.kind === 'codex' ? 'Codex · ' : s.kind === 'kimi-k3' ? 'Kimi K3 · ' : s.kind === 'shell' ? 'Shell · ' : '') + (s.cwd || '') + (status ? `\n${status.label}` : '') + '\nDouble-click to rename'}
+            title={(s.kind === 'grok' ? 'Grok · ' : s.kind === 'codex' ? 'Codex · ' : s.kind === 'kimi-k3' ? 'Kimi K3 · ' : s.kind === 'shell' ? 'Shell · ' : '') + (s.cwd || '') + (status ? `\n${status.label}` : '') + '\nDouble-click to rename · drag to reorder'}
           >
           {editing === s.id ? (
             <input
@@ -103,28 +118,54 @@ export default function Tabs({ sessions, providers = [], activeId, onSelect, onN
           </div>
         );
       })}
-      <div className="tab-new-wrap">
-        <select
-          className="tab-provider-select"
-          value={newProvider}
-          onChange={(e) => setNewProvider(e.target.value)}
-          aria-label="Provider for new session"
-          title="Provider for new session"
-        >
+    </div>
+  );
+}
+
+// The "+" new-tab button with its CLI picker. Rendered OUTSIDE the scrolling
+// tab strip (Dashboard's header row) so it stays visible with many tabs and
+// its dropdown isn't clipped by the strip's overflow.
+export function NewTabButton({ providers = [], onNew }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  return (
+    <div className="tab-new-wrap" ref={wrapRef}>
+      <button
+        className="tab-new"
+        title="New tab — pick which CLI to launch"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        +
+      </button>
+      {open && (
+        <div className="tab-new-menu" role="menu">
           {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {provider.name}{provider.authentication?.status === 'required' ? ' · key required' : ''}
-            </option>
+            <button
+              key={provider.id}
+              role="menuitem"
+              className="tab-new-item"
+              onClick={() => {
+                setOpen(false);
+                onNew(provider.id);
+              }}
+            >
+              {provider.name}
+              {provider.authentication?.status === 'required' && <span className="tab-new-note">key required</span>}
+            </button>
           ))}
-        </select>
-        <button
-          className="tab-new"
-          title="Start a new session with the selected provider"
-          onClick={() => onNew(newProvider)}
-        >
-          + New session
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
