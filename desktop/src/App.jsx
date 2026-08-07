@@ -42,6 +42,12 @@ export default function App() {
           if (!stop) setRoute(s.firstRun ? 'wizard' : 'dashboard');
         } catch (e) {
           if (!stop) {
+            // Served client (no Electron bridge) that isn't authorized: hand it
+            // to the harness's password login page, returning here afterwards.
+            if (e?.status === 401 && !window.cvh) {
+              location.replace('/login?next=' + encodeURIComponent(location.pathname + location.search));
+              return;
+            }
             // Shown on the offline splash — a served (non-Electron) client can't
             // read devtools on a phone, so the screen is the diagnostic surface.
             setLastError(String(e?.message || e));

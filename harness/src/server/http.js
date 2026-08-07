@@ -25,6 +25,7 @@ import usageRouter from './routes/usage.js';
 import pushRouter from './routes/push.js';
 import providersRouter from './routes/providers.js';
 import agentEventsRouter from './routes/agentEvents.js';
+import authRouter from './routes/authRoutes.js';
 
 const log = makeLogger('http');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,6 +54,13 @@ export function buildApp() {
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
+
+  // Password login lives OUTSIDE the auth gate: an unauthenticated browser has
+  // to be able to reach it. It rate-limits itself (see routes/authRoutes.js).
+  app.use('/api/auth', authRouter);
+  app.get('/login', (req, res) => res.sendFile(join(__dirname, 'login.html')));
+  // Convenience: the bare domain lands on the terminal UI (or its login).
+  app.get('/', (req, res) => res.redirect('/desktop/'));
 
   // Auth gate for the whole API surface.
   app.use('/api', authMiddleware);

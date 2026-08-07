@@ -18,8 +18,8 @@
 // check would expose the whole harness with no auth at all. Token comparison is
 // timing-safe.
 
-import { timingSafeEqual } from 'node:crypto';
-import { getConfig } from '../config.js';
+import { createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { getConfig, setConfig } from '../config.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('auth');
@@ -111,9 +111,77 @@ export async function isCfAccessUser(req) {
   }
 }
 
-// All four tiers in order. Shared by the HTTP middleware and the WS upgrade.
+// --- Password login (harness-native, replaces/augments the Access screen) ---
+// The hash is set ONLY on the PC (harness/bin/set-password.mjs) and stored as
+// scrypt$N$salt$derived. A successful login issues a signed 7-day cookie; the
+// signing secret rotates every time the password is set, which invalidates all
+// existing sessions at once.
+
+const SESSION_COOKIE = 'cvh_session';
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function passwordConfigured() {
+  return !!getConfig('web_password_hash');
+}
+
+export function verifyWebPassword(candidate) {
+  return new Promise((resolve) => {
+    const stored = String(getConfig('web_password_hash') || '');
+    const parts = stored.split('$'); // scrypt$<N>$<saltHex>$<hashHex>
+    if (parts.length !== 4 || parts[0] !== 'scrypt') return resolve(false);
+    const N = Number(parts[1]);
+    const salt = Buffer.from(parts[2], 'hex');
+    const expect = Buffer.from(parts[3], 'hex');
+    scrypt(String(candidate || ''), salt, expect.length, { N, r: 8, p: 1, maxmem: 128 * 1024 * 1024 }, (err, derived) => {
+      if (err) return resolve(false);
+      resolve(derived.length === expect.length && timingSafeEqual(derived, expect));
+    });
+  });
+}
+
+function sessionSecret() {
+  let secret = getConfig('web_session_secret');
+  if (!secret) {
+    // First login before set-password ever rotated one — mint and persist.
+    secret = randomBytes(32).toString('hex');
+    setConfig('web_session_secret', secret);
+  }
+  return secret;
+}
+
+function signSession(expiresMs) {
+  return createHmac('sha256', sessionSecret()).update(String(expiresMs)).digest('hex');
+}
+
+// Set-Cookie value for a fresh session. Secure is always on — the cookie only
+// matters through the HTTPS front door; localhost bypasses auth entirely.
+export function issueSessionCookie() {
+  const expires = Date.now() + SESSION_TTL_MS;
+  const value = `v1.${expires}.${signSession(expires)}`;
+  return `${SESSION_COOKIE}=${value}; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export function clearSessionCookie() {
+  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+}
+
+export function hasWebSession(req) {
+  if (!passwordConfigured()) return false;
+  const cookies = req.headers?.cookie || '';
+  const m = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`).exec(cookies);
+  if (!m) return false;
+  const parts = m[1].split('.');
+  if (parts.length !== 3 || parts[0] !== 'v1') return false;
+  const expires = Number(parts[1]);
+  if (!Number.isFinite(expires) || expires < Date.now()) return false;
+  return safeEqual(parts[2], signSession(expires));
+}
+
+// All five tiers in order. Shared by the HTTP middleware and the WS upgrade.
 export async function authorizeRequest(req) {
-  return isLocalhost(req) || isTailnetPeer(req) || hasValidToken(req) || (await isCfAccessUser(req));
+  return (
+    isLocalhost(req) || isTailnetPeer(req) || hasValidToken(req) || hasWebSession(req) || (await isCfAccessUser(req))
+  );
 }
 
 export async function authMiddleware(req, res, next) {

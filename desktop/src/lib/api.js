@@ -29,7 +29,11 @@ export function getBaseUrl() {
 async function handle(r) {
   const ct = r.headers.get('content-type') || '';
   const data = ct.includes('json') ? await r.json() : await r.text();
-  if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
+  if (!r.ok) {
+    const err = new Error((data && data.error) || `HTTP ${r.status}`);
+    err.status = r.status; // lets App.jsx route a served client to /login on 401
+    throw err;
+  }
   return data;
 }
 
