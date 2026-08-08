@@ -369,6 +369,22 @@ button.ghost:hover { background: var(--surface-2); }
 .screen-inner .terminal-link {
   color: inherit; text-decoration: underline; text-decoration-thickness: 1px;
   text-underline-offset: 2px; cursor: pointer;
+  /* A hard-wrapped URL renders as one anchor per physical line; keep each piece
+     intact rather than letting the browser re-break it mid-anchor. */
+  word-break: keep-all;
+}
+/* Copy affordance rendered right after a link. Inline so it flows with the
+   terminal text, and deliberately small — terminals can be link-dense. */
+.terminal-link-copy {
+  display: inline; margin: 0 0 0 2px; padding: 0 3px;
+  border: 1px solid var(--border, #3a3a44); border-radius: 4px;
+  background: rgba(255, 255, 255, .06); color: inherit;
+  font-family: inherit; font-size: .85em; line-height: 1; cursor: copy;
+  vertical-align: baseline; box-shadow: none;
+}
+.terminal-link-copy:active { background: rgba(255, 255, 255, .16); }
+.terminal-link-copy[data-copied]::after {
+  content: attr(data-copied); margin-left: 4px; font-size: .9em; color: var(--accent);
 }
 .terminal-copy-code {
   position: relative; display: inline; margin: 0; padding: 0 3px; border: 1px solid #3a3a44;

@@ -282,20 +282,101 @@ function esc(s) {
 }
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 const URL_TRAILING_PUNCTUATION_RE = /[.,;:!?\]\)}]+$/;
-function linkify(text) {
-  let html = '';
-  let offset = 0;
+
+// URL character ranges within one LOGICAL line (physical lines already joined),
+// so a URL the terminal hard-wrapped is still recognised as one link.
+function urlRanges(text) {
+  const ranges = [];
   for (const match of text.matchAll(URL_RE)) {
     const raw = match[0];
     const trailing = raw.match(URL_TRAILING_PUNCTUATION_RE)?.[0] || '';
     const url = trailing ? raw.slice(0, -trailing.length) : raw;
     if (!url) continue;
-    html += esc(text.slice(offset, match.index));
-    const href = esc(url).replace(/"/g, '&quot;');
-    html += `<a class="terminal-link" href="${href}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(trailing)}`;
-    offset = match.index + raw.length;
+    ranges.push({ start: match.index, end: match.index + url.length, url });
   }
-  return html + esc(text.slice(offset));
+  return ranges;
+}
+
+function attr(value) {
+  return esc(value).replace(/"/g, '&quot;');
+}
+
+// Render one style run, wrapping any part of it that falls inside a URL range in
+// an anchor. A wrapped URL therefore yields one anchor per physical line, each
+// carrying the WHOLE url — every piece is clickable and copies in full. The copy
+// affordance is emitted once, after the piece that ends the url.
+function runHtml(text, absStart, ranges) {
+  if (!ranges.length) return esc(text);
+  let html = '';
+  let pos = 0;
+  for (const range of ranges) {
+    const from = Math.max(range.start, absStart);
+    const to = Math.min(range.end, absStart + text.length);
+    if (from >= to) continue;
+    const relFrom = from - absStart;
+    const relTo = to - absStart;
+    if (relFrom > pos) html += esc(text.slice(pos, relFrom));
+    const href = attr(range.url);
+    html += `<a class="terminal-link" href="${href}" target="_blank" rel="noopener noreferrer">${esc(text.slice(relFrom, relTo))}</a>`;
+    if (to === range.end) {
+      html += `<button type="button" class="terminal-link-copy" data-copy="${href}" title="Copy link" aria-label="Copy link">⧉</button>`;
+    }
+    pos = relTo;
+  }
+  return html + esc(text.slice(pos));
+}
+
+// Shared line renderer for both the live screen and history pages: reads style
+// runs per physical line, groups physical lines into logical ones via
+// `isWrapped`, and resolves URLs against the logical text. Exported for tests —
+// it only needs `term.cols` + `term.buffer.active`, so a bare headless Terminal
+// can drive it without a pty.
+export function renderLines(term, startY, endY) {
+  const buf = term.buffer.active;
+  const physical = [];
+  for (let y = startY; y < endY; y++) {
+    const line = buf.getLine(y);
+    if (!line) {
+      physical.push({ runs: [], wrapped: false });
+      continue;
+    }
+    const runs = [];
+    let key = null;
+    let run = '';
+    for (let x = 0; x < term.cols; x++) {
+      const cell = line.getCell(x);
+      if (!cell || cell.getWidth() === 0) continue; // wide-char trailing slot
+      const chars = cell.getChars() || ' ';
+      const k = cellKey(cell);
+      if (k !== key) {
+        if (run) runs.push({ key, text: run });
+        key = k;
+        run = '';
+      }
+      run += chars;
+    }
+    if (run) runs.push({ key, text: run });
+    physical.push({ runs, wrapped: !!line.isWrapped });
+  }
+
+  const out = [];
+  for (let i = 0; i < physical.length; ) {
+    let j = i + 1;
+    while (j < physical.length && physical[j].wrapped) j++;
+    const group = physical.slice(i, j);
+    const ranges = urlRanges(group.map((p) => p.runs.map((r) => r.text).join('')).join(''));
+    let abs = 0;
+    for (const p of group) {
+      let html = '';
+      for (const r of p.runs) {
+        html += spanFor(r.key, runHtml(r.text, abs, ranges));
+        abs += r.text.length;
+      }
+      out.push(html.replace(/\s+$/, ''));
+    }
+    i = j;
+  }
+  return out;
 }
 function cellKey(cell) {
   let fg = null;
@@ -310,14 +391,15 @@ function cellKey(cell) {
   }
   return `${fg || ''}|${bg || ''}|${bold ? 1 : 0}`;
 }
-function spanFor(key, text) {
-  const [fg, bg, bold] = key.split('|');
-  if (!fg && !bg && bold !== '1') return linkify(text);
+// `html` is already escaped/linkified by runHtml — this only adds the style span.
+function spanFor(key, html) {
+  const [fg, bg, bold] = String(key ?? '').split('|');
+  if (!fg && !bg && bold !== '1') return html;
   let style = '';
   if (fg) style += `color:${fg};`;
   if (bg) style += `background:${bg};`;
   if (bold === '1') style += 'font-weight:700;';
-  return `<span style="${style}">${linkify(text)}</span>`;
+  return `<span style="${style}">${html}</span>`;
 }
 
 // Render the buffer as colored HTML (one <span> run per style change per line),
@@ -332,33 +414,7 @@ export function captureColoredHtml(id, { full = false, maxLines = 600 } = {}) {
   const end = full ? buf.length : buf.baseY + term.rows;
   if (end - start > maxLines) start = end - maxLines;
 
-  const out = [];
-  for (let y = start; y < end; y++) {
-    const line = buf.getLine(y);
-    if (!line) {
-      out.push('');
-      continue;
-    }
-    let html = '';
-    let key = null;
-    let run = '';
-    for (let x = 0; x < term.cols; x++) {
-      const cell = line.getCell(x);
-      if (!cell) continue;
-      if (cell.getWidth() === 0) continue; // wide-char trailing slot
-      const chars = cell.getChars() || ' ';
-      const k = cellKey(cell);
-      if (k !== key) {
-        if (run) html += spanFor(key, run);
-        key = k;
-        run = '';
-      }
-      run += chars;
-    }
-    if (run) html += spanFor(key, run);
-    out.push(html.replace(/\s+$/, ''));
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
+  return renderLines(term, start, end).join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/g, '');
 }
 
 // Render one cursor-addressable slice of the native xterm history. `before` is
@@ -374,35 +430,9 @@ export function captureColoredHtmlPage(id, { before = null, limit = 400 } = {}) 
     : Math.max(0, Math.min(totalLines, Number(before) || 0));
   const pageSize = Math.max(50, Math.min(1000, Number(limit) || 400));
   const startLine = Math.max(0, endLine - pageSize);
-  const out = [];
-
-  for (let y = startLine; y < endLine; y++) {
-    const line = buf.getLine(y);
-    if (!line) {
-      out.push('');
-      continue;
-    }
-    let html = '';
-    let key = null;
-    let run = '';
-    for (let x = 0; x < term.cols; x++) {
-      const cell = line.getCell(x);
-      if (!cell || cell.getWidth() === 0) continue;
-      const chars = cell.getChars() || ' ';
-      const k = cellKey(cell);
-      if (k !== key) {
-        if (run) html += spanFor(key, run);
-        key = k;
-        run = '';
-      }
-      run += chars;
-    }
-    if (run) html += spanFor(key, run);
-    out.push(html.replace(/\s+$/, ''));
-  }
 
   return {
-    html: out.join('\n').replace(/\n+$/g, ''),
+    html: renderLines(term, startLine, endLine).join('\n').replace(/\n+$/g, ''),
     startLine,
     endLine,
     totalLines,

@@ -62,7 +62,9 @@ function linkifyTerminalText(value) {
     if (!url) continue;
     html += escapeTerminalHtml(text.slice(offset, match.index));
     const href = escapeTerminalHtml(url).replace(/"/g, '&quot;');
-    html += `<a class="terminal-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeTerminalHtml(url)}</a>${escapeTerminalHtml(trailing)}`;
+    html += `<a class="terminal-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeTerminalHtml(url)}</a>`
+      + `<button type="button" class="terminal-link-copy" data-copy="${href}" title="Copy link" aria-label="Copy link">⧉</button>`
+      + escapeTerminalHtml(trailing);
     offset = match.index + raw.length;
   }
   return html + escapeTerminalHtml(text.slice(offset));
@@ -112,7 +114,14 @@ function linkifyTerminalHtml(value) {
       anchor.target = '_blank';
       anchor.rel = 'noopener noreferrer';
       anchor.textContent = url;
-      fragment.append(anchor, document.createTextNode(trailing));
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'terminal-link-copy';
+      copy.dataset.copy = url;
+      copy.title = 'Copy link';
+      copy.setAttribute('aria-label', 'Copy link');
+      copy.textContent = '⧉';
+      fragment.append(anchor, copy, document.createTextNode(trailing));
       offset = match.index + raw.length;
     }
     fragment.append(document.createTextNode(text.slice(offset)));
@@ -854,8 +863,9 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     if (outer) reviewingRef.current = outer.scrollHeight - outer.scrollTop - outer.clientHeight > FOLLOW_TAIL_PX;
   };
   const copyTerminalCommand = async (event) => {
-    const button = event.target.closest?.('.terminal-copy-code');
+    const button = event.target.closest?.('.terminal-copy-code, .terminal-link-copy');
     if (!button || !outerRef.current?.contains(button)) return;
+    event.preventDefault(); // a link-copy tap must not also follow the adjacent anchor
     const copied = await copyText(button.dataset.copy || button.textContent || '');
     if (!copied) return;
     button.dataset.copied = 'Copied';
