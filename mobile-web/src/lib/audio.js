@@ -98,11 +98,15 @@ function releaseNow() {
   releaseTimer = null;
   // A registered handle means something is genuinely mid-playback (or paused
   // awaiting the user's Resume) — keep the source loaded so Resume still works.
-  if (!active) destroyPlayer();
-  try {
-    if (dingCtx && dingCtx.state === 'running') dingCtx.suspend().catch(() => {});
-  } catch {
-    /* context already gone */
+  // `active` means something is genuinely mid-playback (or paused awaiting the
+  // user's Resume) — suspending the context would freeze it mid-sentence.
+  if (!active) {
+    destroyPlayer();
+    try {
+      if (dingCtx && dingCtx.state === 'running') dingCtx.suspend().catch(() => {});
+    } catch {
+      /* context already gone */
+    }
   }
   clearMediaSession();
 }
@@ -206,7 +210,78 @@ export function ding(kind = 'success') {
   releaseAudioFocusSoon(); // a cue is a blip, not a reason to hold the speaker
 }
 
+// Spoken replies play through Web Audio, NOT the <audio> element, and this is
+// load-bearing on Android: Chrome asks the OS for *permanent* audio focus on
+// behalf of a media element, which tells Spotify "stop for good" — it then stays
+// paused however cleanly we release afterwards. A pure Web Audio source is
+// registered as a one-shot/ambient player instead, which takes focus only
+// transiently, so the car ducks the music under Claude and restores it after.
+// (It also keeps us off the car's now-playing slot entirely.)
+//
+// Cost: the whole clip must download and decode before playback starts, so this
+// falls back to the streaming element path whenever fetch/decode can't deliver.
+let voiceSource = null;
+
+function stopVoiceSource() {
+  if (!voiceSource) return;
+  try { voiceSource.stop(); } catch { /* already ended */ }
+  voiceSource = null;
+}
+
+async function playViaWebAudio(url, onStart) {
+  holdAudioFocus(); // a release armed by an earlier ding must not suspend us mid-reply
+  const ctx = getDingCtx();
+  if (!ctx || !window.fetch) return false;
+  let buffer;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return false;
+    buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+  } catch {
+    return false; // unfetchable or undecodable — caller falls back to the element
+  }
+  if (ctx.state === 'suspended') {
+    try { await ctx.resume(); } catch { /* gesture-gated; fall through */ }
+  }
+  return new Promise((resolve) => {
+    let src;
+    try {
+      src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+    } catch {
+      return resolve(false);
+    }
+    stopVoiceSource();
+    voiceSource = src;
+    const handle = {
+      pause: () => { ctx.suspend().catch(() => {}); },
+      resume: () => { ctx.resume().catch(() => {}); },
+      stop: () => { ctx.resume().catch(() => {}); stopVoiceSource(); },
+      isPaused: () => ctx.state === 'suspended',
+    };
+    src.onended = () => {
+      if (voiceSource === src) voiceSource = null;
+      clearActivePlayback(handle);
+      releaseAudioFocusSoon(); // suspends the context -> focus returns to Spotify
+      resolve(true);
+    };
+    setActivePlayback(handle);
+    try {
+      src.start();
+      onStart?.();
+    } catch {
+      clearActivePlayback(handle);
+      resolve(false);
+    }
+  });
+}
+
 export function playUrl(u, { onStart } = {}) {
+  return playViaWebAudio(u, onStart).then((ok) => (ok ? undefined : playViaElement(u, { onStart })));
+}
+
+function playViaElement(u, { onStart } = {}) {
   return new Promise((resolve) => {
     try {
       holdAudioFocus();
@@ -254,6 +329,7 @@ export function playUrl(u, { onStart } = {}) {
 // Resolves whatever promise playUrl() handed out, so the caller's turn loop
 // carries on rather than waiting for audio that will never finish.
 export function stopAudio() {
+  stopVoiceSource(); // Web Audio path (the normal one) — its onended releases focus
   try {
     if (!player) return;
     player.pause();
