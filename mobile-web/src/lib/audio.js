@@ -60,31 +60,51 @@ export function skipPlayback() {
 // flap between Claude and the music between every sentence.
 let releaseTimer = null;
 
+// Chrome keeps its OS media session (the entry a car dashboard shows) alive
+// after a clip ENDS, deliberately, so the user can replay it — and while that
+// entry exists the car treats us as the current source and never resumes the
+// music. Emptying the element is not enough; the element itself has to go, and
+// the session's metadata/handlers have to be cleared. Both are cheap: playUrl
+// builds a fresh element on demand.
+const MEDIA_SESSION_ACTIONS = [
+  'play', 'pause', 'stop', 'seekbackward', 'seekforward', 'seekto',
+  'previoustrack', 'nexttrack',
+];
+
+function clearMediaSession() {
+  const ms = navigator.mediaSession;
+  if (!ms) return;
+  try { ms.playbackState = 'none'; } catch { /* unsupported */ }
+  try { ms.metadata = null; } catch { /* unsupported */ }
+  for (const action of MEDIA_SESSION_ACTIONS) {
+    try { ms.setActionHandler(action, null); } catch { /* action unsupported here */ }
+  }
+}
+
+function destroyPlayer() {
+  if (!player) return;
+  try {
+    player.pause();
+    player.removeAttribute('src');
+    player.load(); // -> NETWORK_EMPTY: the element no longer owns a resource
+    player.remove();
+  } catch {
+    /* already gone */
+  }
+  player = null;
+}
+
 function releaseNow() {
   releaseTimer = null;
   // A registered handle means something is genuinely mid-playback (or paused
   // awaiting the user's Resume) — keep the source loaded so Resume still works.
-  if (!active) {
-    try {
-      if (player && player.getAttribute('src')) {
-        player.pause();
-        player.removeAttribute('src');
-        player.load(); // drops the decoder + the element's claim on the speaker
-      }
-    } catch {
-      /* nothing loaded */
-    }
-  }
+  if (!active) destroyPlayer();
   try {
     if (dingCtx && dingCtx.state === 'running') dingCtx.suspend().catch(() => {});
   } catch {
     /* context already gone */
   }
-  try {
-    if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
-  } catch {
-    /* unsupported */
-  }
+  clearMediaSession();
 }
 
 // Give the speaker back to whatever was playing before (music, podcast, nav).
@@ -104,8 +124,12 @@ export function holdAudioFocus() {
   }
 }
 
-export function initAudio() {
-  if (player) return;
+// The element is rebuilt on demand because releasing the speaker destroys it
+// (see destroyPlayer). Autoplay stays permitted: Chrome's gate is the page's
+// sticky user activation, which the unlock gesture below grants for the page's
+// lifetime, not a property of any one element.
+function ensurePlayer() {
+  if (player) return player;
   player = document.createElement('audio');
   player.setAttribute('playsinline', '');
   player.style.display = 'none';
@@ -114,12 +138,19 @@ export function initAudio() {
   // actually doing (play() resolves after setActivePlayback, so the first state is
   // otherwise stale).
   for (const ev of ['play', 'playing', 'pause']) player.addEventListener(ev, notifyPlayback);
+  return player;
+}
+
+export function initAudio() {
+  if (player) return;
+  ensurePlayer();
   const unlock = () => {
     if (unlocked) return;
     unlocked = true;
     try {
-      player.src = SILENT;
-      const p = player.play();
+      const el = ensurePlayer();
+      el.src = SILENT;
+      const p = el.play();
       if (p && p.catch) p.catch(() => {});
     } catch {
       /* ignore */
@@ -179,6 +210,7 @@ export function playUrl(u, { onStart } = {}) {
   return new Promise((resolve) => {
     try {
       holdAudioFocus();
+      const player = ensurePlayer(); // released playback destroys the old element
       player.src = u;
       let settled = false;
       const settle = () => {

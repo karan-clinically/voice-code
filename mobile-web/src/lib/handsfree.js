@@ -341,7 +341,14 @@ export class HandsFree {
       const finish = () => {
         if (done) return;
         done = true;
-        try { el.pause(); node.disconnect(); } catch { /* ignore */ }
+        try {
+          el.pause();
+          node.disconnect();
+          // Drop the resource too — an element that still holds a src keeps
+          // Chrome's OS media session (and the car's speaker) alive.
+          el.removeAttribute('src');
+          el.load();
+        } catch { /* ignore */ }
         if (this.playEl === el) this.playEl = null;
         clearActivePlayback(handle);
         resolve();

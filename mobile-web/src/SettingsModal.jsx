@@ -73,7 +73,45 @@ export default function SettingsModal({ onClose, notify, onProvidersChanged }) {
           </div>
           <NotificationsSetting notify={notify} />
         </div>
+        <div className="set-item">
+          <strong>App version</strong>
+          <div className="muted">
+            Which frontend build this device is running. Use it to confirm a fix actually reached the phone
+            before testing it.
+          </div>
+          <BuildStamp />
+        </div>
       </div>
+    </div>
+  );
+}
+
+// The bundle hash this page loaded vs. the one the harness serves now. They
+// differ whenever an update is pending — the debugging cost of not knowing which
+// build a phone is on is high enough to earn a permanent readout.
+function BuildStamp() {
+  const [served, setServed] = useState(null);
+  const loaded = React.useMemo(() => {
+    const el = document.querySelector('script[src*="/assets/index-"]');
+    return el?.src.match(/index-([A-Za-z0-9_-]+)\.js/)?.[1] || 'dev';
+  }, []);
+  useEffect(() => {
+    let stop = false;
+    fetch('/api/health')
+      .then((r) => r.json())
+      .then((d) => !stop && setServed(d.build || null))
+      .catch(() => {});
+    return () => { stop = true; };
+  }, []);
+  const stale = served && served !== loaded;
+  return (
+    <div className="row" style={{ alignItems: 'center', gap: 10 }}>
+      <code style={{ fontSize: 12 }}>{loaded}</code>
+      {stale ? (
+        <button className="ghost" onClick={() => location.reload()}>Update ready — reload</button>
+      ) : (
+        <span className="muted" style={{ fontSize: 12 }}>{served ? 'up to date' : '…'}</span>
+      )}
     </div>
   );
 }
