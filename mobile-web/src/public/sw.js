@@ -8,11 +8,24 @@
    service workers cannot read localStorage. */
 
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
 const TOKEN_CACHE = 'cvh-auth';
 const TOKEN_KEY = '/__cvh_token';
-const SHELL_CACHE = 'cvh-shell-v1';
+const SHELL_CACHE = 'cvh-shell-v2';
+
+// Drop shells cached by an older worker. Without this a stale shell survives the
+// upgrade and keeps pinning the app to the bundle it names.
+self.addEventListener('activate', (event) =>
+  event.waitUntil(
+    (async () => {
+      const names = await caches.keys();
+      await Promise.all(
+        names.filter((n) => n.startsWith('cvh-shell-') && n !== SHELL_CACHE).map((n) => caches.delete(n))
+      );
+      await self.clients.claim();
+    })()
+  )
+);
 
 // Cache only UI assets and the navigation shell. Live /api and /ws data always
 // bypasses this handler and retains its existing freshness semantics.
@@ -21,13 +34,36 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin || !(url.pathname === '/m' || url.pathname.startsWith('/m/'))) return;
-  const key = req.mode === 'navigate' ? new Request('/m/') : req;
+  const isNavigation = req.mode === 'navigate';
+  const key = isNavigation ? new Request('/m/') : req;
   const update = fetch(req).then(async (response) => {
     if (response.ok) (await caches.open(SHELL_CACHE)).put(key, response.clone());
     return response;
   });
   event.waitUntil(update.catch(() => {}));
-  event.respondWith(caches.match(key).then((cached) => cached || update));
+
+  // Assets are content-hashed, so a cache hit is always the right bytes.
+  if (!isNavigation) {
+    event.respondWith(caches.match(key).then((cached) => cached || update));
+    return;
+  }
+
+  // The shell is different: it NAMES the hashed bundle, so serving a stale copy
+  // pins the whole app to an old build — updates then never arrive no matter how
+  // often the user reloads. Prefer the network here, falling back to cache only
+  // when it is slow or offline, so start-up stays instant without going stale.
+  event.respondWith(
+    (async () => {
+      try {
+        return await Promise.race([
+          update,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('slow shell')), 1500)),
+        ]);
+      } catch {
+        return (await caches.match(key)) || update;
+      }
+    })()
+  );
 });
 
 async function saveToken(t) {
