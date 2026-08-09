@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { sessionScreen, sessionMessagePage, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
-import { tapRecord, playUrl } from './lib/audio.js';
+import { tapRecord, playUrl, voiceBoost, setVoiceBoost, VOICE_BOOST_LEVELS } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 import { THEMES, getTheme, applyTheme } from './lib/theme.js';
 import { keepAwakeEnabled, setKeepAwake } from './lib/wakeLock.js';
@@ -290,6 +290,27 @@ export function KeepAwakeToggle() {
     <div className="seg" title="Keep the screen on while waiting for spoken replies">
       <button className={'seg-btn' + (!on ? ' on' : '')} onClick={() => choose(false)}>Off</button>
       <button className={'seg-btn' + (on ? ' on' : '')} onClick={() => choose(true)}>On</button>
+    </div>
+  );
+}
+
+// How far to lift spoken replies above whatever else is playing. Android mixes a
+// transient sound in rather than ducking the music app, and a web page cannot
+// turn that app down — so this is the only lever over intelligibility in a car.
+export function VoiceBoostPicker() {
+  const [id, setId] = useState(() => voiceBoost().id);
+  const choose = (next) => { setVoiceBoost(next); setId(next); };
+  return (
+    <div className="seg" title="Lift Claude's voice above music playing from another app">
+      {VOICE_BOOST_LEVELS.map((level) => (
+        <button
+          key={level.id}
+          className={'seg-btn' + (id === level.id ? ' on' : '')}
+          onClick={() => choose(level.id)}
+        >
+          {level.label}
+        </button>
+      ))}
     </div>
   );
 }

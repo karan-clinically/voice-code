@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { SttModeToggle, SummariseToggle, ElevenVoicePicker, ThemePicker, KeepAwakeToggle } from './components.jsx';
+import { SttModeToggle, SummariseToggle, ElevenVoicePicker, ThemePicker, KeepAwakeToggle, VoiceBoostPicker } from './components.jsx';
 import { pushSupported, notificationsOn, enableNotifications, disableNotifications } from './lib/push.js';
 import { apiKeyState, saveApiKeys, pushTest } from './lib/api.js';
 import BrainSettings from './BrainSettings.jsx';
@@ -57,6 +57,14 @@ export default function SettingsModal({ onClose, notify, onProvidersChanged }) {
           <strong>Voice</strong>
           <div className="muted">Which ElevenLabs voice reads replies aloud. Tap Preview to hear it.</div>
           <ElevenVoicePicker notify={notify} />
+        </div>
+        <div className="set-item">
+          <strong>Voice loudness over music</strong>
+          <div className="muted">
+            Android mixes Claude in with whatever else is playing instead of turning it down, and an app
+            can’t lower another app’s volume. Lift Claude above the music here — “Car” for road noise.
+          </div>
+          <VoiceBoostPicker />
         </div>
         <div className="set-item">
           <strong>Keep screen awake</strong>

@@ -222,6 +222,53 @@ export function ding(kind = 'success') {
 // falls back to the streaming element path whenever fetch/decode can't deliver.
 let voiceSource = null;
 
+// Android mixes a transient sound in rather than ducking the music app, and a web
+// page cannot turn Spotify down. What it CAN do is come through clearly over the
+// top — the way a navigation prompt does. Boost is per-device (a car needs far
+// more than headphones) and compressed rather than clipped, so raising it stays
+// intelligible instead of turning harsh.
+const VOICE_BOOST_KEY = 'cvh-voice-boost';
+export const VOICE_BOOST_LEVELS = [
+  { id: 'off', label: 'Normal', gain: 1 },
+  { id: 'loud', label: 'Loud', gain: 2.2 },
+  { id: 'car', label: 'Car', gain: 3.6 },
+];
+
+export function voiceBoost() {
+  try {
+    const saved = localStorage.getItem(VOICE_BOOST_KEY);
+    return VOICE_BOOST_LEVELS.find((l) => l.id === saved) || VOICE_BOOST_LEVELS[0];
+  } catch {
+    return VOICE_BOOST_LEVELS[0];
+  }
+}
+
+export function setVoiceBoost(id) {
+  try { localStorage.setItem(VOICE_BOOST_KEY, id); } catch { /* private mode */ }
+}
+
+// source -> gain -> compressor -> speaker. The compressor is what makes a 3.6x
+// boost usable: it holds the peaks instead of letting them clip.
+function voiceChain(ctx) {
+  const gain = ctx.createGain();
+  gain.gain.value = voiceBoost().gain;
+  let tail = gain;
+  try {
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.knee.value = 12;
+    comp.ratio.value = 12;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.25;
+    gain.connect(comp);
+    tail = comp;
+  } catch {
+    /* no compressor here — plain gain still works */
+  }
+  tail.connect(ctx.destination);
+  return gain;
+}
+
 function stopVoiceSource() {
   if (!voiceSource) return;
   try { voiceSource.stop(); } catch { /* already ended */ }
@@ -248,7 +295,7 @@ async function playViaWebAudio(url, onStart) {
     try {
       src = ctx.createBufferSource();
       src.buffer = buffer;
-      src.connect(ctx.destination);
+      src.connect(voiceChain(ctx));
     } catch {
       return resolve(false);
     }
