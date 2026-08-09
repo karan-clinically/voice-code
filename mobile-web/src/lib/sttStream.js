@@ -13,6 +13,8 @@
 //     `recovered` is a WAV Blob of everything captured, so a stream that dies
 //     mid-utterance can be retried as a one-shot batch upload.
 
+import { holdAudioFocus, releaseAudioFocusSoon } from './audio.js';
+
 const TARGET_RATE = 16000;
 
 function floatToPcm16(f32) {
@@ -60,6 +62,7 @@ function pcmToWav(chunks, rate) {
 
 export async function startSttStream({ wsUrl, onPartial, onFinal, onCleaned, onError }) {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone needs HTTPS');
+  holdAudioFocus(); // dictating takes the channel until release() below
   const media = await navigator.mediaDevices.getUserMedia({ audio: true });
   const captured = []; // Int16Array chunks, kept for the batch fallback
   let finished = false;
@@ -68,6 +71,7 @@ export async function startSttStream({ wsUrl, onPartial, onFinal, onCleaned, onE
   const release = () => {
     try {
       media.getTracks().forEach((t) => t.stop());
+      releaseAudioFocusSoon(0); // free the mic route so paused music can resume
     } catch {
       /* ignore */
     }

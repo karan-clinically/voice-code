@@ -18,7 +18,10 @@
 // starts — otherwise the reply's own first syllable interrupts itself. Browser
 // echo cancellation does most of the work; these are the belt and braces.
 
-import { pickMime, playUrl, stopAudio, setActivePlayback, clearActivePlayback } from './audio.js';
+import {
+  pickMime, playUrl, stopAudio, setActivePlayback, clearActivePlayback,
+  holdAudioFocus, releaseAudioFocusSoon,
+} from './audio.js';
 
 // Spoken replies are summarized by default. These phrases mean "read out the
 // reply you just summarized" — they are answered locally from the text the
@@ -120,6 +123,7 @@ export class HandsFree {
 
   async start() {
     try {
+      holdAudioFocus(); // hands-free owns the speaker for the whole conversation
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
@@ -150,6 +154,8 @@ export class HandsFree {
     this.stream?.getTracks().forEach((t) => t.stop());
     this.ctx?.close().catch(() => {});
     this.analyser = null;
+    // Leaving hands-free hands the car stereo back to the user's music.
+    releaseAudioFocusSoon(0);
     this.setState('idle');
   }
 

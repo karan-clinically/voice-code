@@ -48,6 +48,62 @@ export function skipPlayback() {
   if (active) active.stop(); // stop() clears the handle + notifies via its own path
 }
 
+// --- audio focus -------------------------------------------------------------
+// Android hands the speaker to one app at a time and only lets the user's music
+// resume once every producer in this tab goes quiet. Two things count as "still
+// producing" even in silence: a media element that still has a source loaded,
+// and an AudioContext in the `running` state. So after a spoken reply (or a UI
+// ding, or a recording) we must actively release BOTH, or the car stays silent
+// until the tab is closed — which is exactly the reported symptom.
+//
+// The release is debounced: back-to-back clips would otherwise make the stereo
+// flap between Claude and the music between every sentence.
+let releaseTimer = null;
+
+function releaseNow() {
+  releaseTimer = null;
+  // A registered handle means something is genuinely mid-playback (or paused
+  // awaiting the user's Resume) — keep the source loaded so Resume still works.
+  if (!active) {
+    try {
+      if (player && player.getAttribute('src')) {
+        player.pause();
+        player.removeAttribute('src');
+        player.load(); // drops the decoder + the element's claim on the speaker
+      }
+    } catch {
+      /* nothing loaded */
+    }
+  }
+  try {
+    if (dingCtx && dingCtx.state === 'running') dingCtx.suspend().catch(() => {});
+  } catch {
+    /* context already gone */
+  }
+  try {
+    if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
+  } catch {
+    /* unsupported */
+  }
+}
+
+// Give the speaker back to whatever was playing before (music, podcast, nav).
+export function releaseAudioFocusSoon(delayMs = 700) {
+  clearTimeout(releaseTimer);
+  releaseTimer = setTimeout(releaseNow, delayMs);
+}
+
+// Cancel a pending release — we're about to make sound again.
+export function holdAudioFocus() {
+  clearTimeout(releaseTimer);
+  releaseTimer = null;
+  try {
+    if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
+  } catch {
+    /* unsupported */
+  }
+}
+
 export function initAudio() {
   if (player) return;
   player = document.createElement('audio');
@@ -69,6 +125,10 @@ export function initAudio() {
       /* ignore */
     }
     getDingCtx(); // resume the tone context on the same gesture so later dings sound
+    // Unlocking is silent, but both claims above still take the speaker from the
+    // user's music. Hand it straight back — we only need the permission, not the
+    // channel, until there's actually something to say.
+    releaseAudioFocusSoon(400);
   };
   document.addEventListener('touchend', unlock, { once: true, passive: true });
   document.addEventListener('click', unlock, { once: true });
@@ -95,6 +155,7 @@ const DING_SEQ = {
   error: [[400, 0, 0.14], [300, 0.15, 0.24]],
 };
 export function ding(kind = 'success') {
+  holdAudioFocus();
   const ctx = getDingCtx();
   if (!ctx) return;
   const now = ctx.currentTime;
@@ -111,11 +172,13 @@ export function ding(kind = 'success') {
     osc.start(t0);
     osc.stop(t0 + dur + 0.02);
   }
+  releaseAudioFocusSoon(); // a cue is a blip, not a reason to hold the speaker
 }
 
 export function playUrl(u, { onStart } = {}) {
   return new Promise((resolve) => {
     try {
+      holdAudioFocus();
       player.src = u;
       let settled = false;
       const settle = () => {
@@ -127,6 +190,7 @@ export function playUrl(u, { onStart } = {}) {
         player.onended = null;
         player.onerror = null;
         clearActivePlayback(handle);
+        releaseAudioFocusSoon(); // reply over — give the music back
         settle();
       };
       const handle = {
@@ -166,6 +230,7 @@ export function stopAudio() {
     player.removeAttribute('src');
     player.load();
     if (done) done();
+    releaseAudioFocusSoon(0); // barge-in: hand the speaker back immediately
   } catch {
     /* nothing playing */
   }
@@ -186,8 +251,10 @@ export async function tapRecord(onDone, onErr) {
   }
   let stream;
   try {
+    holdAudioFocus(); // capturing takes the channel; don't let a pending release race it
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
+    releaseAudioFocusSoon(0);
     onErr && onErr('Mic: ' + e.message);
     return null;
   }
@@ -196,7 +263,10 @@ export async function tapRecord(onDone, onErr) {
   const chunks = [];
   rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   rec.onstop = () => {
+    // Stopping the tracks is what actually frees the microphone — until then the
+    // OS keeps the route in capture mode and the music stays paused.
     stream.getTracks().forEach((t) => t.stop());
+    releaseAudioFocusSoon(0);
     const type = rec.mimeType || 'audio/webm';
     const ext = type.includes('mp4') ? 'mp4' : type.includes('ogg') ? 'ogg' : 'webm';
     onDone(new Blob(chunks, { type }), ext);
