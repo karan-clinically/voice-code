@@ -12,7 +12,7 @@ import QuickSessionSwitcher from './QuickSessionSwitcher.jsx';
 import { normalizeSpokenSlash } from './lib/slashCommands.js';
 import { readSessionCards, writeSessionCards, recordSessionView } from './lib/localCache.js';
 import { useWakeLock, keepAwakeEnabled } from './lib/wakeLock.js';
-import { listenForResume } from './lib/resume.js';
+import { listenForResume, watchReconnect } from './lib/resume.js';
 
 // Spoken form of a detected prompt (a numbered picker or a bash-permission dialog):
 // the question followed by its numbered options, so it's clear what you're answering.
@@ -517,6 +517,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     let pongDue = null;
     let reconnectTimer = null;
     let connectDeadline = null;
+    let connectingSince = 0; // when the current handshake started (watchdog below)
     // Locking the phone suspends the tab and the OS kills this socket; without a
     // rewire, sendRaw reports "Key channel not ready" after every unlock. Reconnect
     // on close (while awake) and on the visibility flip back to foreground. The
@@ -530,6 +531,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       reconnectTimer = null;
       const socket = new WebSocket(termWsUrl(session.id));
       keyWs.current = socket;
+      connectingSince = Date.now();
       connectDeadline = setTimeout(() => {
         if (keyWs.current !== socket || socket.readyState === WebSocket.OPEN) return;
         keyWs.current = null;
@@ -580,10 +582,26 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       connect();
     };
     const stopKeyResume = listenForResume(onVisible);
+    // Same backstop as the terminal socket: the reconnects here are armed by
+    // events that a waking phone can swallow, and losing the last one leaves the
+    // keypad on the HTTP fallback for the rest of the session.
+    const stopKeyWatchdog = watchReconnect(() => {
+      if (stop) return;
+      const socket = keyWs.current;
+      const healthy = socket && (socket.readyState === WebSocket.OPEN
+        || (socket.readyState === WebSocket.CONNECTING && Date.now() - connectingSince < 8000));
+      if (healthy || reconnectTimer) return;
+      if (socket) {
+        keyWs.current = null;
+        try { socket.close(); } catch { /* stuck handshake */ }
+      }
+      connect();
+    });
     connect();
     return () => {
       stop = true;
       clearInterval(pinger);
+      stopKeyWatchdog();
       clearTimeout(pongDue);
       clearTimeout(connectDeadline);
       clearTimeout(reconnectTimer);

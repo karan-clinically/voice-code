@@ -6,7 +6,7 @@ import { THEMES, getTheme, applyTheme } from './lib/theme.js';
 import { keepAwakeEnabled, setKeepAwake } from './lib/wakeLock.js';
 import { readTerminalSnapshot, writeTerminalSnapshot } from './lib/localCache.js';
 import { copyText } from './lib/clipboard.js';
-import { listenForResume } from './lib/resume.js';
+import { listenForResume, watchReconnect } from './lib/resume.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
@@ -773,6 +773,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     let pongDue = null; // timer armed per ping; fires = no pong in time = zombie
     let reconnectTimer = null;
     let connectDeadline = null;
+    let connectingSince = 0; // when the current handshake started (watchdog below)
     const retrySoon = () => {
       if (stop || document.hidden || reconnectTimer) return;
       reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 500);
@@ -785,6 +786,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         setConnectionState('connecting');
         const socket = new WebSocket(termWsUrl(sessionId));
         ws = socket;
+        connectingSince = Date.now();
         connectDeadline = setTimeout(() => {
           if (ws !== socket || socket.readyState === WebSocket.OPEN) return;
           // Chrome/WebKit can leave a post-suspend handshake in CONNECTING forever,
@@ -854,6 +856,27 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     };
     const stopResume = listenForResume(onVisible);
 
+    // Every reconnect above is armed by an event (onclose, the connect deadline,
+    // the resume flip) and two of them decline to arm anything while the page
+    // reports hidden — which a phone does intermittently as it wakes. Lose the
+    // last one that way and the terminal waits on a visibility change that will
+    // never come, showing "Reconnecting…" until a manual reload. So re-check the
+    // invariant on a timer instead: no socket, a closed one, or a handshake that
+    // has been in flight too long (the 4s deadline is itself a timer, and timers
+    // freeze with the tab) means connect again.
+    const stopWatchdog = watchReconnect(() => {
+      if (stop || reconnectTimer) return;
+      const healthy = ws && (ws.readyState === WebSocket.OPEN
+        || (ws.readyState === WebSocket.CONNECTING && Date.now() - connectingSince < 8000));
+      if (healthy) return; // a live socket that silently died is the pinger's job
+      if (ws) {
+        const abandoned = ws;
+        ws = null;
+        try { abandoned.close(); } catch { /* stuck handshake */ }
+      }
+      connect();
+    });
+
     connect();
     paint();
     const t = setInterval(paint, 2000);
@@ -861,6 +884,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       stop = true;
       clearInterval(t);
       clearInterval(pinger);
+      stopWatchdog();
       clearTimeout(pongDue);
       clearTimeout(connectDeadline);
       clearTimeout(reconnectTimer);
