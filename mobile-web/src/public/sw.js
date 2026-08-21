@@ -11,7 +11,12 @@ self.addEventListener('install', () => self.skipWaiting());
 
 const TOKEN_CACHE = 'cvh-auth';
 const TOKEN_KEY = '/__cvh_token';
-const SHELL_CACHE = 'cvh-shell-v2';
+// Bumping this version is the escape hatch when a phone is pinned to an old
+// bundle: the browser fetches sw.js OUTSIDE this worker's own fetch handler, so a
+// new worker still reaches a client whose shell cache is otherwise stuck, and the
+// activate step below then deletes the shell that was doing the pinning. Bump it
+// whenever a client is stranded on a build it cannot update past.
+const SHELL_CACHE = 'cvh-shell-v3';
 
 // Drop shells cached by an older worker. Without this a stale shell survives the
 // upgrade and keeps pinning the app to the bundle it names.
@@ -168,6 +173,7 @@ self.addEventListener('push', (event) => {
 // Spoken form of a picker: the question, then its numbered options — the same thing the
 // session view reads out, so a notification sounds like being in the session.
 function promptSpeech(p) {
+  if (p.speech) return p.speech; // built by the harness; the rest is the old-server fallback
   const q = String(p.question || 'Please choose how Claude should proceed.').trim();
   const context = String(p.context || '').trim();
   const intro = context ? `Claude needs a decision. Here is the context: ${context}. The question is: ${q}.` : `Claude is asking: ${q}.`;

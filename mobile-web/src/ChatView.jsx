@@ -5,6 +5,7 @@ import { sessionMessages, sendChat, sessionPrompt, selectPromptOption } from './
 import { ding } from './lib/audio.js';
 import { copyText } from './lib/clipboard.js';
 import { listenForResume } from './lib/resume.js';
+import { mergeTail } from './lib/transcript.js';
 import ChatComposer from './ChatComposer.jsx';
 
 // App-style chat over a live session (phone) — Claude or Grok. Renders the
@@ -18,13 +19,17 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
   const [queuedTexts, setQueuedTexts] = useState([]); // parked behind the running turn; tap to push now
   const lastId = useRef(0);
   const lastSig = useRef(''); // change-signature for the full-transcript path
+  const transcript = useRef([]); // assembled transcript the deltas merge into
+  const transcriptVersion = useRef(null); // server's stamp; unchanged = skip the body
   const scrollRef = useRef(null);
   const pinned = useRef(true);
   const firstPoll = useRef(true); // don't chime for the backfilled history on open
 
   const poll = useCallback(async () => {
     try {
-      const { messages: fresh, lastId: last, state, full, queuedCommands } = await sessionMessages(session.id, lastId.current);
+      const { messages: fresh, lastId: last, state, full, delta, unchanged, version, queuedCommands } =
+        await sessionMessages(session.id, lastId.current, { version: transcriptVersion.current });
+      transcriptVersion.current = version || null;
       setQueuedTexts(Array.isArray(queuedCommands) ? queuedCommands : []);
       // Prefer the server's busy state (once deployed); until then, clear the
       // indicator when the assistant's reply lands.
@@ -36,18 +41,26 @@ export default function ChatView({ session, notify, speakerOn, onToggleSpeaker }
       } else {
         setPrompt(null);
       }
-      if (full) {
-        // Live transcript snapshot: the whole conversation each poll. Replace only
-        // when it actually changed (avoids needless re-render/scroll), keeping any
-        // optimistic local- user turn that hasn't reached the transcript yet.
-        const lastMsg = fresh[fresh.length - 1];
-        const sig = fresh.length + '|' + (lastMsg ? lastMsg.text.slice(-48) : '');
+      if (unchanged) {
+        // Nothing written since the last poll — the state/prompt handling above is
+        // the whole point of this round trip.
+      } else if (full || delta) {
+        // Live transcript. `full` is the opening snapshot; after that the server
+        // sends only the tail, so keep the assembled conversation here and merge
+        // into it. Re-render only when it actually changed (avoids needless
+        // re-render/scroll), keeping any optimistic local- user turn that hasn't
+        // reached the transcript yet.
+        const merged = full ? fresh : mergeTail(transcript.current, fresh);
+        transcript.current = merged;
+        lastId.current = last || merged.length;
+        const lastMsg = merged[merged.length - 1];
+        const sig = merged.length + '|' + (lastMsg ? lastMsg.text.slice(-48) : '');
         if (sig !== lastSig.current) {
           setMessages((prev) => {
             const locals = prev.filter(
-              (m) => String(m.id).startsWith('local-') && !fresh.some((f) => f.role === 'user' && f.text === m.text)
+              (m) => String(m.id).startsWith('local-') && !merged.some((f) => f.role === 'user' && f.text === m.text)
             );
-            return [...fresh.map((f) => ({ ...f, id: 't' + f.id })), ...locals];
+            return [...merged.map((f) => ({ ...f, id: 't' + f.id })), ...locals];
           });
           if (!firstPoll.current && lastMsg && lastMsg.role === 'assistant') ding('success');
           lastSig.current = sig;

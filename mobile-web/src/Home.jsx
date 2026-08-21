@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSwipeable } from 'react-swipeable';
 import { createSession, listProviders, transcribe, usageSummary, recentSessions, reindexArchive, killLocal, killSession, renameSession, sessionInput, deleteGrokConv } from './lib/api.js';
-import { openSessionRow, canOpenRow } from './lib/sessionOpen.js';
+import { openSessionRow, canOpenRow, startSessionInFolder } from './lib/sessionOpen.js';
 import { ATTENTION_SHORT, attentionOf } from './lib/attention.js';
-import { MicButton, FolderPicker, basename } from './components.jsx';
+import { MicButton, FolderPicker, NewInFolderButton } from './components.jsx';
 import SpendModal, { fmtUsd } from './SpendModal.jsx';
 import SettingsModal from './SettingsModal.jsx';
 import { readSessionCards, writeSessionCards } from './lib/localCache.js';
+import { cwdName, groupByFolder } from './lib/folders.js';
 import { listenForResume } from './lib/resume.js';
 
 // Where a session was started, as a short text tag. RC = remote control (a terminal
@@ -28,16 +29,10 @@ function shortAgo(ts) {
   return `${Math.floor(h / 24)}d`;
 }
 
-// Day bucket header (Today / Yesterday / Earlier) for a session's last activity.
-const BUCKETS = ['Today', 'Yesterday', 'Earlier'];
-function dayBucket(ts) {
-  const t = Date.parse(ts);
-  const now = new Date();
-  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  if (t >= startToday) return 'Today';
-  if (t >= startToday - 86400000) return 'Yesterday';
-  return 'Earlier';
-}
+// Sessions are grouped by the folder they run in — the same arrangement as the
+// in-session switcher drawer. This replaced Today/Yesterday/Earlier buckets: which
+// project a session belongs to is what you actually scan for, and each row still
+// carries its own relative time (shortAgo below), so nothing was lost with them.
 
 // One session row, styled like the Claude Code app. Local (bare-terminal) sessions —
 // a claude the harness doesn't own, running in some terminal — get iOS-style
@@ -96,9 +91,9 @@ function SessionRow({ it, openable, opening, onOpen, onRename, onKill, onDelete,
     if (openable) onOpen(it);
   };
 
-  const repo = it.repo ? (it.branch ? `${it.repo} · ${it.branch}` : it.repo) : '';
-  const folder = it.cwd ? basename(it.cwd) : '';
-  const sub = [repo.toLowerCase().includes(folder.toLowerCase()) ? '' : folder, repo].filter(Boolean).join('  ·  ');
+  // The folder used to lead this line; the group heading above the row owns it now
+  // (a row only ever has a folder when it is inside one), leaving repo · branch.
+  const sub = it.repo ? (it.branch ? `${it.repo} · ${it.branch}` : it.repo) : '';
   const att = attentionOf(it);
   const jobStatus = opening
     ? { label: 'Opening…', kind: 'working' }
@@ -246,14 +241,15 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
     reindexArchive().catch(() => {});
   }, []);
 
-  async function startProvider(provider) {
+  // `dir` lets a folder heading's ＋ start straight into a known folder; the New
+  // session sheet passes nothing and keeps using whatever is in its path box.
+  async function startProvider(provider, dir = null) {
     if (startingRef.current) return;
     startingRef.current = true;
     setStarting(true);
     try {
-      const p = path.trim().replace(/["']/g, '');
-      const label = p ? `${basename(p)} · ${provider.name}` : provider.name;
-      const s = await createSession({ providerId: provider.id, cwd: p || undefined, label, forceNew: true });
+      const p = String(dir ?? path).trim().replace(/["']/g, '');
+      const s = await startSessionInFolder(provider, p);
       if (p) localStorage.setItem('cvh_lastpath', p);
       onOpen(s);
     } catch (e) {
@@ -418,17 +414,25 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
           </p>
         </div>
       ) : (
-        BUCKETS.map((b) => {
-          const rows = sessions.filter((s) => dayBucket(s.ts) === b);
-          if (rows.length === 0) return null;
+        groupByFolder(sessions).map((entry) => {
+          const rows = entry.type === 'folder' ? entry.items : [entry.item];
+          const list = (
+            <div className="cc-list">
+              {rows.map((it) => (
+                <SessionRow key={it.key} it={it} openable={canOpen(it)} opening={openingKey === it.key} onOpen={openItem} onRename={beginRename} onKill={killItem} onDelete={deleteItem} notify={notify} />
+              ))}
+            </div>
+          );
+          if (entry.type !== 'folder') return <div key={entry.key} className="cc-group">{list}</div>;
           return (
-            <div key={b} className="cc-group">
-              <div className="cc-group-head">{b}</div>
-              <div className="cc-list">
-                {rows.map((it) => (
-                  <SessionRow key={it.key} it={it} openable={canOpen(it)} opening={openingKey === it.key} onOpen={openItem} onRename={beginRename} onKill={killItem} onDelete={deleteItem} notify={notify} />
-                ))}
+            <div key={'folder:' + entry.key} className="cc-group">
+              <div className="cc-group-head cc-folder-head" title={entry.cwd}>
+                <span>📁</span>
+                <span className="cc-folder-name">{cwdName(entry.cwd)}</span>
+                <span className="cc-folder-count">{entry.items.length}</span>
+                <NewInFolderButton cwd={entry.cwd} providers={providers} onStart={startProvider} starting={starting} />
               </div>
+              {list}
             </div>
           );
         })

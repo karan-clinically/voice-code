@@ -44,6 +44,8 @@ export default function ChatComposer({
   plainText = false, // true = no autocapitalize/autocorrect (terminal commands)
   slashMode = 'prompts', // 'prompts' (saved prompts) | 'commands' (Claude Code's TUI slash menu)
   onKeypad, // terminal-only: renders an extra ⌨ button that calls this
+  onLastCommand, // terminal-only: renders a ❯ button that shows your last command
+  lastCommandShown = false,
   speakerOn = false,
   onToggleSpeaker,
 }) {
@@ -167,7 +169,9 @@ export default function ChatComposer({
   function replay(mode) {
     if (!lastAssistantText) return notify('Nothing to replay yet');
     try {
-      playUrl(replyUrl(session.id, mode));
+      // Same as the speaker button: a refused synthesis must say so rather than
+      // play nothing at all.
+      playUrl(replyUrl(session.id, mode), { progressive: true, onError: (why) => notify('No speech: ' + why) });
     } catch (e) {
       notify(e.message);
     }
@@ -350,7 +354,6 @@ export default function ChatComposer({
         }}
       />
       <div className="composer-bar">
-        <div className="composer-spacer" />
         <DictationMic className="cbtn cbtn-driving" text={text} setText={setText} notify={notify} />
         <button
           type="button"
@@ -362,83 +365,38 @@ export default function ChatComposer({
         >
           {speakerOn ? '🔊' : '🔇'}
         </button>
+        {/* Voice left, the three pickers centred, send right — a spacer either side
+            of the middle group is what holds it there as the bar's width changes. */}
+        <div className="composer-spacer" />
+        <input ref={fileRef} type="file" multiple onChange={onFile} style={{ display: 'none' }} />
         <button
+          type="button"
           className="cbtn"
           onClick={() => setShowSlash(true)}
           aria-label={slashMode === 'commands' ? 'Slash commands' : 'Saved prompts'}
+          title={slashMode === 'commands' ? 'Slash commands' : 'Saved prompts'}
         >
           /
         </button>
         <button
+          type="button"
           className="cbtn"
           onClick={() => fileRef.current?.click()}
           aria-label={uploading ? 'Uploading files' : 'Attach files'}
+          title="Attach files"
           disabled={uploading}
         >
           {uploading ? '…' : '📎'}
         </button>
-        <input ref={fileRef} type="file" multiple onChange={onFile} style={{ display: 'none' }} />
-        {onKeypad && (
-          <button
-            type="button"
-            className="cbtn"
-            onClick={onKeypad}
-            aria-label="Terminal keys"
-            title="Terminal key pad — cursors, Enter, Esc, Ctrl"
-          >
-            ⌨
-          </button>
-        )}
-        {/* Permission mode is first-class in the row. Tapping opens an anchored
-            picker; the selected target is reached through Claude's Shift+Tab cycle. */}
-        {!(isGrok || isCodex) && (
-          <div className="composer-mode-wrap">
-            <button
-              type="button"
-              className={'cbtn cbtn-mode mode-' + mode}
-              onClick={() => { setShowMore(false); setShowModePicker((value) => !value); }}
-              aria-label={`Permission mode: ${MODE_LABEL[mode]} — tap to choose`}
-              aria-expanded={showModePicker}
-              disabled={modeChanging}
-              title={`${MODE_LABEL[mode]} mode — tap to choose`}
-            >
-              {modeChanging ? '…' : MODE_ICON[mode]}
-            </button>
-            {showModePicker && (
-              <>
-                <div className="composer-more-backdrop" onClick={() => setShowModePicker(false)} />
-                <div className="composer-mode-picker" role="menu" aria-label="Permission mode">
-                  <div className="composer-mode-head">Permission mode</div>
-                  {MODES.map((item) => (
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={item === mode}
-                      className={'composer-mode-option mode-' + item + (item === mode ? ' on' : '')}
-                      key={item}
-                      onClick={() => chooseMode(item)}
-                    >
-                      <span className="composer-mode-icon">{MODE_ICON[item]}</span>
-                      <span className="composer-mode-copy">
-                        <strong>{MODE_LABEL[item]}</strong>
-                        <span>{MODE_TOAST[item].split(' — ')[1]}</span>
-                      </span>
-                      {item === mode && <span className="composer-mode-check">✓</span>}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-        {/* Less-used controls (read-aloud) tuck behind ⋯ so the bar fits a narrow
-            phone. */}
+        {/* What's left behind ⋯: permission mode, terminal keys, the prompt pill,
+            read-aloud — settings and one-offs rather than things you reach for
+            mid-sentence. */}
         <div className="composer-more-wrap">
           <button
             type="button"
             className="cbtn"
             onClick={() => { setShowModePicker(false); setShowMore((v) => !v); }}
-            aria-label="More: permission mode and read aloud"
+            aria-label="More actions"
             aria-expanded={showMore}
           >
             ⋯
@@ -450,7 +408,41 @@ export default function ChatComposer({
                 {(isGrok || isCodex) && (
                   <div className="mode-pill" title={`${agentLabel} terminal session`}>{agentLabel}</div>
                 )}
+                {!(isGrok || isCodex) && (
+                  <button
+                    type="button"
+                    className="composer-more-item"
+                    onClick={() => { setShowMore(false); setShowModePicker(true); }}
+                    disabled={modeChanging}
+                  >
+                    <span className="composer-more-ico">{modeChanging ? '…' : MODE_ICON[mode]}</span>
+                    Permission mode
+                    <span className="composer-more-state">{modeChanging ? 'Switching…' : MODE_LABEL[mode]}</span>
+                  </button>
+                )}
+                {onKeypad && (
+                  <button
+                    type="button"
+                    className="composer-more-item"
+                    onClick={() => { setShowMore(false); onKeypad(); }}
+                  >
+                    <span className="composer-more-ico">⌨</span>
+                    Terminal keys
+                  </button>
+                )}
+                {onLastCommand && (
+                  <button
+                    type="button"
+                    className="composer-more-item"
+                    onClick={() => { setShowMore(false); onLastCommand(); }}
+                    aria-pressed={lastCommandShown}
+                  >
+                    <span className="composer-more-ico">❯</span>
+                    {lastCommandShown ? 'Hide your last command' : 'Show your last command'}
+                  </button>
+                )}
                 <button
+                  type="button"
                   className="composer-more-item"
                   onClick={() => { setShowMore(false); replay('full'); }}
                 >
@@ -459,10 +451,42 @@ export default function ChatComposer({
               </div>
             </>
           )}
+          {/* Opened from the ⋯ item above, and anchored here so it rises off the
+              same button. The selected target is reached through Claude's Shift+Tab
+              cycle. */}
+          {showModePicker && !(isGrok || isCodex) && (
+            <>
+              <div className="composer-more-backdrop" onClick={() => setShowModePicker(false)} />
+              <div className="composer-mode-picker" role="menu" aria-label="Permission mode">
+                <div className="composer-mode-head">Permission mode</div>
+                {MODES.map((item) => (
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={item === mode}
+                    className={'composer-mode-option mode-' + item + (item === mode ? ' on' : '')}
+                    key={item}
+                    onClick={() => chooseMode(item)}
+                  >
+                    <span className="composer-mode-icon">{MODE_ICON[item]}</span>
+                    <span className="composer-mode-copy">
+                      <strong>{MODE_LABEL[item]}</strong>
+                      <span>{MODE_TOAST[item].split(' — ')[1]}</span>
+                    </span>
+                    {item === mode && <span className="composer-mode-check">✓</span>}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
-        {showStop ? (
-          <button className="cbtn stop" onClick={stop} aria-label="Stop (Esc)">■</button>
-        ) : (
+        <div className="composer-spacer" />
+        {/* While a turn runs, Send does NOT step aside for Stop — sending mid-turn
+            is a real move (the harness queues it, and sending the queued text again
+            pushes it into the running turn), and swapping the button away took that
+            away exactly when it was wanted. The two share one control instead: same
+            height, twice the width, half each, so neither target shrinks. */}
+        <div className={'composer-go' + (showStop ? ' running' : '')}>
           <button
             className="cbtn send"
             onClick={() => send()}
@@ -471,7 +495,10 @@ export default function ChatComposer({
           >
             ➤
           </button>
-        )}
+          {showStop && (
+            <button className="cbtn stop" onClick={stop} aria-label="Stop (Esc)">■</button>
+          )}
+        </div>
       </div>
 
       {showSlash && (

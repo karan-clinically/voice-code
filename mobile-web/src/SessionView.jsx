@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, replyUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq, listProviders, setSessionModel, selectPromptOption, dismissSessionAttention, startSessionPreview } from './lib/api.js';
+import { commandText, mediaUrl, replyUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq, listProviders, setSessionModel, selectPromptOption, selectPromptOptions, prewarmReplySpeech, dismissSessionAttention, startSessionPreview } from './lib/api.js';
 import { ATTENTION_SHORT, isAlert } from './lib/attention.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { Terminal, basename } from './components.jsx';
@@ -9,14 +9,32 @@ import VoiceView from './VoiceView.jsx';
 import TerminalKeypad from './TerminalKeypad.jsx';
 import SessionSwitcher from './SessionSwitcher.jsx';
 import QuickSessionSwitcher from './QuickSessionSwitcher.jsx';
+import PromptDrawer from './PromptDrawer.jsx';
 import { normalizeSpokenSlash } from './lib/slashCommands.js';
 import { readSessionCards, writeSessionCards, recordSessionView } from './lib/localCache.js';
 import { useWakeLock, keepAwakeEnabled } from './lib/wakeLock.js';
 import { listenForResume, watchReconnect } from './lib/resume.js';
+import { promptText } from './lib/transcript.js';
 
-// Spoken form of a detected prompt (a numbered picker or a bash-permission dialog):
-// the question followed by its numbered options, so it's clear what you're answering.
+// Whether this session's "last prompt" pill is up. On by default everywhere —
+// knowing what you asked is the normal case — so this only records the sessions
+// you have explicitly closed it in. Per session and per device, alongside the
+// composer's permission-mode memory.
+const lastCommandPinKey = (sessionId) => `cvh_last_cmd_pin:${sessionId}`;
+const lastCommandPinned = (sessionId) => {
+  try {
+    return localStorage.getItem(lastCommandPinKey(sessionId)) !== 'off';
+  } catch {
+    return true;
+  }
+};
+
+// Spoken form of a detected prompt (a numbered picker or a bash-permission dialog).
+// The harness builds this — it knows to speak a permission dialog as its intent
+// ("Do you want to allow it?") rather than reading the command out. The local build
+// below is only the fallback for a harness that predates `speech`.
 function promptSpeech(p) {
+  if (p.speech) return p.speech;
   const q = (p.question || 'Please choose how Claude should proceed.').trim();
   const context = String(p.context || '').trim();
   const intro = context ? `Claude needs a decision. Here is the context: ${context}. The question is: ${q}.` : `Claude is asking: ${q}.`;
@@ -61,9 +79,43 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [lastReply, setLastReply] = useState(''); // for the composer's 🔊/📖 replay buttons
   const [mode, setMode] = useState('terminal'); // 'terminal' | 'chat'
   const [voice, setVoice] = useState(false); // hands-free overlay
+  // Read inside the session poll, which must not be torn down and restarted every
+  // time the overlay opens (that would re-seed it and lose the catch-up position).
+  const voiceRef = useRef(false);
+  useEffect(() => { voiceRef.current = voice; }, [voice]);
   const [keysMode, setKeysMode] = useState(false); // terminal key-pad replaces the composer input
   const [terminalInputSignal, setTerminalInputSignal] = useState(0);
   const [pendingEcho, setPendingEcho] = useState(''); // just-sent command, shown until the PTY echoes it
+  // "What did I ask?" — your prompts for this session, oldest first, from the
+  // transcript (so they survive a reopen and cover prompts typed on another
+  // device), plus any just sent from here that it hasn't caught up with yet.
+  // `promptIdx` is null while following the newest, which is what a fresh send
+  // returns you to.
+  const [prompts, setPrompts] = useState([]);
+  const [localPrompts, setLocalPrompts] = useState([]);
+  const [promptIdx, setPromptIdx] = useState(null);
+  const promptList = React.useMemo(() => {
+    const known = new Set(prompts.map((p) => p.trim()));
+    return [...prompts, ...localPrompts.filter((p) => !known.has(p.trim()))];
+  }, [prompts, localPrompts]);
+  const promptAt = promptIdx == null ? promptList.length - 1 : Math.min(promptIdx, promptList.length - 1);
+  const lastCommand = promptList[promptAt] || '';
+  // Pinning it is a per-session choice that outlives the view: switch away, come
+  // back, reopen the app — the pill is still up, and each new prompt replaces its
+  // text. Off is the default, so a session you never pinned stays uncluttered.
+  const [showLastCommand, setShowLastCommand] = useState(() => lastCommandPinned(session.id));
+  useEffect(() => { setShowLastCommand(lastCommandPinned(session.id)); }, [session.id]);
+  const toggleLastCommand = () => {
+    setShowLastCommand((on) => {
+      const next = !on;
+      try {
+        localStorage.setItem(lastCommandPinKey(session.id), next ? 'on' : 'off');
+      } catch {
+        /* private mode — the pin just won't survive this view */
+      }
+      return next;
+    });
+  };
   const [showSwitch, setShowSwitch] = useState(false); // left session-switcher drawer
   const [showQuickSwitch, setShowQuickSwitch] = useState(false); // native back-swipe Alt-Tab modal
   const [showMenu, setShowMenu] = useState(false); // ⋯ overflow: speak-replies + notifications
@@ -99,7 +151,14 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   function toggleSpeakerFromComposer() {
     const next = !speakRef.current;
     setSpeakerMode(next);
-    if (next) playUrl(replyUrl(session.id, 'summary'));
+    // You asked for this one, so say why nothing came out — an exhausted TTS
+    // quota or a dead key otherwise reads as a button that does nothing.
+    if (next) {
+      playUrl(replyUrl(session.id, 'summary'), {
+        progressive: true, // start on the first bytes — a megabyte of WAV is a long silence otherwise
+        onError: (why) => notify('No speech: ' + why),
+      });
+    }
   }
   // The label we opened with is a snapshot and drifts as the conversation moves on
   // (Claude re-titles the session). Re-read it so the header names the session you
@@ -110,10 +169,24 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   // clobber an optimistic flip.
   const [muted, setMuted] = useState(false);
   const muteLoaded = useRef(false);
+  // Spoken-reply catch-up: `heardReplyId` is the newest reply this device has been
+  // told about, `spokenReplies` are the ones it played itself (so the poll doesn't
+  // repeat a reply the command response already spoke), and `replySeeded` marks the
+  // first poll of a session, whose only job is to learn where it already is.
+  const spokenReplies = useRef(new Set());
+  const heardReplyId = useRef(0);
+  const replySeeded = useRef(false);
+  // A command from this phone is awaiting its reply — see announcePrompt.
+  const commandInFlight = useRef(false);
   // A question/permission dialog is on screen right now (from the prompt poll below).
   // The composer needs it: mid-question the session still reads as busy, but its
   // button must offer Enter (answer) rather than Esc (interrupt).
   const [promptPending, setPromptPending] = useState(false);
+  // The whole detected prompt, not just "is there one" — the drawer renders its
+  // options. Dismissing sets `promptDrawerFor` so the same question doesn't
+  // re-open on the next poll; a genuinely new one has different text and does.
+  const [prompt, setPrompt] = useState(null);
+  const [promptDismissed, setPromptDismissed] = useState('');
   // The session is now shared — the terminal or Claude remote control can start a turn
   // this view never saw. The local `state` below only tracks turns THIS phone sent, so
   // without the server's own state the ■ Stop button would never appear for a turn
@@ -125,10 +198,33 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     setModelsSupported(supportsSessionModels(session));
     setSessionAlive(session.alive !== false);
     muteLoaded.current = false;
+    replySeeded.current = false;
     let stop = false;
-    const pull = () => sessionInfo(session.id)
+    const pull = () => sessionInfo(session.id, { afterReply: replySeeded.current ? heardReplyId.current : null })
       .then((s) => {
         if (stop) return;
+        // Replies this phone didn't ask for still get spoken: a turn typed in the
+        // terminal, or an agent reporting back partway through a long session,
+        // lands here rather than in the command response. The first poll only
+        // records where the conversation already is — opening a session must not
+        // replay the reply you read hours ago.
+        if (!replySeeded.current) {
+          heardReplyId.current = s?.lastReply?.interactionId || 0;
+          replySeeded.current = true;
+        } else {
+          // Several agents can report inside one poll interval; they are played in
+          // order (playUrl queues them) rather than only the last one being heard.
+          // Hands-free runs its own turn loop and speaks each reply itself, so while
+          // its overlay is open this only keeps track of what has gone by.
+          for (const reply of s?.newReplies || []) {
+            heardReplyId.current = Math.max(heardReplyId.current, reply.interactionId);
+            if (spokenReplies.current.has(reply.interactionId)) continue; // this phone sent it
+            spokenReplies.current.add(reply.interactionId);
+            if (!voiceRef.current && speakRef.current && reply.audioUrl) playUrl(mediaUrl(reply.audioUrl));
+            // Silent, but on screen: warm the speech so pressing the speaker is instant.
+            else if (!voiceRef.current && !speakRef.current) prewarmReplySpeech(session.id);
+          }
+        }
         if (s?.label) setLabel(s.label);
         if (s?.state) setSrvState(s.state);
         if (s?.model) setModel(s.model);
@@ -321,6 +417,34 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     }
   }
 
+  // Answering the prompt in THIS session, from the drawer. `wait:false` returns as
+  // soon as the keys are sent: the reply arrives through the normal poll, and
+  // holding the drawer open for a two-minute turn would be worse than useless.
+  const promptKeyOf = (p) => `${p?.question || ''}::${(p?.options || []).map((o) => o.label).join('|')}`;
+  const closePromptDrawer = () => setPromptDismissed(promptKeyOf(prompt));
+  async function answerPromptWith(action) {
+    try {
+      await action();
+      setPrompt(null);
+      setPromptPending(false);
+    } catch (err) {
+      notify('Could not answer: ' + err.message);
+    }
+  }
+  const answerPromptOption = (option) =>
+    answerPromptWith(() => selectPromptOption(session.id, option.n, { wait: false }));
+  const answerPromptMany = (indexes) =>
+    answerPromptWith(() => selectPromptOptions(session.id, indexes, { wait: false }));
+  // Typed answers go straight to the pty rather than through the command pipeline:
+  // a prompt is waiting on keystrokes, and a queued "command" would sit behind the
+  // very turn this is meant to unblock.
+  const answerPromptText = (value) =>
+    answerPromptWith(async () => {
+      sendRaw(value);
+      await new Promise((r) => setTimeout(r, 120)); // let the TUI take the text before Enter
+      sendRaw('\r');
+    });
+
   async function answerAlert(e, option) {
     e.stopPropagation();
     if (!activeAlert?.harnessId || !option) return;
@@ -361,6 +485,12 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     // silent — and returns BEFORE recording the prompt, so unmuting mid-question
     // announces it rather than swallowing it. Play each distinct prompt only once.
     if (!p || p.multi || !speakRef.current) return;
+    // A question that ends a turn we sent is spoken as part of that turn's reply —
+    // Claude's findings, then the question — so announcing it here first would say
+    // the question twice and, worse, say it before the reasoning behind it. Left
+    // unrecorded, so if the command fails a later poll still speaks it. A permission
+    // dialog is different: it blocks mid-turn, so nothing else will speak it.
+    if (!p.permission && commandInFlight.current) return;
     const key = promptKey(p);
     if (announcedPrompts.has(key)) return;
     announcedPrompts.add(key);
@@ -378,6 +508,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         const { prompt: p } = await sessionPrompt(session.id);
         if (stop) return;
         setPromptPending(!!p);
+        setPrompt(p || null);
         if (p) announcePrompt(p);
         // Prompt gone — forget this session's spoken prompts so a genuinely new one
         // (even with the same text) is announced again next time it appears.
@@ -393,6 +524,7 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
 
   async function runResult(promise) {
     setState('working…');
+    commandInFlight.current = true;
     try {
       const d = await promise;
       // A 202: the command was queued behind the running turn, or a re-send
@@ -412,15 +544,29 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       setState('ready');
       ding('success'); // turn landed — audible even when spoken replies are muted
       if (d.responseText) setLastReply(d.responseText);
-      // Read via the ref — the reply may land minutes after Send, and the user
-      // may have muted in between. When the turn ended on a question/permission,
-      // announce that (deduped) instead of the reply summary, so it isn't spoken twice.
-      if (d.prompt) announcePrompt(d.prompt);
-      else if (d.audioUrl && speakRef.current) playUrl(mediaUrl(d.audioUrl));
+      // Read via the ref — the reply may land minutes after Send, and the user may
+      // have muted in between. Claim the interaction before playing so the reply
+      // poll doesn't speak it a second time.
+      if (d.interactionId) spokenReplies.current.add(d.interactionId);
+      if (d.audioUrl && speakRef.current) {
+        // The reply already ends with the question when the turn stopped on one, so
+        // it covers the announcement — record it as announced so the prompt poll
+        // doesn't ask again after it.
+        if (d.prompt && !d.prompt.multi) announcedPrompts.add(promptKey(d.prompt));
+        playUrl(mediaUrl(d.audioUrl));
+      } else {
+        // Not speaking it now, but you are looking at this session and the
+        // speaker button is one tap away — render it in the background so that tap
+        // plays from disk. Bounded on purpose: this session, this reply.
+        prewarmReplySpeech(session.id);
+        if (d.prompt) announcePrompt(d.prompt);
+      }
     } catch (e) {
       setState('idle');
       ding('error');
       notify(e.message);
+    } finally {
+      commandInFlight.current = false;
     }
   }
   function sendText(t) {
@@ -432,9 +578,17 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
       // now (the server injects a re-sent queued text mid-turn). A pending
       // interactive prompt takes priority — there, bare Enter must keep meaning
       // "confirm what Claude is asking".
-      if (queuedCmds.length > 0 && !promptPending) {
+      // Push a queued command into the RUNNING turn. Only while one is running:
+      // that is the whole point of the shortcut, and `queuedCmds` comes from a
+      // poll, so once the turn ends this list can still name a command the server
+      // has already drained and run — re-sending it there submits the same prompt
+      // a second time. Clearing the chip up front also stops a second tap firing
+      // before the next poll refreshes it.
+      if (queuedCmds.length > 0 && !promptPending && isWorking) {
+        const queued = queuedCmds[0];
+        setQueuedCmds((rest) => rest.filter((t) => t !== queued));
         ding('sent');
-        runResult(commandText(session.id, queuedCmds[0]));
+        runResult(commandText(session.id, queued));
         return;
       }
       // Bare Enter with nothing typed = confirm what Claude is asking on screen (a
@@ -500,6 +654,16 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   function showEcho(text) {
     clearTimeout(echoTimer.current);
     setPendingEcho(text);
+    // Every send funnels through here. Show it straight away and jump back to the
+    // newest, however far back you had browsed. What reaches the pty already has
+    // your `[label]` tokens expanded into upload paths, so strip those back out —
+    // and if the message was nothing but an attachment, there is nothing of yours
+    // to list.
+    const yours = promptText(text);
+    if (yours) {
+      setLocalPrompts((prev) => [...prev, yours]);
+      setPromptIdx(null);
+    }
     setTerminalInputSignal((n) => n + 1); // force immediate repaints while the echo lands
     echoTimer.current = setTimeout(() => setPendingEcho(''), 3500);
   }
@@ -791,6 +955,19 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         </div>
       )}
 
+      {/* A choice on screen becomes a drawer you can answer with a thumb. Terminal
+          view only: chat renders the same options as bubbles and voice runs its own
+          prompt pipeline, so opening here too would put two answers on one question. */}
+      {prompt && !voice && mode !== 'chat' && promptKeyOf(prompt) !== promptDismissed && (
+        <PromptDrawer
+          prompt={prompt}
+          onPick={answerPromptOption}
+          onPickMany={answerPromptMany}
+          onText={answerPromptText}
+          onClose={closePromptDrawer}
+        />
+      )}
+
       {voice && <VoiceView session={session} onBack={() => setVoice(false)} notify={notify} />}
 
       {showSwitch && (
@@ -824,12 +1001,55 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
         />
       ) : (
         <>
+          {showLastCommand && lastCommand && (
+            // Sits above the terminal rather than over it: the point is to read it
+            // WHILE output scrolls, not to cover the output you're waiting on.
+            <div className="sv-lastcmd">
+              <button
+                type="button"
+                className="sv-lastcmd-nav"
+                onClick={() => setPromptIdx(Math.max(0, promptAt - 1))}
+                disabled={promptAt <= 0}
+                aria-label="Earlier prompt"
+              >
+                ‹
+              </button>
+              {/* Everything between the chevrons closes the pill — the counter and
+                  the gaps around it included, so only the two arrows navigate. */}
+              <button
+                type="button"
+                className="sv-lastcmd-body"
+                onClick={toggleLastCommand}
+                title="Tap to hide"
+              >
+                <span className="sv-lastcmd-prompt">❯</span>
+                <span className="sv-lastcmd-text">{lastCommand}</span>
+                {promptList.length > 1 && (
+                  <span className="sv-lastcmd-count">{promptAt + 1}/{promptList.length}</span>
+                )}
+              </button>
+              <button
+                type="button"
+                className="sv-lastcmd-nav"
+                // Stepping onto the newest returns to following it, so the next
+                // thing you send replaces the pill instead of leaving it parked.
+                onClick={() => setPromptIdx(promptAt + 1 >= promptList.length - 1 ? null : promptAt + 1)}
+                disabled={promptAt >= promptList.length - 1}
+                aria-label="Later prompt"
+              >
+                ›
+              </button>
+            </div>
+          )}
           <Terminal
             sessionId={session.id}
             className="sv-term"
             promptPending={promptPending}
             sessionKind={session.kind}
             inputSignal={terminalInputSignal}
+            // The transcript is the truth — it sees prompts sent from any device —
+            // and the local list above only covers the seconds before one lands.
+            onUserTurns={setPrompts}
           />
           {pendingEcho && (
             <div className="sv-echo" role="status" aria-live="polite">
@@ -845,7 +1065,17 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
                   key={t}
                   className="sv-queued-chip"
                   title="Push into the running turn now"
-                  onClick={() => runResult(commandText(session.id, t))}
+                  onClick={() => {
+                    // A stale chip is a duplicate submit waiting to happen (see the
+                    // bare-Enter path): with nothing running the server drains this
+                    // itself, so sending again runs the same prompt twice.
+                    if (!isWorking) {
+                      notify('Already sent — it ran when the turn finished');
+                      return;
+                    }
+                    setQueuedCmds((rest) => rest.filter((text) => text !== t));
+                    runResult(commandText(session.id, t));
+                  }}
                 >
                   <span className="sv-queued-tag">QUEUED</span>
                   <span className="sv-queued-text">{t.length > 80 ? t.slice(0, 80) + '…' : t}</span>
@@ -874,6 +1104,8 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
               promptPending={promptPending}
               slashMode="commands"
               onKeypad={() => setKeysMode(true)}
+              onLastCommand={toggleLastCommand}
+              lastCommandShown={showLastCommand}
             />
           )}
           <div className={stateCls}>

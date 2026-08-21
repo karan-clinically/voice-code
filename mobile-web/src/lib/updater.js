@@ -33,9 +33,19 @@ function draftInComposer() {
   return !!ta && ta.value.trim() !== '';
 }
 
-function applyNow() {
+async function applyNow() {
   if (reloading) return;
   reloading = true; // ?s stays in the URL, so a session view returns to the same PTY
+  // The cached app shell NAMES the hashed bundle, so reloading while it survives
+  // can hand back the very build we're trying to leave — the pill then returns
+  // after every reload and the update never lands. Drop the shell first so the
+  // reload is forced to the network; the worker re-caches the fresh copy itself.
+  try {
+    const names = await caches.keys();
+    await Promise.all(names.filter((n) => n.startsWith('cvh-shell-')).map((n) => caches.delete(n)));
+  } catch {
+    /* no Cache Storage (private mode): the reload is still worth attempting */
+  }
   location.reload();
 }
 

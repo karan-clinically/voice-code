@@ -102,6 +102,31 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 /* Sessions tab — Claude Code app style: day-bucketed list of session rows */
 .cc-group + .cc-group { margin-top: 12px; }
 .cc-group-head { font-size: 14px; font-weight: 600; color: var(--muted); padding: 6px 4px 8px; }
+/* Folder heading above a project's sessions — the drawer's .sw-folder-head, sized
+   for the wider Home list. Shown even for a single session, so a row is always
+   read together with the folder it runs in. */
+.cc-folder-head {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+}
+.cc-folder-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-folder-count {
+  flex: 0 0 auto; min-width: 22px; padding: 2px 7px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-2); text-align: center;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+/* ＋ on a folder heading — another session in that folder. Sized for a thumb
+   rather than to match the small-caps heading text around it. */
+.cc-folder-add {
+  flex: 0 0 auto; width: 34px; height: 34px; margin: -6px 0 -6px auto; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text-2); font-size: 15px; line-height: 1; box-shadow: none;
+}
+.cc-folder-add:active { background: var(--surface-2); }
+/* Its picker opens from inside the switcher drawer (z-index 61), so it has to
+   clear that as well as the page. */
+.pm-sheet.on-top { z-index: 70; }
 .cc-list { display: flex; flex-direction: column; gap: 10px; }
 .cc-item {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
@@ -398,7 +423,18 @@ button.ghost:hover { background: var(--surface-2); }
   padding: 2px 6px; border-radius: 5px; background: var(--accent); color: var(--accent-fg);
   font-family: var(--sans); font-size: 10px; line-height: 16px; white-space: nowrap;
 }
-.terminal-transcript-user { color: var(--term-user); }
+/* Your own turns in the completed-history view: a tinted, bordered block so they
+   jump out while scrolling back, the way the CLI's own mid-turn injected-message
+   box does. */
+.terminal-transcript-user {
+  display: block;
+  color: var(--term-user);
+  background: color-mix(in srgb, var(--term-user) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--term-user) 35%, transparent);
+  border-radius: 8px;
+  padding: 6px 9px;
+  margin: 3px 0;
+}
 .terminal-transcript-label { font-weight: 700; }
 .terminal-user-turn, .terminal-user-turn span { color: var(--term-user) !important; }
 /* A−/A+ font stepper, pinned to the terminal's top-right corner */
@@ -789,6 +825,40 @@ button.ghost:hover { background: var(--surface-2); }
 }
 
 /* optimistic echo of a just-sent command, shown until the PTY echoes it */
+/* "Your last command", on demand above the terminal. Deliberately the same
+   --term-user treatment as .terminal-transcript-user, so the pill reads as the
+   same thing your turn already is on screen — and it re-tints with the theme. */
+.sv-lastcmd {
+  display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; flex: 0 0 auto;
+  padding: 4px 4px 4px 6px; border-radius: var(--radius);
+  color: var(--term-user); background: color-mix(in srgb, var(--term-user) 14%, var(--term-bg, #0d1117));
+  border: 1px solid color-mix(in srgb, var(--term-user) 35%, transparent);
+  font-family: var(--mono); font-size: 13px;
+}
+.sv-lastcmd-body {
+  display: flex; align-items: flex-start; gap: 8px; flex: 1 1 auto; min-width: 0;
+  padding: 3px 2px; text-align: left; color: inherit; font: inherit;
+  background: transparent; border: none; box-shadow: none;
+}
+/* Step through this session's prompts. Full-height targets so a thumb reaching
+   for a chevron can't dismiss the pill by hitting the text between them. */
+.sv-lastcmd-nav {
+  flex: 0 0 auto; width: 30px; align-self: stretch; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: inherit; font-size: 17px; line-height: 1;
+  background: transparent; border: none; box-shadow: none; border-radius: 7px;
+}
+.sv-lastcmd-nav:disabled { opacity: 0.3; }
+.sv-lastcmd-nav:active:not(:disabled) { background: color-mix(in srgb, var(--term-user) 18%, transparent); }
+.sv-lastcmd-count {
+  flex: 0 0 auto; margin-left: auto; align-self: center; padding-left: 8px;
+  font-size: 11px; opacity: 0.75; font-variant-numeric: tabular-nums;
+}
+.sv-lastcmd-prompt { flex: 0 0 auto; font-weight: 700; }
+.sv-lastcmd-text {
+  flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+}
 .sv-echo {
   display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 0 0 auto;
   padding: 6px 10px; border-radius: var(--radius);
@@ -858,6 +928,16 @@ button.ghost:hover { background: var(--surface-2); }
   background: var(--surface); color: var(--text-2); border: 1px solid var(--border-strong); box-shadow: none;
 }
 .cbtn:disabled { opacity: 0.45; }
+/* Send is the one control you aim for without looking, so it outsizes the rest.
+   While a turn runs Stop joins it inside one container — each keeps the full 52px
+   target and the pair reads as a single control, squared off where they meet. */
+.composer-go { flex: 0 0 auto; display: flex; align-items: center; gap: 0; }
+.cbtn.send, .cbtn.stop { width: 52px; height: 52px; border-radius: 14px; font-size: 20px; }
+.composer-go.running > .cbtn.send { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.composer-go.running > .cbtn.stop {
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+  border-left-color: color-mix(in srgb, var(--accent-fg) 45%, var(--error));
+}
 .cbtn.send { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .cbtn.stop { background: var(--error); color: #fff; border-color: var(--error); }
 .cbtn.rec { color: var(--error); border-color: var(--error); background: var(--error-bg); animation: pulse 1.1s infinite; }
@@ -866,18 +946,12 @@ button.ghost:hover { background: var(--surface-2); }
 .cbtn.cbtn-driving { width: 46px; height: 46px; border-radius: 13px; font-size: 20px; }
 .cbtn.cbtn-speaker.on { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); }
 @media (max-width: 380px) {
-  .composer-bar > .cbtn:not(.cbtn-driving),
-  .composer-mode-wrap > .cbtn,
+  /* Narrow phones tighten the small pickers only — never the primary targets,
+     which would leave send 32px wide and 52px tall. */
+  .composer-bar > .cbtn:not(.cbtn-driving):not(.send):not(.stop),
   .composer-more-wrap > .cbtn { width: 32px; }
 }
-/* Permission-mode switcher in the row — same palette as the mode pill so the tint
-   itself says which mode is active (Ask stays neutral like its siblings). */
-.cbtn.cbtn-mode.mode-auto   { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); }
-.cbtn.cbtn-mode.mode-plan   { color: #1d4ed8; border-color: #93c5fd; background: #eff6ff; }
-.cbtn.cbtn-mode.mode-bypass { color: #b91c1c; border-color: #fecaca; background: var(--error-bg); }
-
-/* Anchored Claude permission picker, opened from the mode button in the composer. */
-.composer-mode-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+/* Anchored Claude permission picker, opened from the ⋯ menu in the composer. */
 .composer-mode-picker {
   position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 43; width: min(270px, calc(100vw - 24px));
   display: flex; flex-direction: column; gap: 3px; padding: 7px;
@@ -921,7 +995,11 @@ button.ghost:hover { background: var(--surface-2); }
   background: transparent; color: var(--text); border: none; box-shadow: none;
 }
 .composer-more-item:active { background: var(--surface-2); }
-.composer-more-ico { font-size: 16px; }
+.composer-more-item:disabled { opacity: 0.45; }
+.composer-more-ico { flex: 0 0 auto; width: 20px; text-align: center; font-size: 16px; }
+/* Current value of a setting that lives in this menu (e.g. permission mode), so
+   the row still reports its state now that it is no longer a lit button in the bar. */
+.composer-more-state { margin-left: auto; padding-left: 10px; color: var(--muted); font-size: 12.5px; }
 
 /* Terminal key pad — replaces the composer for driving TUIs (agent view, pickers,
    permission dialogs). Cursor cluster in the keyboard-standard inverted-T; Ctrl
@@ -1351,3 +1429,70 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
 .theme-name { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: var(--text); }
 .theme-check { color: var(--accent); font-weight: 700; }
 .theme-tag { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Prompt drawer — Claude's choice, lifted out of the terminal. Rises from the
+   bottom because that is where the thumb already is, and stops short of the top
+   so the terminal stays visible behind it: the question usually only makes sense
+   next to the output that raised it. */
+.pd-backdrop { position: fixed; inset: 0; z-index: 64; background: rgba(0, 0, 0, 0.45); }
+.pd-drawer {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 65; max-height: 82vh;
+  display: flex; flex-direction: column;
+  background: var(--bg); border-top: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0; box-shadow: var(--shadow);
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: pd-in 0.16s ease;
+}
+@keyframes pd-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.pd-head {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 12px 14px 8px;
+}
+.pd-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.pd-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+.pd-question { margin: 0; font-size: 15px; line-height: 1.45; color: var(--text); }
+.pd-context {
+  margin: 0; padding: 8px 10px; border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text-2);
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.pd-options { display: flex; flex-direction: column; gap: 8px; }
+.pd-option {
+  display: flex; align-items: flex-start; gap: 11px; width: 100%; text-align: left;
+  padding: 12px; border-radius: var(--radius-lg); box-shadow: none;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+}
+.pd-option.on { border-color: var(--accent); background: var(--accent-tint); }
+.pd-option:disabled { opacity: 0.5; }
+/* Round for one-of, square for any-of — the shape says which kind of answer this
+   prompt takes before you read a word of it. */
+.pd-mark {
+  flex: 0 0 auto; width: 20px; height: 20px; margin-top: 1px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--border-strong); color: var(--accent); font-size: 12px; line-height: 1;
+}
+.pd-mark.box { border-radius: 6px; }
+.pd-option.on .pd-mark { border-color: var(--accent); }
+.pd-option-copy { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pd-option-label { font-size: 15px; }
+.pd-option-desc { font-size: 12.5px; color: var(--muted); }
+.pd-option-n { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pd-submit { width: 100%; }
+.pd-text { display: flex; flex-direction: column; gap: 6px; }
+.pd-text-label { font-size: 12px; color: var(--muted); }
+.pd-hint { margin: 0; color: var(--muted); font-size: 11.5px; }
+
+/* Speech-engine chooser in Settings: one tappable card per engine that has a key,
+   with what distinguishes it underneath — the choice is cost versus voices, and
+   naming that is more use than a bare radio list. */
+.engine-picker { display: flex; flex-direction: column; gap: 8px; }
+.engine-option {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; padding: 11px 13px; text-align: left; box-shadow: none;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  color: var(--text);
+}
+.engine-option.on { border-color: var(--accent); background: var(--accent-tint); }
+.engine-name { font-size: 15px; font-weight: 600; }
+.engine-note { font-size: 12px; color: var(--muted); }

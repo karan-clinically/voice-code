@@ -23,10 +23,16 @@ async function parse(r) {
     }
   }
   if (!r.ok) {
-    throw new Error(
+    const err = new Error(
       d.error ||
         (r.status === 502 || r.status === 503 ? 'Harness offline — is it running on the PC?' : 'HTTP ' + r.status)
     );
+    // Callers that must tell "retry, this is transient" from "stop, this is the
+    // answer" need the code, not prose. Both travel; the message stays the text
+    // shown to the user.
+    err.status = r.status;
+    if (d.ended) err.ended = true;
+    throw err;
   }
   return d;
 }
@@ -90,8 +96,12 @@ export const jdelete = async (p) => parse(await fetch(base + p, { method: 'DELET
 export const mediaUrl = (u) => base + u + (authQS ? (u.includes('?') ? '&' : '?') + authQS : '');
 // Raw terminal WebSocket — lets the phone send raw keys (Enter, arrows, Esc,
 // Space) to answer the TUI's interactive prompts, like the desktop terminal does.
+// `replay=0`: the phone paints from /screen over HTTP and only uses this socket as
+// a repaint trigger and a key channel — it never reads the payload. Without this
+// the harness opened every connection by pushing its whole scrollback buffer (up
+// to 1.5MB) that this client immediately discards.
 export const termWsUrl = (id) =>
-  base.replace(/^http/, 'ws') + `/ws/term?session=${id}` + (authQS ? '&' + authQS : '');
+  base.replace(/^http/, 'ws') + `/ws/term?session=${id}&replay=0` + (authQS ? '&' + authQS : '');
 
 export const listSessions = () => jget('/api/sessions', { timeoutMs: 8000 });
 export const listProviders = () => jget('/api/providers');
@@ -143,7 +153,10 @@ export const resumeGrok = (id) => jpost('/api/sessions', { kind: 'grok', resumeG
 // Forget a saved Grok conversation (deletes its context file). Only for `grok-saved`
 // rows — there's no process to kill, so this is the only way to clear one.
 export const deleteGrokConv = (id) => jdelete(`/api/sessions/grok/${id}`);
-export const sessionInfo = (id) => jget(`/api/sessions/${id}`, { timeoutMs: 8000 });
+// `afterReply` asks for every spoken reply newer than the one this device last
+// heard (see newReplies in the response); omit it to just read the session.
+export const sessionInfo = (id, { afterReply = null } = {}) =>
+  jget(`/api/sessions/${id}` + (afterReply == null ? '' : `?afterReply=${afterReply}`), { timeoutMs: 8000 });
 export const startSessionPreview = (id) => jpost(`/api/sessions/${id}/preview/start`);
 export const stopSessionPreview = (id) => jpost(`/api/sessions/${id}/preview/stop`);
 export const setSessionModel = (id, alias) => jpost(`/api/sessions/${id}/model`, { alias });
@@ -187,7 +200,10 @@ export const saveSettings = (patch) => jpost('/api/settings', patch);
 export const apiKeyState = () => jget('/api/settings/keys');
 export const saveApiKeys = (patch) => jpost('/api/settings/keys', patch);
 // ElevenLabs voices for the Settings voice dropdown (non-secret metadata only).
-export const listElevenVoices = () => jget('/api/settings/voices');
+// Voices for one speech engine (default: whichever is active). Only non-secret
+// voice metadata comes back — the key stays on the PC.
+export const listVoices = (provider) =>
+  jget('/api/settings/voices' + (provider ? '?provider=' + encodeURIComponent(provider) : ''));
 
 // --- push notifications (PWA) ---
 export const pushVapid = () => jget('/api/push/vapid');
@@ -214,10 +230,26 @@ export const archiveProjects = () => jget('/api/archive/projects');
 export const resumeArchive = (uuid) => jpost(`/api/archive/${encodeURIComponent(uuid)}/resume`);
 
 // --- chat view (conversation log) ---
-export const sessionMessages = (id, after = 0) => jget(`/api/sessions/${id}/messages?after=${after}`);
-export const sessionMessagePage = (id, { before = null, limit = 40 } = {}) => {
+export const sessionMessages = (id, after = 0, { version = null } = {}) => {
+  const qs = new URLSearchParams({ after: String(after) });
+  if (after > 0) {
+    qs.set('delta', '1');
+    if (version) qs.set('v', version);
+  }
+  return jget(`/api/sessions/${id}/messages?${qs}`);
+};
+// `after`/`version` ask for the tail instead of the whole page — see the note on
+// getLiveConversation. Both pollers below run every few seconds, and a snapshot
+// of an hour-old session is most of a megabyte, so the default is the delta and
+// only the first read (nothing held yet) pulls everything.
+export const sessionMessagePage = (id, { before = null, limit = 40, after = null, version = null } = {}) => {
   const qs = new URLSearchParams({ limit: String(limit) });
   if (before != null) qs.set('before', String(before));
+  if (after != null) {
+    qs.set('after', String(after));
+    qs.set('delta', '1');
+    if (version) qs.set('v', version);
+  }
   return jget(`/api/sessions/${id}/messages?${qs}`);
 };
 export const sendChat = (id, text) => jpost(`/api/sessions/${id}/chat`, { text });
@@ -237,6 +269,10 @@ export const sessionPrompt = (id) => jget(`/api/sessions/${id}/prompt`, { timeou
 // Answer option `index`; resolves with Claude's follow-up reply ({responseText, audioUrl, prompt}).
 export const selectPromptOption = (id, index, { wait = true } = {}) =>
   jpost(`/api/sessions/${id}/select`, { index, wait, desktopPlayback: false });
+// Multi-select sibling: the server walks the picker and flips only what differs.
+// Anything left out of `indexes` ends up unticked, so this is the whole answer.
+export const selectPromptOptions = (id, indexes, { wait = true } = {}) =>
+  jpost(`/api/sessions/${id}/select-many`, { indexes, wait, desktopPlayback: false });
 // XMLHttpRequest is intentional here: fetch still exposes no upload-byte progress
 // in browsers, while xhr.upload reports it reliably on mobile Safari and Chrome.
 export const attachFile = (id, file, onProgress) => new Promise((resolve, reject) => {
@@ -280,6 +316,13 @@ export function sayUrl(text, voiceId) {
 // or 'full' (the whole answer, verbatim). The harness holds the text, so nothing
 // travels up the URL — which is what used to blow /say's length cap on long
 // replies and read the markdown symbols aloud.
+// Render this session's newest reply into the speech cache now, so tapping the
+// speaker plays from disk instead of waiting on a render. Fire-and-forget: it
+// returns as soon as the render is under way, and a failure is not worth telling
+// anyone about — the tap itself still works, just slower.
+export const prewarmReplySpeech = (sessionId) =>
+  jpost(`/api/tts/reply/${sessionId}/prewarm`).catch(() => {});
+
 export function replyUrl(sessionId, mode = 'summary') {
   const qs = new URLSearchParams({ mode });
   if (token) qs.set('token', token);

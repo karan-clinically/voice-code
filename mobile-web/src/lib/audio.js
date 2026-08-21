@@ -282,9 +282,17 @@ async function playViaWebAudio(url, onStart) {
   let buffer;
   try {
     const res = await fetch(url);
-    if (!res.ok) return false;
+    // A refused synthesis answers with JSON, not audio — and the <audio> fallback
+    // would fail on it just as silently, which is how a dead TTS key looked like
+    // "the speaker button does nothing". Carry the server's reason out instead.
+    if (!res.ok) {
+      let reason = `HTTP ${res.status}`;
+      try { reason = (await res.json())?.error || reason; } catch { /* not JSON */ }
+      throw Object.assign(new Error(reason), { unplayable: true });
+    }
     buffer = await ctx.decodeAudioData(await res.arrayBuffer());
-  } catch {
+  } catch (err) {
+    if (err?.unplayable) throw err;
     return false; // unfetchable or undecodable — caller falls back to the element
   }
   if (ctx.state === 'suspended') {
@@ -324,8 +332,51 @@ async function playViaWebAudio(url, onStart) {
   });
 }
 
-export function playUrl(u, { onStart } = {}) {
-  return playViaWebAudio(u, onStart).then((ok) => (ok ? undefined : playViaElement(u, { onStart })));
+// --- playback queue -----------------------------------------------------------
+// Replies arrive faster than they can be spoken — a finished turn, a prompt to
+// read out, a replay you asked for. Starting the new one used to cut the current
+// one off mid-sentence, so the half you were listening to was simply lost. They
+// queue instead: each clip waits for the one before it, and the returned promise
+// still resolves when THIS clip has finished, so callers that await playback (the
+// hands-free turn loop) are unaffected.
+//
+// stopAudio() is the deliberate interrupt — barge-in, or muting the speaker — and
+// drops whatever is still waiting rather than letting it start after the silence.
+let queueTail = Promise.resolve();
+let queueEpoch = 0;
+
+// `progressive`: start playing while the audio is still downloading, via the
+// media element. Worth it for anything you asked for by tapping — the Web Audio
+// path below must fetch and decode the WHOLE clip first, which on a megabyte of
+// WAV over a phone link is fifteen seconds of silence and no visible sign that
+// the tap did anything. It is NOT the default: element playback routes to the
+// earpiece while the mic is capturing, which is why hands-free and automatic
+// reply playback stay on Web Audio.
+export function playUrl(u, { onStart, onError, progressive = false } = {}) {
+  const epoch = queueEpoch;
+  const run = queueTail.then(async () => {
+    if (epoch !== queueEpoch) return undefined; // flushed while it waited its turn
+    if (progressive) {
+      const played = await playViaElement(u, { onStart });
+      if (played !== false) return undefined;
+      // Never started — fall through, where the fetch reports WHY.
+    }
+    return playViaWebAudio(u, onStart)
+      .then((ok) => (ok ? undefined : playViaElement(u, { onStart })))
+      .catch((err) => {
+        // Nothing can play this: telling the caller beats silence. The element
+        // fallback is skipped — it would choke on the same non-audio response.
+        if (!err?.unplayable) throw err;
+        onError?.(err.message);
+      });
+  });
+  queueTail = run.catch(() => {}); // one clip failing must not stall the queue
+  return run;
+}
+
+function flushQueue() {
+  queueEpoch += 1;
+  queueTail = Promise.resolve();
 }
 
 function playViaElement(u, { onStart } = {}) {
@@ -335,39 +386,45 @@ function playViaElement(u, { onStart } = {}) {
       const player = ensurePlayer(); // released playback destroys the old element
       player.src = u;
       let settled = false;
-      const settle = () => {
+      // `false` means it never made a sound, so a caller that tried this path
+      // first can fall back and surface a real reason. Anything else — played to
+      // the end, or paused awaiting a gesture — counts as handled.
+      let started = false;
+      const settle = (value) => {
         if (settled) return;
         settled = true;
-        resolve();
+        resolve(value);
       };
-      const finish = () => {
+      const finish = (value) => {
         player.onended = null;
         player.onerror = null;
         clearActivePlayback(handle);
         releaseAudioFocusSoon(); // reply over — give the music back
-        settle();
+        settle(value);
       };
       const handle = {
         pause: () => player.pause(),
         resume: () => { const p = player.play(); if (p && p.catch) p.catch(() => {}); },
-        stop: () => { player.pause(); finish(); },
+        stop: () => { player.pause(); finish(true); },
         isPaused: () => player.paused,
       };
-      player.onended = finish;
-      player.onerror = finish;
+      player.onended = () => finish(true);
+      // A source the element can't play (a JSON error body, an unsupported
+      // codec) fails here before a single frame — report that as "not played".
+      player.onerror = () => finish(started ? true : false);
       setActivePlayback(handle);
       const p = player.play();
-      if (p && p.then) p.then(() => onStart?.()).catch(() => {
+      if (p && p.then) p.then(() => { started = true; onStart?.(); }).catch(() => {
         // Mobile browsers suspend autoplay while the page is backgrounded. Keep
         // the requested URL and playback handle intact so the visible Resume
         // button can continue this exact assistant clip on the next user gesture.
         // Resolving here avoids leaving callers hung while playback is paused.
         notifyPlayback();
-        settle();
+        settle(true);
       });
-      else onStart?.();
+      else { started = true; onStart?.(); }
     } catch {
-      resolve();
+      resolve(false);
     }
   });
 }
@@ -376,6 +433,7 @@ function playViaElement(u, { onStart } = {}) {
 // Resolves whatever promise playUrl() handed out, so the caller's turn loop
 // carries on rather than waiting for audio that will never finish.
 export function stopAudio() {
+  flushQueue(); // an interrupt cancels what's waiting too, not just what's audible
   stopVoiceSource(); // Web Audio path (the normal one) — its onended releases focus
   try {
     if (!player) return;

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { sessionScreen, sessionMessagePage, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listElevenVoices, sayUrl } from './lib/api.js';
+import { sessionScreen, sessionMessagePage, sessionResize, termWsUrl, fsList, getSttMode, setSttMode, getSettings, saveSettings, listVoices, sayUrl } from './lib/api.js';
 import { tapRecord, playUrl, voiceBoost, setVoiceBoost, VOICE_BOOST_LEVELS } from './lib/audio.js';
 import { useDictation } from './lib/dictation.js';
 import { THEMES, getTheme, applyTheme } from './lib/theme.js';
@@ -7,6 +7,7 @@ import { keepAwakeEnabled, setKeepAwake } from './lib/wakeLock.js';
 import { readTerminalSnapshot, writeTerminalSnapshot } from './lib/localCache.js';
 import { copyText } from './lib/clipboard.js';
 import { listenForResume, watchReconnect } from './lib/resume.js';
+import { mergeTail, promptText } from './lib/transcript.js';
 
 export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || p || '';
 
@@ -319,43 +320,80 @@ export function VoiceBoostPicker() {
 // dropped (its Aura-2 renders at ~1x realtime, too slow for hands-free). On load
 // it also pins the provider to ElevenLabs so nothing can drift back to Deepgram.
 // The API key never reaches the phone; it only sees voice names/ids.
-export function ElevenVoicePicker({ notify }) {
+// Which engine speaks, and in which voice. Replaces a picker that quietly wrote
+// `tts_provider: 'elevenlabs'` on every open — a lock from when Deepgram was
+// pulled from the UI, which meant no other engine could ever stay selected.
+//
+// Engines differ in what they cost and what they offer, so the choice is yours to
+// make rather than one the app makes for you: ElevenLabs is the most expressive
+// and by far the priciest; Speechmatics is roughly a tenth the price with four
+// English voices; Deepgram comes free with the key that already does dictation.
+// Only engines with a key configured are offered — the key itself never leaves
+// the PC, so this reads a boolean, not a secret.
+const ENGINES = [
+  { id: 'elevenlabs', name: 'ElevenLabs', voiceKey: 'elevenlabs_voice_id', note: 'Most voices · priciest' },
+  { id: 'speechmatics', name: 'Speechmatics', voiceKey: 'speechmatics_voice_id', note: '4 English voices · cheapest' },
+  { id: 'deepgram', name: 'Deepgram', voiceKey: 'deepgram_tts_voice', note: 'Same key as dictation' },
+];
+
+export function SpeechEnginePicker({ notify }) {
+  const [settings, setSettings] = useState(null);
+  const [engine, setEngine] = useState('');
   const [voices, setVoices] = useState([]);
   const [voiceId, setVoiceId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [available, setAvailable] = useState(true);
+  const [loadingVoices, setLoadingVoices] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+
+  const spec = ENGINES.find((e) => e.id === engine);
+  const available = ENGINES.filter((e) => settings?.[`${e.id}_available`]);
 
   useEffect(() => {
     let stop = false;
-    (async () => {
-      try {
-        const s = await getSettings();
-        if (!s.elevenlabs_available) {
-          if (!stop) { setAvailable(false); setLoading(false); }
-          return;
-        }
-        if (!stop) setVoiceId(s.elevenlabs_voice_id || '');
-        // Lock speech to ElevenLabs (Deepgram removed from the UI).
-        if (s.stt_provider !== 'elevenlabs' || s.tts_provider !== 'elevenlabs') {
-          saveSettings({ stt_provider: 'elevenlabs', tts_provider: 'elevenlabs' }).catch(() => {});
-        }
-        const d = await listElevenVoices();
-        if (!stop) { setVoices(d.voices || []); setLoading(false); }
-      } catch (e) {
-        if (!stop) { setLoading(false); notify?.(e.message); }
-      }
-    })();
+    getSettings()
+      .then((s) => {
+        if (stop) return;
+        setSettings(s);
+        // Whatever is configured server-side wins — the UI reports the truth
+        // rather than imposing a default the way the old picker did.
+        const active = ENGINES.find((e) => e.id === s.tts_provider && s[`${e.id}_available`]);
+        const fallback = ENGINES.find((e) => s[`${e.id}_available`]);
+        setEngine((active || fallback)?.id || '');
+      })
+      .catch((e) => notify?.(e.message));
     return () => { stop = true; };
   }, []);
 
-  const choose = async (id) => {
-    const prev = voiceId;
-    setVoiceId(id); // optimistic
+  // Voices belong to an engine, so they are re-fetched whenever it changes.
+  useEffect(() => {
+    if (!engine || !settings) return undefined;
+    let stop = false;
+    setLoadingVoices(true);
+    setVoiceId(settings[ENGINES.find((e) => e.id === engine).voiceKey] || '');
+    listVoices(engine)
+      .then((d) => { if (!stop) setVoices(d.voices || []); })
+      .catch((e) => { if (!stop) notify?.(e.message); })
+      .finally(() => { if (!stop) setLoadingVoices(false); });
+    return () => { stop = true; };
+  }, [engine, settings]);
+
+  const chooseEngine = async (id) => {
+    const previous = engine;
+    setEngine(id); // optimistic — the voice list follows from this
     try {
-      await saveSettings({ elevenlabs_voice_id: id });
+      await saveSettings({ tts_provider: id });
     } catch (e) {
-      setVoiceId(prev);
+      setEngine(previous);
+      notify?.(e.message);
+    }
+  };
+
+  const chooseVoice = async (id) => {
+    const previous = voiceId;
+    setVoiceId(id);
+    try {
+      await saveSettings({ [spec.voiceKey]: id });
+    } catch (e) {
+      setVoiceId(previous);
       notify?.(e.message);
     }
   };
@@ -363,41 +401,60 @@ export function ElevenVoicePicker({ notify }) {
   const preview = async () => {
     if (!voiceId || previewing) return;
     setPreviewing(true);
-    try {
-      await playUrl(sayUrl('Hi, this is how I sound reading your replies.', voiceId));
-    } catch (e) {
-      notify?.(e.message);
-    }
+    // The engine is already saved, so /say renders through the one just picked.
+    await playUrl(sayUrl('Hi, this is how I sound reading your replies.', voiceId), {
+      onError: (why) => notify?.('No speech: ' + why),
+    });
     setPreviewing(false);
   };
 
-  if (!available) {
-    return <div className="muted">Add an ElevenLabs API key on the PC to choose a voice.</div>;
+  if (!settings) return <div className="muted">Loading speech settings…</div>;
+  if (!available.length) {
+    return <div className="muted">Add a TTS API key on the PC to choose an engine.</div>;
   }
-  // A saved custom voice might not be in the fetched list — keep it selectable.
+
   const hasCurrent = voices.some((v) => v.voice_id === voiceId);
   return (
-    <div className="row" style={{ alignItems: 'stretch' }}>
-      <select value={voiceId} onChange={(e) => choose(e.target.value)} disabled={loading} style={{ flex: 1 }}>
-        {loading && <option value="">Loading voices…</option>}
-        {!loading && voices.length === 0 && <option value="">No voices found</option>}
-        {!loading && voiceId && !hasCurrent && <option value={voiceId}>Current voice</option>}
-        {voices.map((v) => (
-          <option key={v.voice_id} value={v.voice_id}>
-            {v.name}{v.category ? ` · ${v.category}` : ''}
-          </option>
+    <div className="stack">
+      <div className="engine-picker" role="radiogroup" aria-label="Speech engine">
+        {available.map((e) => (
+          <button
+            key={e.id}
+            type="button"
+            role="radio"
+            aria-checked={engine === e.id}
+            className={'engine-option' + (engine === e.id ? ' on' : '')}
+            onClick={() => chooseEngine(e.id)}
+          >
+            <span className="engine-name">{e.name}</span>
+            <span className="engine-note">{e.note}</span>
+          </button>
         ))}
-      </select>
-      <button type="button" onClick={preview} disabled={!voiceId || previewing} title="Hear this voice" style={{ flex: '0 0 auto' }}>
-        {previewing ? '▶…' : '▶ Preview'}
-      </button>
+      </div>
+      <div className="row" style={{ alignItems: 'stretch' }}>
+        <select value={voiceId} onChange={(ev) => chooseVoice(ev.target.value)} disabled={loadingVoices} style={{ flex: 1 }} aria-label="Voice">
+          {loadingVoices && <option value="">Loading voices…</option>}
+          {!loadingVoices && voices.length === 0 && <option value="">No voices found</option>}
+          {!loadingVoices && voiceId && !hasCurrent && <option value={voiceId}>Current voice</option>}
+          {voices.map((v) => (
+            <option key={v.voice_id} value={v.voice_id}>
+              {v.name}{v.category ? ` · ${v.category}` : ''}
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={preview} disabled={!voiceId || previewing} title="Hear this voice" style={{ flex: '0 0 auto' }}>
+          {previewing ? '▶…' : '▶ Preview'}
+        </button>
+      </div>
+      {ENGINES.some((e) => !settings[`${e.id}_available`]) && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          No key on the PC for: {ENGINES.filter((e) => !settings[`${e.id}_available`]).map((e) => e.name).join(', ')}.
+        </div>
+      )}
     </div>
   );
 }
 
-// Sci-fi movie skins. Each card shows a live swatch of that theme's palette; tapping
-// one repaints the whole app immediately (applyTheme flips the [data-theme] attribute)
-// and remembers it on this device. Purely visual, so no server round-trip.
 export function ThemePicker() {
   const [theme, setTheme] = useState(getTheme);
   const choose = (id) => setTheme(applyTheme(id));
@@ -464,13 +521,17 @@ export function MicButton({ className, onBlob, notify }) {
 // froze permanently until a pixel-perfect scroll to the bottom.
 const FOLLOW_TAIL_PX = 60;
 
-export function Terminal({ sessionId, className, promptPending = false, sessionKind = '', inputSignal = 0 }) {
+export function Terminal({ sessionId, className, promptPending = false, sessionKind = '', inputSignal = 0, onUserTurns }) {
   const outerRef = useRef(null);
   const innerRef = useRef(null);
   const reviewingRef = useRef(false);
   const forcePaintRef = useRef(null);
   const promptPendingRef = useRef(promptPending);
   useEffect(() => { promptPendingRef.current = promptPending; }, [promptPending]);
+  // Read through a ref: the socket/paint effect keys on sessionId alone, so a
+  // callback captured directly would go stale on the first re-render.
+  const onUserTurnsRef = useRef(onUserTurns);
+  useEffect(() => { onUserTurnsRef.current = onUserTurns; }, [onUserTurns]);
   const [displayState, setDisplayState] = useState('loading'); // loading | cached | live
   const [connectionState, setConnectionState] = useState('connecting'); // connecting | live | reconnecting
   const [showReconnect, setShowReconnect] = useState(false);
@@ -589,21 +650,45 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     let transcriptHasOlder = false;
     let transcriptFetchedAt = 0;
     let transcriptSignature = '';
+    let transcriptVersion = null; // server's transcript stamp; unchanged = skip the body
     const refreshTranscript = async () => {
       const now = Date.now();
       if (now - transcriptFetchedAt < 5000) return false;
       transcriptFetchedAt = now;
       try {
-        const page = await sessionMessagePage(sessionId, { limit: 40 });
-        const nextMessages = page.messages || [];
+        // Once we hold the page, ask only for the tail. A full snapshot of a
+        // long-running session is most of a megabyte, and re-pulling it every few
+        // seconds is what used to saturate the link the terminal socket shares.
+        const held = transcriptMessages.length ? transcriptMessages[transcriptMessages.length - 1].id : null;
+        const page = await sessionMessagePage(sessionId, {
+          limit: 40,
+          after: held,
+          version: transcriptVersion,
+        });
+        transcriptVersion = page.version || null;
+        if (page.unchanged) return false;
+        const nextMessages = page.delta ? mergeTail(transcriptMessages, page.messages || []) : (page.messages || []);
         const nextSignature = nextMessages
           .map((message) => `${message.id}:${message.role}:${message.text?.length || 0}:${message.text?.slice(-64) || ''}`)
           .join('|');
         const changed = nextSignature !== transcriptSignature;
         transcriptSignature = nextSignature;
         transcriptMessages = nextMessages;
-        transcriptBefore = page.before;
-        transcriptHasOlder = !!page.hasOlder;
+        // Everything YOU said, oldest first. Free here — this poll already holds
+        // the conversation — and it stays right whether a prompt came from this
+        // phone, the desktop or a terminal driving the same session. `injected`
+        // marks content the CLI wrote as a user turn (skill bodies, caveats).
+        const yours = nextMessages
+          .filter((message) => message.role === 'user' && !message.injected && message.text)
+          .map((message) => promptText(message.text))
+          .filter(Boolean); // an attachment-only turn has no words of yours in it
+        if (yours.length) onUserTurnsRef.current?.(yours);
+        // A delta says nothing about the top of the window, so the paging cursor
+        // this client already holds stays as it is.
+        if (!page.delta) {
+          transcriptBefore = page.before;
+          transcriptHasOlder = !!page.hasOlder;
+        }
         return changed;
       } catch {
         /* shell/Codex sessions may not have completed conversation turns */
@@ -737,8 +822,11 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
           }
         }
         setDisplayState('live');
-      } catch {
-        /* transient */
+      } catch (err) {
+        // The pty is gone. Same fact the terminal socket reports with {t:'exit'},
+        // but this path still arrives when that socket is the thing that's wedged.
+        // Anything else here is transient and the next poll retries.
+        if (err?.ended || err?.status === 409 || /no live PTY/i.test(err?.message || '')) setEnded(true);
       }
       busy = false;
       if (again && !stop) { again = false; paint(); }
@@ -919,7 +1007,11 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
 
   return (
     <div className={'term-wrap ' + (className || '')}>
-      {displayState === 'loading' && (
+      {/* A session whose pty is gone will never paint again, so neither spinner
+          below is telling the truth — the "session ended" banner is. Without this
+          the screen poll kept failing, kept retrying, and left "Loading terminal…"
+          or "Saved view · updating…" up for good. */}
+      {displayState === 'loading' && !ended && (
         <div className="term-load-backdrop">
           <div className="term-load-modal" role="status" aria-live="polite">
             <span className="load-spinner" />
@@ -927,7 +1019,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
           </div>
         </div>
       )}
-      {displayState === 'cached' && (
+      {displayState === 'cached' && !ended && (
         // Cached output is real content the user can read RIGHT NOW — never dim
         // or block it behind a modal while the live refresh happens. A small
         // pill (same spot as the reconnect status; the two states are mutually
@@ -972,6 +1064,57 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
 }
 
 // Full-screen folder browser over the PC's filesystem.
+// "＋" on a folder heading: another session in THAT folder, so the common case
+// (a second agent on the project you're already in) skips the path box entirely.
+// Shared by the Home list and the in-session switcher, which show the same
+// folder headings and would otherwise each grow their own copy.
+export function NewInFolderButton({ cwd, providers = [], onStart, starting = false }) {
+  const [open, setOpen] = useState(false);
+  const choices = providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }];
+  const folder = basename(cwd);
+  return (
+    <>
+      <button
+        className="cc-folder-add"
+        title={`New session in ${folder}`}
+        aria-label={`New session in ${folder}`}
+        onClick={(e) => {
+          e.stopPropagation(); // the heading itself may be tappable
+          setOpen(true);
+        }}
+      >
+        ＋
+      </button>
+      {open && (
+        <div className="pm-sheet on-top" onClick={(e) => e.stopPropagation()}>
+          <div className="pm-sheet-head">
+            <div className="sv-title">New session in {folder}</div>
+            <button className="ghost" onClick={() => setOpen(false)}>✕</button>
+          </div>
+          <div className="pm-sheet-list">
+            <div className="card stack">
+              <h2>Which CLI?</h2>
+              {choices.map((provider) => (
+                <button
+                  key={provider.id}
+                  onClick={() => {
+                    setOpen(false);
+                    onStart(provider, cwd);
+                  }}
+                  disabled={starting}
+                >
+                  {provider.name}
+                </button>
+              ))}
+              <p className="muted" style={{ margin: 0 }}>{cwd}</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function FolderPicker({ start, onPick, onClose, notify }) {
   const [cur, setCur] = useState(null);
   const [parent, setParent] = useState(null);

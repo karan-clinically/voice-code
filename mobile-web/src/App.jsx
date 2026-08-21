@@ -6,6 +6,7 @@ import History from './History.jsx';
 import PlaybackControls from './PlaybackControls.jsx';
 import { sessionInfo, sayUrl, replyUrl } from './lib/api.js';
 import { playUrl } from './lib/audio.js';
+import { readSessionCards } from './lib/localCache.js';
 
 const ACTIVE_SESSION_KEY = 'cvh_active_session';
 
@@ -86,14 +87,37 @@ export default function App() {
     }
   };
   const jumpTo = (id, play, options) => {
+    // Home and the switcher keep a local snapshot of every connected session
+    // (lib/localCache.js), refreshed every few seconds while either is mounted.
+    // A cold launch already has this sitting on disk, so open straight from it —
+    // same as tapping a row in the switcher — instead of making the network prove
+    // the session still exists before showing anything. SessionView's own 5s poll
+    // reconciles alive/dead, label, model, everything, within moments regardless.
+    const cached = readSessionCards().find((r) => String(r.harnessId) === String(id));
+    if (cached?.kind === 'harness' && cached.alive) {
+      openSession(
+        { id: cached.harnessId, kind: cached.shell ? 'shell' : (cached.agentKind || 'claude'), label: cached.name, cwd: cached.cwd },
+        options
+      );
+      if (play) speak(id, null);
+      return Promise.resolve();
+    }
+    // No usable snapshot (first-ever launch, cache expired, or the row isn't a
+    // live harness session) — fall back to asking the server, same as before.
     setOpeningSession(true);
-    return sessionInfo(id)
+    // sessionInfo already times out on its own, but this is the very first network
+    // call the PWA makes on a cold launch — before anything else has had a chance
+    // to notice the connection is bad. A hard ceiling here, independent of fetch's
+    // own abort plumbing, is what stands between a bad launch and "Opening
+    // session…" sitting on screen until the user gives up and force-reloads.
+    const ceiling = new Promise((_, reject) => setTimeout(() => reject(new Error('timed out opening session')), 12000));
+    return Promise.race([sessionInfo(id), ceiling])
       .then((s) => {
         if (s?.id && s.alive !== false) openSession(s, options);
         else forgetSession();
         if (play) speak(id, null);
       })
-      .catch(() => {})
+      .catch(() => {}) // leave the saved session in place — the next launch just retries it
       .finally(() => setOpeningSession(false));
   };
 
