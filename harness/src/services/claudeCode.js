@@ -12,10 +12,11 @@
 import { EventEmitter } from 'node:events';
 import * as terminal from './terminal.js';
 import * as sessions from './sessionManager.js';
-import { recordAssistantMessage } from './conversation.js';
+import { recordAssistantMessage, getLiveConversation } from './conversation.js';
 import { summarizeForSpeech } from './summarize.js';
 import { detectPrompt, promptToText } from './prompt.js';
 import { screenShowsWorking } from './activityState.js';
+import { publishTurn } from './reply.js';
 import { makeLogger } from '../util/logger.js';
 import { requireAdapter } from '../agents/registry.js';
 
@@ -69,7 +70,13 @@ export async function awaitReply(session, ptyId, sentAt, timeoutMs = DEFAULT_TIM
   sessions.markState(session.id, response.prompt ? 'awaiting_input' : 'response_ready');
   const kind = response.prompt ? 'interactive prompt' : `${response.text.length} chars`;
   log.info(`session db#${session.id}: response ready via ${signal.via} (${kind})`);
-  return { text: response.text, prompt: response.prompt || null, via: signal.via, stopReason: signal.stopReason || null };
+  return {
+    text: response.text,
+    prompt: response.prompt || null,
+    findings: response.findings || '',
+    via: signal.via,
+    stopReason: signal.stopReason || null,
+  };
 }
 
 function waitForCompletion(session, ptyId, sentAt, timeoutMs) {
@@ -207,12 +214,23 @@ export function signalStop({ sessionId, token = null, cwd, lastAssistantMessage,
       // Record the full assistant text for the Chat view (single source of truth
       // for assistant turns — fires for every input path incl. terminal-typed).
       recordAssistantMessage(turnDbId, lastAssistantMessage);
+      // Whether a client is waiting on this turn has to be read NOW: the pending
+      // entry is resolved further down in this same call, long before the summary
+      // lands, and buildReplyResponse publishes that turn itself.
+      const unsolicited = !pending.has(turnDbId);
       // Summarizing is an async model call now, but signalStop stays synchronous
       // (routes/hooks.js uses its return value). The 'turn' event is consumed
       // asynchronously over the WebSocket anyway, so emit it when the summary lands.
       summarizeForSpeech(lastAssistantMessage)
         .then((spoken) => {
-          if (spoken) events.emit('turn', { sessionId: turnDbId, text: spoken });
+          if (!spoken) return;
+          events.emit('turn', { sessionId: turnDbId, text: spoken });
+          // A turn nobody asked for — a terminal-typed one, or (the case that
+          // exposed this) an agent reporting back partway through a session — used
+          // to stop at that event, which only the desktop's active tab listens to.
+          // Publishing it as a proper reply gives it an interaction row and a lazy
+          // audio url, so the phone can speak it like any other reply.
+          if (unsolicited) publishTurn(turnDbId, lastAssistantMessage, spoken);
         })
         .catch((err) => log.warn(`spoken summary failed: ${err.message}`));
     }
@@ -267,6 +285,28 @@ export function signalStop({ sessionId, token = null, cwd, lastAssistantMessage,
   return true;
 }
 
+// Everything Claude actually said this turn, read from the live conversation
+// (Claude Code writes its transcript as it goes, so this is on disk before the
+// Stop hook even fires). The authority when the screen can't be trusted.
+async function assistantTurnText(session) {
+  try {
+    const { messages = [] } = await getLiveConversation(session);
+    const lastUser = messages.map((m) => m.role).lastIndexOf('user');
+    const turn = lastUser === -1 ? messages.slice(-1) : messages.slice(lastUser + 1);
+    return turn.filter((m) => m.role === 'assistant').map((m) => m.text).join('\n\n').trim();
+  } catch (err) {
+    log.debug(`could not read this turn's text for db#${session.id}: ${err.message}`);
+    return '';
+  }
+}
+
+// What Claude wrote before it stopped to ask — the analysis the question is based
+// on. It never reaches the Stop hook (no Stop fires while a picker is waiting) and
+// the picker box only holds the question itself.
+// Permission dialogs skip this — "may I run this command" is answered from the
+// intent alone, and summarizing around it would only put the command back.
+const findingsBehind = (session, prompt) => (prompt.permission ? '' : assistantTurnText(session));
+
 async function extractResponse(session, ptyId, signal, sentText) {
   const adapter = requireAdapter(session.provider_id || session.kind);
   let screen = '';
@@ -279,7 +319,7 @@ async function extractResponse(session, ptyId, signal, sentText) {
   // the raw hook text or scraped box-drawing chrome. The Stop hook doesn't fire
   // while Claude waits here, so this is how voice/chat learn about the question.
   const prompt = adapter.capabilities.prompts ? detectPrompt(screen) : null;
-  if (prompt) return { text: promptToText(prompt), prompt };
+  if (prompt) return { text: promptToText(prompt), prompt, findings: await findingsBehind(session, prompt) };
   // Preferred: the exact text from the Stop hook payload.
   if (signal.via === 'hook' && signal.text && signal.text.trim()) {
     return { text: signal.text.trim() };
@@ -290,7 +330,15 @@ async function extractResponse(session, ptyId, signal, sentText) {
   const scraped = adapter.id === 'codex'
     ? scrapeCodexResponse(screen, sentText)
     : scrapeResponse(screen, sentText);
-  return { text: looksLikeBanner(scraped) ? '' : scraped };
+  const text = looksLikeBanner(scraped) ? '' : scraped;
+  if (text) return { text };
+  // The screen gave us nothing usable — a redraw we scraped between, or a banner.
+  // An empty reply is silent (no text, no summary, so no audio at all), which is
+  // how a finished turn ends up never spoken while the 🔊 button, reading the
+  // recorded conversation, happily speaks it. Read the same source here.
+  const said = await assistantTurnText(session);
+  if (said) log.info(`session db#${session.id}: screen scrape was empty, spoke the transcript instead`);
+  return { text: said };
 }
 
 // Codex's TUI redraws the submitted prompt and its reply into the same screen.

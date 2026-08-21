@@ -8,7 +8,7 @@
 
 import { WebSocketServer } from 'ws';
 import { authorizeRequest } from './auth.js';
-import { sessionEvents, listSessions } from '../services/sessionManager.js';
+import { sessionEvents, listSessionsForClients } from '../services/sessionManager.js';
 import { events as claudeEvents } from '../services/claudeCode.js';
 import { createTermWss } from './wsTerm.js';
 import { createSttWss } from './wsStt.js';
@@ -59,10 +59,10 @@ export function attachWs(server) {
   });
 
   wss.on('connection', (ws) => {
-    send(ws, { type: 'sessions', sessions: listSessions() }); // initial snapshot
+    send(ws, { type: 'sessions', sessions: listSessionsForClients() }); // initial snapshot
   });
 
-  sessionEvents.on('change', () => broadcast({ type: 'sessions', sessions: listSessions() }));
+  sessionEvents.on('change', () => broadcast({ type: 'sessions', sessions: listSessionsForClients() }));
   sessionEvents.on('state', ({ id, state }) => broadcast({ type: 'state', sessionId: id, state }));
   // A completed Claude turn (any input path, incl. typing straight into the
   // terminal). Carries a spoken-length summary so the desktop can read it back

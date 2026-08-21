@@ -8,8 +8,9 @@
 // the way past, so replays are a plain file send and cost nothing further.
 
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import db from '../db.js';
-import { synthesizeStream } from './tts/index.js';
+import { synthesizeStream, activeProviderName, getVoiceId } from './tts/index.js';
 import { makeLogger } from '../util/logger.js';
 
 const log = makeLogger('ttsCache');
@@ -42,13 +43,14 @@ function beginRender(id, summary) {
   const settled = (async () => {
     let stream;
     let done;
+    let mime;
     try {
-      ({ stream, done } = await synthesizeStream(summary));
+      ({ stream, done, mime } = await synthesizeStream(summary));
     } catch (err) {
       rejectStream(err);
       throw err;
     }
-    resolveStream(stream);
+    resolveStream({ stream, mime });
     const audio = await done;
     upd.run(audio.path, audio.chars, id);
     log.info(`cached tts for interaction ${id}: ${audio.provider}/${audio.voiceId}, ${audio.chars} chars`);
@@ -68,7 +70,8 @@ export async function streamAudio(id) {
   if (inflight.has(id)) return { path: (await inflight.get(id)).path };
 
   const { streamReady, settled } = beginRender(id, found.summary);
-  return { stream: await streamReady, done: settled };
+  const ready = await streamReady;
+  return { stream: ready.stream, mime: ready.mime, done: settled };
 }
 
 // Blocking: resolve to a complete file on disk — the local PowerShell player needs
@@ -84,4 +87,81 @@ export async function ensureAudio(id) {
   // bytes for a reader that will never arrive. The cache branch still completes.
   streamReady.then((s) => s.cancel().catch(() => {})).catch(() => {});
   return { path: (await settled).path };
+}
+
+// --- keyed speech cache -------------------------------------------------------
+// The same idea for speech that isn't tied to an interaction row: the spoken reply
+// behind the phone's 🔊 button, and one-off /say lines. Keyed on the SOURCE text
+// (plus the voice), which is known before any work happens — so a replay skips the
+// summary model as well as the TTS provider. Without this, every tap re-summarized
+// (a fresh, differently-worded summary each time) and re-synthesized, billing both.
+
+const selKey = db.prepare('SELECT spoken_text, audio_path FROM speech_cache WHERE key = ?');
+const insKey = db.prepare(
+  'INSERT OR REPLACE INTO speech_cache (key, spoken_text, audio_path) VALUES (?, ?, ?)'
+);
+
+const inflightKeys = new Map(); // key -> Promise<audio>
+
+// Include the voice: switching voices should re-render rather than replay the old one.
+export function speechKey(...parts) {
+  const h = createHash('sha1');
+  for (const p of [activeProviderName(), getVoiceId() || '', ...parts]) h.update(String(p) + '\u0000');
+  return h.digest('hex');
+}
+
+// Same synchronous-registration rule as beginRender above: two taps that land
+// together must not both summarize and both synthesize.
+function beginKeyedRender(key, makeText, opts) {
+  let resolveStream;
+  let rejectStream;
+  const streamReady = new Promise((res, rej) => {
+    resolveStream = res;
+    rejectStream = rej;
+  });
+
+  const settled = (async () => {
+    let stream;
+    let done;
+    let mime;
+    try {
+      const text = String((await makeText()) || '').trim();
+      if (!text) {
+        const err = new Error('nothing to speak');
+        err.empty = true;
+        throw err;
+      }
+      ({ stream, done, mime } = await synthesizeStream(text, opts));
+      resolveStream({ stream, mime });
+      const audio = await done;
+      insKey.run(key, text, audio.path);
+      log.info(`cached speech ${key.slice(0, 8)}: ${audio.provider}/${audio.voiceId}, ${audio.chars} chars`);
+      return audio;
+    } catch (err) {
+      rejectStream(err);
+      throw err;
+    }
+  })().finally(() => inflightKeys.delete(key));
+
+  inflightKeys.set(key, settled);
+  settled.catch(() => {}); // the caller surfaces the error; don't crash on unhandled
+  return { streamReady, settled };
+}
+
+// { path } when it has been spoken before (or is being rendered right now for
+// another listener), { stream, done } on a miss. `makeText` is only called on a
+// miss — that is where the summary spend is avoided.
+export async function streamSpeech(key, makeText, opts = {}) {
+  const row = selKey.get(key);
+  if (row?.audio_path && existsSync(row.audio_path)) return { path: row.audio_path, text: row.spoken_text };
+  if (inflightKeys.has(key)) return { path: (await inflightKeys.get(key)).path };
+
+  const { streamReady, settled } = beginKeyedRender(key, makeText, opts);
+  try {
+    const ready = await streamReady;
+    return { stream: ready.stream, mime: ready.mime, done: settled };
+  } catch (err) {
+    if (err?.empty) return { empty: true }; // nothing worth speaking — caller 404s
+    throw err;
+  }
 }

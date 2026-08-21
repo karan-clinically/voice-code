@@ -97,7 +97,128 @@ export function detectPrompt(screen) {
   const pickerText = lines.slice(Math.max(0, firstOpt - 8), footer + 1).join('\n');
   const multi = /tab\/arrow|tab to (?:move|switch)|[☐◻▢]/i.test(pickerText);
 
-  return { question, context: promptContext, options, cursorN, multi, hint: lines[footer].trim() };
+  const p = { question, context: promptContext, options, cursorN, multi, hint: lines[footer].trim() };
+  // `permission` separates "may I run this command" from a real question: the first
+  // is spoken as its intent alone, the second gets a summary of Claude's findings
+  // read out before it (see reply.js).
+  return { ...p, permission: !!actionIntent(p), speech: promptSpeech(p), ask: promptAsk(p) };
+}
+
+// Which options a multi-select picker has to toggle to reach the wanted set, and
+// how far the cursor moves to reach each. Claude's TUI has no "set" primitive —
+// Space flips whatever the cursor is on — so answering means walking the list and
+// flipping only the ones whose state differs from what was asked for. Ascending
+// order keeps the walk one-directional and the cursor tracked between steps.
+export function multiSelectPlan(prompt, indexes) {
+  const want = new Set((indexes || []).map(Number));
+  const steps = [];
+  let cursor = prompt?.cursorN ?? 1;
+  for (const option of [...(prompt?.options || [])].sort((a, b) => a.n - b.n)) {
+    if (want.has(option.n) === !!option.selected) continue; // already as asked
+    steps.push({ n: option.n, moves: option.n - cursor });
+    cursor = option.n;
+  }
+  return steps;
+}
+
+// --- spoken form --------------------------------------------------------------
+// What you HEAR is not what you read. A permission dialog's context is the command
+// itself, and hearing "Bash command git push origin main --force-with-lease" read
+// out is noise: you can't act on the flags, and the one thing you actually have to
+// decide — yes or no — arrives last. Speech gets the intent instead ("Do you want
+// to push these changes?"); the screen still shows the exact command.
+const ACTION_INTENTS = [
+  [/^edit\s+file/i, 'edit a file'],
+  [/^(?:write|create)\s+file/i, 'write a new file'],
+  [/^(?:web\s*fetch|fetch)\b/i, 'fetch a web page'],
+];
+
+const COMMAND_INTENTS = [
+  [/^git\s+push/i, 'push these changes'],
+  [/^git\s+(?:commit|add|stage)/i, 'commit these changes'],
+  [/^git\s+(?:pull|fetch|clone)/i, 'pull the latest changes'],
+  [/^git\s+(?:merge|rebase|cherry-pick)/i, 'merge some branches'],
+  [/^git\s+(?:checkout|switch|branch|worktree)/i, 'switch branches'],
+  [/^git\s+(?:reset|revert|restore|clean|stash)/i, 'undo some changes'],
+  [/^gh\s+pr/i, 'open a pull request'],
+  [/^gh\b/i, 'talk to GitHub'],
+  [/^(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|ci)\b/i, 'install dependencies'],
+  [/^(?:pytest|cargo\s+test|go\s+test)\b/i, 'run the tests'],
+  [/^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|^(?:jest|vitest)\b/i, 'run the tests'],
+  [/^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|^(?:vite|tsc)\s+build\b/i, 'build the project'],
+  [/^(?:npm|pnpm|yarn|bun)\b/i, 'run a package script'],
+  [/^(?:rm|del|rmdir|Remove-Item)\b/i, 'delete some files'],
+  [/^(?:mv|move|cp|copy|mkdir|touch|Rename-Item)\b/i, 'move some files around'],
+  [/^(?:curl|wget|Invoke-WebRequest|Invoke-RestMethod)\b/i, 'make a network request'],
+  [/^docker\b/i, 'run something in Docker'],
+  [/^(?:ssh|scp|rsync)\b/i, 'connect to another machine'],
+  [/^(?:kill|taskkill|pkill|Stop-Process)\b/i, 'stop a running process'],
+  [/^(?:node|python3?|py|deno|npx|pwsh|powershell|bash|sh|make)\b/i, 'run a script'],
+];
+
+// '' when this isn't a "may I do X" dialog — then the question speaks for itself.
+// Reads context and question as one run: a permission dialog has no sentence-ending
+// punctuation before its question, so the splitter often leaves the whole thing —
+// header, command and all — in `question`.
+function actionIntent(p) {
+  const raw = `${p.context || ''} ${p.question || ''}`.replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  for (const [re, intent] of ACTION_INTENTS) if (re.test(raw)) return intent;
+
+  const command = raw.replace(/^bash\s*(?:command)?\s*[:(]?\s*/i, '').replace(/^["'`]/, '');
+  const isCommand = command !== raw;
+  for (const [re, intent] of COMMAND_INTENTS) if (re.test(command)) return intent;
+  return isCommand ? 'run a command' : '';
+}
+
+// Permission options carry the command in their tail ("…don't ask again for git
+// push commands in C:\…"), so they get trimmed back to the choice itself.
+function shortOption(label) {
+  return String(label || '')
+    .replace(/\s+for\s+.*$/i, '')
+    .replace(/,\s*and tell claude.*$/i, '')
+    .replace(/\s*\(esc\)\s*$/i, '')
+    .trim();
+}
+
+// Anything path-shaped, bracket-shaped or simply long is screen material, not
+// something worth reading aloud before the question.
+const CODEISH = /[{}<>|$`]|\/\/|\\\\|\S+\.(?:js|jsx|ts|tsx|mjs|py|json|md|css|sql|sh|ps1)\b/;
+
+function speakableContext(context) {
+  const c = String(context || '').replace(/\s+/g, ' ').trim();
+  if (!c || c.length > 180 || CODEISH.test(c)) return '';
+  return c;
+}
+
+// Just the decision: the question and its options, with no restatement of the
+// on-screen context. Used when the spoken reply already summarized what Claude
+// found, so the question lands at the end instead of the context being said twice.
+export function promptAsk(p) {
+  const options = p.options || [];
+  const intent = actionIntent(p);
+  if (intent) {
+    const opts = options.map((o) => `${o.n}. ${shortOption(o.label)}`).filter((s) => s.length > 3).join('. ');
+    const ask = `Claude wants to ${intent}. Do you want to allow it?`;
+    return opts ? `${ask} Options: ${opts}.` : ask;
+  }
+  const q = String(p.question || '').trim() || 'Please choose how Claude should proceed.';
+  const opts = options.map((o) => `${o.n}. ${o.label}${o.description ? `. ${o.description}` : ''}`).join('. ');
+  return opts ? `Claude is asking: ${q}. Options: ${opts}.` : `Claude is asking: ${q}.`;
+}
+
+export function promptSpeech(p) {
+  if (actionIntent(p)) return promptAsk(p);
+
+  // Standalone form: nothing else is being read out, so the on-screen context has
+  // to carry the background itself.
+  const q = String(p.question || '').trim() || 'Please choose how Claude should proceed.';
+  const context = speakableContext(p.context);
+  if (!context) return promptAsk(p);
+  const options = p.options || [];
+  const intro = `Claude needs a decision. Here is the context: ${context}. The question is: ${q}.`;
+  const opts = options.map((o) => `${o.n}. ${o.label}${o.description ? `. ${o.description}` : ''}`).join('. ');
+  return opts ? `${intro} Options: ${opts}.` : intro;
 }
 
 // Speakable / displayable one-liner for the prompt — used as the recorded reply

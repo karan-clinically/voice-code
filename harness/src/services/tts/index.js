@@ -1,8 +1,10 @@
 // Text-to-speech facade. Two providers behind one contract, mirroring services/stt:
 //   isConfigured() · getVoiceId() · synthesize(text, {voiceId}) · listVoices()
-// synthesize() returns { id, path, filename, voiceId, chars } — an .mp3 in
+// synthesize() returns { id, path, filename, voiceId, chars } — an audio file in
 // AUDIO_DIR, so every downstream consumer (interactions.audio_path, /api/tts/:id
-// replay, desktop speaker, phone <audio>) is provider-agnostic.
+// replay, desktop speaker, phone <audio>) is provider-agnostic. The extension is
+// the provider's own (mp3 for ElevenLabs/Deepgram, wav for Speechmatics), which
+// is why the serving routes read the type off the file rather than assuming.
 //
 // Trade-off worth knowing: ElevenLabs voices are more expressive/natural;
 // Deepgram Aura-2 is utility-grade — clear and fast, built for agent replies
@@ -15,8 +17,17 @@ import { AUDIO_DIR } from '../../db.js';
 import { getConfig } from '../../config.js';
 import * as elevenlabs from './providers/elevenlabs.js';
 import * as deepgram from './providers/deepgram.js';
+import * as speechmatics from './providers/speechmatics.js';
 
-export const providers = { elevenlabs, deepgram };
+export const providers = { elevenlabs, deepgram, speechmatics };
+
+// Not every provider speaks mp3 — Speechmatics returns WAV only — so the format
+// travels with the audio instead of being assumed by whoever serves it. Providers
+// that predate this say nothing and keep the mp3 default.
+export const audioFormat = (name) => ({
+  ext: providers[name]?.audioExt || 'mp3',
+  mime: providers[name]?.mime || 'audio/mpeg',
+});
 
 // Which provider speaks. An explicit `tts_provider` wins. Otherwise: keep using
 // ElevenLabs if it is already set up (don't silently change an existing install's
@@ -59,7 +70,7 @@ export async function synthesizeStream(text, { provider, voiceId } = {}) {
   const { stream, voiceId: voice } = await providers[name].synthesizeStream(text, { voiceId });
 
   const id = randomUUID();
-  const filename = `${id}.mp3`;
+  const filename = `${id}.${audioFormat(name).ext}`;
   const path = join(AUDIO_DIR, filename);
   const [toClient, toCache] = stream.tee();
 
@@ -75,7 +86,7 @@ export async function synthesizeStream(text, { provider, voiceId } = {}) {
     return { id, path, filename, provider: name, voiceId: voice, chars: text.length };
   })();
 
-  return { stream: toClient, done, provider: name, voiceId: voice };
+  return { stream: toClient, done, provider: name, voiceId: voice, mime: audioFormat(name).mime };
 }
 
 export async function listVoices(provider) {

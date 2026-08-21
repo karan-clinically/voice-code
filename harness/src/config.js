@@ -20,6 +20,9 @@ const ENV_FALLBACK = {
   openai_api_key: 'OPENAI_API_KEY', // optional — dictation cleanup only (refine.js)
   elevenlabs_api_key: 'ELEVENLABS_API_KEY',
   elevenlabs_voice_id: 'ELEVENLABS_VOICE_ID',
+  speechmatics_api_key: 'SPEECHMATICS_API_KEY',
+  speechmatics_voice_id: 'SPEECHMATICS_VOICE_ID',
+  tts_provider: 'TTS_PROVIDER', // so switching provider is an .env line, not a DB write
   pairing_token: 'PAIRING_TOKEN',
   port: 'PORT',
   hub_url: 'HUB_URL', // Vercel hub (web/) presence beacon — see services/hubPresence.js

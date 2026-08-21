@@ -225,6 +225,20 @@ function migrate(db) {
     );
   `);
 
+  // Spoken audio keyed by what was said rather than by interaction, so replaying
+  // the same reply (or re-speaking the same prompt) costs nothing: the summary
+  // model and the TTS provider are both skipped on a hit. `key` hashes the source
+  // text together with the voice, so changing voice re-renders. `spoken_text` is
+  // the summarized wording, kept so a replay is word-for-word what was heard.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS speech_cache (
+      key         TEXT PRIMARY KEY,
+      spoken_text TEXT NOT NULL,
+      audio_path  TEXT NOT NULL,
+      created_at  TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
   // Web Push subscriptions — one row per device that opted into notifications.
   // endpoint is the browser push service URL (unique per device); keys sign the
   // payload. Rows are pruned when the push service reports them gone (404/410).

@@ -62,6 +62,16 @@ export function buildApp() {
   // Convenience: the bare domain lands on the terminal UI (or its login).
   app.get('/', (req, res) => res.redirect('/desktop/'));
 
+  // Every API response reads live state — sessions, screens, conversations — and
+  // none of it is ever safe to re-serve from a store. Express sends only a weak
+  // ETag by default, which leaves the browser (and any proxy in front of us, e.g.
+  // the Cloudflare front door) free to hand back a heuristically-fresh copy. A
+  // poll on a fixed URL then repeats the same answer until the page is reloaded.
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+
   // Auth gate for the whole API surface.
   app.use('/api', authMiddleware);
 

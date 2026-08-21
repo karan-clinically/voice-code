@@ -22,7 +22,7 @@ const ALLOWED = {
   stt_mode: (v) => ['batch', 'stream'].includes(v),
   dictation_summarise: (v) => ['on', 'off'].includes(v),
   stt_provider: (v) => ['elevenlabs', 'deepgram'].includes(v),
-  tts_provider: (v) => ['elevenlabs', 'deepgram'].includes(v),
+  tts_provider: (v) => ['elevenlabs', 'deepgram', 'speechmatics'].includes(v),
   elevenlabs_voice_id: (v) => typeof v === 'string' && /^[\w-]{1,64}$/.test(v),
   deepgram_tts_voice: (v) => typeof v === 'string' && /^aura-2-[\w-]{1,48}$/.test(v),
 };
@@ -32,6 +32,8 @@ const ALLOWED = {
 const KEY_ALLOWED = {
   xai_api_key: (v) => typeof v === 'string' && /^xai-[A-Za-z0-9_-]{12,}$/.test(v.trim()),
   elevenlabs_api_key: (v) => typeof v === 'string' && v.trim().length >= 20,
+  speechmatics_api_key: (v) => typeof v === 'string' && v.trim().length >= 20,
+  speechmatics_voice_id: (v) => typeof v === 'string' && /^[a-z]{2,20}$/.test(v.trim()),
   deepgram_api_key: (v) => typeof v === 'string' && v.trim().length >= 20,
   openai_api_key: (v) => typeof v === 'string' && /^sk-[A-Za-z0-9_-]{12,}$/.test(v.trim()),
 };
@@ -51,8 +53,10 @@ function readSettings() {
     dictation_summarise: getConfig('dictation_summarise', 'off'),
     stt_provider: getConfig('stt_provider') || null,
     tts_provider: getConfig('tts_provider') || null,
+    speechmatics_available: !!getConfig('speechmatics_api_key'),
     elevenlabs_voice_id: getConfig('elevenlabs_voice_id') || null,
     deepgram_tts_voice: getConfig('deepgram_tts_voice') || null,
+    speechmatics_voice_id: getConfig('speechmatics_voice_id') || null,
     // Booleans only — whether a key exists, never the key itself. The phone needs
     // this to know which provider tabs it may offer.
     elevenlabs_available: !!getConfig('elevenlabs_api_key'),
@@ -63,12 +67,14 @@ function readSettings() {
 router.get('/', (req, res) => res.json(readSettings()));
 router.get('/keys', (req, res) => res.json(readKeyState()));
 
-// Phone-safe ElevenLabs voice list for the Settings voice picker. Returns only
-// non-secret voice metadata (id/name/category) — the API key stays server-side,
-// unlike the localhost-only /api/voices route.
+// Phone-safe voice list for the Settings picker, for whichever engine is asked
+// about (default: the active one). Returns only non-secret voice metadata
+// (id/name/category) — the API key stays server-side, unlike the localhost-only
+// /api/voices route.
 router.get('/voices', async (req, res) => {
+  const provider = typeof req.query.provider === 'string' ? req.query.provider : undefined;
   try {
-    res.json({ voices: await listVoices('elevenlabs') });
+    res.json({ provider: provider || null, voices: await listVoices(provider) });
   } catch (err) {
     res.status(502).json({ error: err.message });
   }

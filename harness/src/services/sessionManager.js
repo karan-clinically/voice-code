@@ -14,7 +14,7 @@ import * as terminal from './terminal.js';
 import { guessInitialModel, friendlyModelName } from './models.js';
 import { allAdapters, getAdapter, requireAdapter } from '../agents/registry.js';
 import { spawnEnvironment } from '../agents/credentials.js';
-import { screenShowsWorking } from './activityState.js';
+import { screenState } from './activityState.js';
 import { getSessionPreview, previewEvents, startSessionPreview, stopSessionPreview } from './previewManager.js';
 import { makeLogger } from '../util/logger.js';
 
@@ -35,6 +35,10 @@ const dbByToken = new Map(); // token -> dbId
 const modelByDb = new Map(); // dbId -> friendly model label (Claude sessions only)
 const agentViewByDb = new Set(); // exact marker; cwd is not unique to an agent view
 const activityTimers = new Map(); // terminalId -> debounced live-screen check
+const settleTimers = new Map(); // terminalId -> "terminal went quiet" check
+// Claude repaints its spinner (and its elapsed counter) about once a second while
+// a turn runs, so this much silence means nothing is running.
+const SETTLE_MS = 3000;
 
 const insertSession = db.prepare(`
   INSERT INTO sessions (
@@ -51,6 +55,8 @@ const updLabel = db.prepare('UPDATE sessions SET label = ?, title_locked = ? WHE
 const updTabColor = db.prepare('UPDATE sessions SET tab_color = ? WHERE id = ?');
 const updExternalId = db.prepare('UPDATE sessions SET external_session_id = ?, claude_session_id = ? WHERE id = ?');
 const selAll = db.prepare('SELECT * FROM sessions ORDER BY id DESC');
+// Newest first: a folder's colour is whatever it was most recently given.
+const selColored = db.prepare('SELECT cwd, tab_color FROM sessions WHERE tab_color IS NOT NULL ORDER BY id DESC');
 const selOne = db.prepare('SELECT * FROM sessions WHERE id = ?');
 const selLatestByClaude = db.prepare(
   'SELECT * FROM sessions WHERE claude_session_id = ? ORDER BY id DESC LIMIT 1'
@@ -107,12 +113,40 @@ terminal.terminalEvents.on('data', ({ id, data }) => {
 });
 
 // Input typed directly in xterm, another attached terminal, or Claude Remote
-// Control bypasses executeCommand(), so it has no explicit "turn started" event.
-// Reconcile from the rendered spinner instead; this prevents a prior Finished
-// state lingering throughout the next turn.
+// Control bypasses executeCommand(), so it has no explicit "turn started" event
+// and no awaitReply() to notice a picker. Reconcile from what is rendered instead:
+// a spinner means working, a picker means waiting on a decision. Without this a
+// prior Finished state lingers all turn, and a decision-pending session reads as
+// "Working" until someone answers it.
+// A 'busy' that nothing ever takes back: the Stop hook is what normally ends a
+// turn, but an interrupted turn, a slash command, or a session whose hook never
+// reaches us leaves the chip reading "Working" for good. Once the terminal has
+// been silent and shows neither a spinner nor a picker, the turn is over — drop
+// it to idle. Silently: 'finished' belongs to the Stop hook, and announcing this
+// as a completion (or, via notify's busy→idle rule, as a failure) would be a lie.
+function reconcileWhenQuiet(id, dbId) {
+  clearTimeout(settleTimers.get(id));
+  settleTimers.set(id, setTimeout(() => {
+    settleTimers.delete(id);
+    const row = selOne.get(dbId);
+    const adapter = row ? getAdapter(row.provider_id || row.kind) : null;
+    if (!row || row.state !== 'busy' || !adapter?.completion?.busyPatterns?.length) return;
+    try {
+      const screen = terminal.captureScreen(id, { full: false });
+      if (screenState(screen, adapter.completion.busyPatterns) === null) {
+        markState(dbId, 'idle', { silent: true });
+      }
+    } catch {
+      /* terminal exited — the dead-session path owns it now */
+    }
+  }, SETTLE_MS));
+}
+
 terminal.terminalEvents.on('data', ({ id }) => {
   const dbId = dbIdByPty.get(id);
-  if (dbId == null || activityTimers.has(id)) return;
+  if (dbId == null) return;
+  reconcileWhenQuiet(id, dbId);
+  if (activityTimers.has(id)) return;
   activityTimers.set(id, setTimeout(() => {
     activityTimers.delete(id);
     const row = selOne.get(dbId);
@@ -120,9 +154,8 @@ terminal.terminalEvents.on('data', ({ id }) => {
     if (!row || row.state === 'dead' || !adapter?.completion?.busyPatterns?.length) return;
     try {
       const screen = terminal.captureScreen(id, { full: false });
-      if (screenShowsWorking(screen, adapter.completion.busyPatterns) && row.state !== 'busy') {
-        markState(dbId, 'busy');
-      }
+      const next = screenState(screen, adapter.completion.busyPatterns);
+      if (next && row.state !== next) markState(dbId, next);
     } catch {
       /* terminal may have exited between the output event and this check */
     }
@@ -232,6 +265,14 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
     const info = insertSession.run({ ...fields, origin: origin === 'remote' ? 'remote' : 'harness' });
     dbId = Number(info.lastInsertRowid);
   }
+  // Sessions in one folder share a tab colour: colour a project once and every
+  // session you start there arrives wearing it. Only ever fills an EMPTY colour,
+  // so a re-adopted row keeps what it had and nothing overrides a deliberate pick.
+  const currentColor = adopt ? getSession(dbId)?.tab_color : null;
+  if (!currentColor) {
+    const inherited = folderColorFrom(selColored.all(), view.cwd);
+    if (inherited) updTabColor.run(inherited, dbId);
+  }
   dbIdByPty.set(view.id, dbId);
   ptyIdByDb.set(dbId, view.id);
   if (agentView) agentViewByDb.add(dbId);
@@ -253,8 +294,42 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
   return getSession(dbId);
 }
 
+// The colour a folder is already using, so a new session in it looks like its
+// siblings instead of arriving uncoloured. Comparison is normalised because the
+// same directory reaches us spelled several ways — a trailing slash from a picker,
+// a different drive-letter case from a shell. Rows come newest first, so the most
+// recent choice wins. Pure, and given its rows, so the interesting part is testable.
+export function folderKey(cwd) {
+  return String(cwd || '').replace(/[\\/]+$/, '').toLowerCase();
+}
+export function folderColorFrom(rows, cwd) {
+  const key = folderKey(cwd);
+  if (!key) return null;
+  return rows.find((row) => row.tab_color && folderKey(row.cwd) === key)?.tab_color || null;
+}
+
 export function listSessions() {
   return selAll.all().map(decorate);
+}
+
+// The session list as a CLIENT should see it. listSessions() itself stays
+// complete — the reuse map, the archive linker and the provider probe all scan it
+// and a filtered view would quietly break them — but a UI only ever renders live
+// sessions plus, briefly, one that just exited. Unfiltered this reached 290KB
+// across 333 rows, and /ws re-broadcasts the whole array on every state change
+// (several times per turn), so the cost grew with every session ever created.
+const CLIENT_DEAD_LIMIT = 20;
+export function clientSessionView(all, deadLimit = CLIENT_DEAD_LIMIT) {
+  const recentDead = all
+    .filter((s) => !s.alive)
+    .sort((a, b) => Date.parse(b.last_seen_at || 0) - Date.parse(a.last_seen_at || 0))
+    .slice(0, deadLimit);
+  const keep = new Set(recentDead.map((s) => s.id));
+  return all.filter((s) => s.alive || keep.has(s.id)); // original order preserved
+}
+
+export function listSessionsForClients() {
+  return clientSessionView(listSessions());
 }
 
 export function getSession(id) {
@@ -310,9 +385,12 @@ export function setModel(id, label) {
   sessionEvents.emit('change');
 }
 
-export function markState(id, state) {
+// `silent` marks a state RECONCILED from what is on screen rather than observed
+// from a real transition. It updates the row and the UI, but must not ping you:
+// clearing a stuck "Working" is housekeeping, not news.
+export function markState(id, state, { silent = false } = {}) {
   updState.run(state, new Date().toISOString(), Number(id));
-  sessionEvents.emit('state', { id: Number(id), state });
+  sessionEvents.emit('state', { id: Number(id), state, silent });
   sessionEvents.emit('change');
 }
 

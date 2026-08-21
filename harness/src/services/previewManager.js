@@ -74,6 +74,24 @@ export function previewSpawn(command, args, options) {
   return spawn(command, args, { ...options, shell: process.platform === 'win32' });
 }
 
+// A URL the project itself already publishes on, from its .env. Only a remote
+// one counts: a loopback APP_URL is not reachable from the phone, so those fall
+// through to a server we host ourselves.
+function envUrl(cwd, key) {
+  const file = join(cwd, '.env');
+  if (!existsSync(file)) return null;
+  let raw;
+  try { raw = readFileSync(file, 'utf8'); } catch { return null; }
+  const line = raw.split(/\r?\n/).find((l) => l.trim().startsWith(`${key}=`));
+  if (!line) return null;
+  const value = line.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '');
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (!/^https?:$/.test(url.protocol)) return null;
+  if (/^(localhost|127\.|0\.0\.0\.0|\[::1\])/i.test(url.hostname)) return null;
+  return url.href;
+}
+
 export function discoverPreview(cwd) {
   for (const name of ['.voice-harness.json', 'voice-harness.json']) {
     const file = join(cwd, name);
@@ -81,14 +99,33 @@ export function discoverPreview(cwd) {
     const parsed = JSON.parse(readFileSync(file, 'utf8'));
     const value = parsed.preview || parsed;
     if (value.enabled === false) return null;
+    // A project already served elsewhere just declares where; nothing to spawn.
+    if (typeof value.url === 'string' && value.url) {
+      return { type: 'url', url: value.url, source: name };
+    }
     if (!value.command || typeof value.command !== 'string') {
-      throw new Error(`${name}: preview.command is required`);
+      throw new Error(`${name}: preview.command or preview.url is required`);
     }
     return {
       type: 'process', command: value.command,
       args: Array.isArray(value.args) ? value.args.map(String) : [],
       readyPath: typeof value.readyPath === 'string' ? value.readyPath : '/',
       source: name,
+    };
+  }
+
+  // Laravel before package.json: `npm run dev` in a Laravel repo is Vite, which
+  // serves assets and an explanatory splash page — never the app. The app is PHP,
+  // and Laravel builds every absolute URL from APP_URL, so when APP_URL already
+  // points somewhere reachable that IS the app's address; hosting a second copy on
+  // another port would still emit links back to it.
+  if (existsSync(join(cwd, 'artisan')) && existsSync(join(cwd, 'composer.json'))) {
+    const appUrl = envUrl(cwd, 'APP_URL');
+    if (appUrl) return { type: 'url', url: appUrl, source: '.env#APP_URL' };
+    return {
+      type: 'process', command: 'php',
+      args: ['artisan', 'serve', '--host=127.0.0.1', '--port={port}'],
+      readyPath: '/', source: 'artisan serve',
     };
   }
 
@@ -302,6 +339,16 @@ export async function startSessionPreview(sessionId, cwd, { force = false } = {}
   projectBySession.set(sessionId, key);
   changed(preview);
   if (config.error) { preview.state = 'error'; changed(preview); return publicPreview(preview); }
+
+  // Declared as already hosted: no process to spawn, no port to expose — the
+  // link is the address the project publishes on.
+  if (config.type === 'url') {
+    preview.tailscaleUrl = config.url;
+    preview.state = 'ready';
+    changed(preview);
+    log.info(`preview for ${preview.cwd} points at ${config.url} (${preview.source})`);
+    return publicPreview(preview);
+  }
 
   try {
     const occupied = await serveHttpsPorts();

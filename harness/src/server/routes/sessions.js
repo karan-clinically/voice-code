@@ -16,7 +16,7 @@ import multer from 'multer';
 import db, { UPLOADS_DIR } from '../../db.js';
 import { getConfig } from '../../config.js';
 import {
-  listSessions, getSession, createSession, killSession, renameSession, setTabColor,
+  listSessions, listSessionsForClients, getSession, createSession, killSession, renameSession, setTabColor,
   sendInput, sendRawKey, resizeSession, readScreen, readScreenColored, readScreenColoredPage, setKind,
   getPtyId, markState, reusableSession, recordReuse, setModel, setClaudeSessionId,
   latestSessionByClaudeId,
@@ -34,8 +34,8 @@ import { getRemoteSlug } from '../../services/terminal.js';
 import { getAttention, clearAttention, isMutedById, setMutedById } from '../../services/attention.js';
 import { getLiveConversation, getConversationPage, recordUserMessage, recordAssistantMessage } from '../../services/conversation.js';
 import { executeCommand, awaitReply } from '../../services/claudeCode.js';
-import { detectPrompt, detectTerminalActivity } from '../../services/prompt.js';
-import { buildReplyResponse, recordUserInteraction } from '../../services/reply.js';
+import { detectPrompt, detectTerminalActivity, multiSelectPlan } from '../../services/prompt.js';
+import { buildReplyResponse, recordUserInteraction, latestSpokenReply, spokenRepliesAfter } from '../../services/reply.js';
 import { getQueuedCommands, submitChatCommand } from './command.js';
 import { makeLogger } from '../../util/logger.js';
 import { getAdapter } from '../../agents/registry.js';
@@ -53,6 +53,7 @@ const KEY_SEQS = {
   stop: '\x1b',
   esc: '\x1b',
   enter: '\r',
+  space: ' ', // toggles the option under the cursor in a multi-select picker
   up: '\x1b[A',
   down: '\x1b[B',
   left: '\x1b[D',
@@ -84,7 +85,7 @@ const selHistory = db.prepare(
 );
 
 router.get('/', (req, res) => {
-  res.json({ sessions: listSessions() });
+  res.json({ sessions: listSessionsForClients() });
 });
 
 // Repo "owner/repo" slug per cwd, resolved off the git origin remote — cached and
@@ -620,7 +621,19 @@ router.get('/:id', (req, res) => {
   // Viewing a session is acknowledging its ping — clear the sticky badge. SessionView
   // polls this every 5s while open, so the badge drops the moment you're looking.
   clearAttention(session.id);
-  res.json({ ...session, muted: isMutedById(session.id), queuedCommands: getQueuedCommands(session.id) });
+  // The newest spoken reply, so a client that didn't send the command can still
+  // catch it — an agent reporting back mid-session reaches the phone through this
+  // poll rather than only the desktop's 'turn' broadcast.
+  // `lastReply` is what a client seeds from on its first poll (it must not replay a
+  // reply you read hours ago); `afterReply` then asks for everything it hasn't heard.
+  const afterReply = req.query.afterReply;
+  res.json({
+    ...session,
+    muted: isMutedById(session.id),
+    queuedCommands: getQueuedCommands(session.id),
+    lastReply: latestSpokenReply(session.id),
+    newReplies: afterReply === undefined ? [] : spokenRepliesAfter(session.id, afterReply),
+  });
 });
 
 // Silence (or unsilence) phone push for one session. The badge still shows; only
@@ -668,11 +681,18 @@ router.get('/:id/messages', async (req, res) => {
     const page = await getConversationPage(session, {
       before: req.query.before,
       limit: req.query.limit,
+      // Only a client that asked for a delta gets one: an older bundle sending
+      // `after` alone still expects the whole page and would append duplicates.
+      after: req.query.delta === '1' ? req.query.after : null,
+      version: req.query.v,
     });
     return res.json({ ...page, state: session.state, queuedCommands: getQueuedCommands(session.id) });
   }
   const after = Number(req.query.after) || 0;
-  const conv = await getLiveConversation(session, after);
+  const conv = await getLiveConversation(session, after, {
+    delta: req.query.delta === '1',
+    version: req.query.v,
+  });
   // `state` lets the chat show a "working…" indicator while Claude is busy;
   // `queuedCommands` lets it render not-yet-sent turns as queued bubbles.
   res.json({ ...conv, state: session.state, queuedCommands: getQueuedCommands(session.id) });
@@ -765,6 +785,52 @@ router.post('/:id/select', async (req, res) => {
     const result = await awaitReply(session, getPtyId(session.id), sentAt, 120_000);
     const payload = await buildReplyResponse(session, result, { desktopPlayback: req.body?.desktopPlayback !== false });
     res.json({ ok: true, selected: index, ...payload });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Answer a MULTI-select picker: toggle the options named in `indexes` (anything
+// not named is turned off) and submit. The single-select sibling above walks to
+// one option and presses Enter; here every differing option has to be walked to
+// and flipped with Space first, because the TUI has no way to set a state
+// directly. Ordering and cursor arithmetic live in multiSelectPlan, which is
+// where the interesting decisions are and where they can be tested.
+router.post('/:id/select-many', async (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'session not found' });
+  if (!session.alive) return res.status(409).json({ error: 'session is not alive' });
+  const indexes = Array.isArray(req.body?.indexes) ? req.body.indexes.map(Number).filter(Number.isFinite) : null;
+  if (!indexes) return res.status(400).json({ error: 'indexes array required' });
+  const wait = req.body?.wait !== false;
+  try {
+    const prompt = detectPrompt(await readScreen(req.params.id, { full: false }));
+    if (!prompt) return res.status(409).json({ error: 'no interactive prompt on screen' });
+    const unknown = indexes.filter((n) => !prompt.options.some((o) => o.n === n));
+    if (unknown.length) return res.status(400).json({ error: `option ${unknown[0]} not available` });
+
+    for (const step of multiSelectPlan(prompt, indexes)) {
+      const key = step.moves > 0 ? KEY_SEQS.down : KEY_SEQS.up;
+      for (let i = 0; i < Math.abs(step.moves); i++) {
+        sendRawKey(req.params.id, key);
+        await sleep(70); // let the TUI redraw between moves
+      }
+      sendRawKey(req.params.id, KEY_SEQS.space);
+      await sleep(70);
+    }
+
+    const chosen = prompt.options.filter((o) => indexes.includes(o.n));
+    const label = chosen.length ? `▸ ${chosen.map((o) => `${o.n}. ${o.label}`).join(', ')}` : '▸ none';
+    recordUserInteraction(session.id, label);
+    recordUserMessage(session.id, label);
+    markState(session.id, 'busy');
+    const sentAt = Date.now();
+    sendRawKey(req.params.id, KEY_SEQS.enter);
+
+    if (!wait) return res.json({ ok: true, selected: indexes });
+    const result = await awaitReply(session, getPtyId(session.id), sentAt, 120_000);
+    const payload = await buildReplyResponse(session, result, { desktopPlayback: req.body?.desktopPlayback !== false });
+    res.json({ ok: true, selected: indexes, ...payload });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -885,7 +951,11 @@ router.get('/:id/screen', async (req, res) => {
     }
     res.json(resp);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // A session whose pty has exited is an ordinary state, not a server fault —
+    // the phone polls this every couple of seconds and a 500 reads as "retry",
+    // which left it spinning on a session that will never paint again.
+    const gone = /no live PTY/i.test(err.message || '');
+    res.status(gone ? 409 : 500).json({ error: err.message, ...(gone ? { ended: true } : {}) });
   }
 });
 

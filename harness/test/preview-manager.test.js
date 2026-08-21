@@ -36,6 +36,41 @@ test('adds host and strict dynamic-port arguments for Vite', () => {
   assert.deepEqual(found.args.slice(-6), ['--', '--host', '127.0.0.1', '--port', '{port}', '--strictPort']);
 });
 
+test('takes a declared url as the preview, with nothing to spawn', () => {
+  const dir = project('declared-url');
+  writeFileSync(join(dir, '.voice-harness.json'), JSON.stringify({ preview: { url: 'https://app.example.ts.net:8443/' } }));
+  assert.deepEqual(discoverPreview(dir), {
+    type: 'url', url: 'https://app.example.ts.net:8443/', source: '.voice-harness.json',
+  });
+});
+
+// `npm run dev` in a Laravel repo is Vite: it serves assets and a splash page,
+// never the app. APP_URL is where the app actually answers.
+test('points a Laravel project at its APP_URL', () => {
+  const dir = project('laravel');
+  writeFileSync(join(dir, 'artisan'), '#!/usr/bin/env php');
+  writeFileSync(join(dir, 'composer.json'), '{}');
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    scripts: { dev: 'vite' }, devDependencies: { vite: '^6.0.0', 'laravel-vite-plugin': '^1.0.0' },
+  }));
+  writeFileSync(join(dir, '.env'), 'APP_ENV=local\nAPP_URL=https://pc.example.ts.net:8443\n');
+  assert.deepEqual(discoverPreview(dir), {
+    type: 'url', url: 'https://pc.example.ts.net:8443/', source: '.env#APP_URL',
+  });
+});
+
+// A loopback APP_URL is useless to a phone, so host the app ourselves instead.
+test('serves a Laravel project itself when APP_URL is local', () => {
+  const dir = project('laravel-local');
+  writeFileSync(join(dir, 'artisan'), '#!/usr/bin/env php');
+  writeFileSync(join(dir, 'composer.json'), '{}');
+  writeFileSync(join(dir, '.env'), 'APP_URL=http://localhost\n');
+  const found = discoverPreview(dir);
+  assert.equal(found.type, 'process');
+  assert.equal(found.source, 'artisan serve');
+  assert.deepEqual(found.args, ['artisan', 'serve', '--host=127.0.0.1', '--port={port}']);
+});
+
 test('serves a plain index.html folder as static content', () => {
   const dir = project('static');
   writeFileSync(join(dir, 'index.html'), '<h1>hello</h1>');

@@ -48,7 +48,7 @@ function fire(id, kind, bodyOverride) {
 }
 
 // 1) State-driven (command / chat / voice turns).
-sessionEvents.on('state', ({ id, state }) => {
+sessionEvents.on('state', ({ id, state, silent }) => {
   const prev = prevState.get(id);
   prevState.set(id, state);
   if (state === 'busy') {
@@ -56,6 +56,9 @@ sessionEvents.on('state', ({ id, state }) => {
     clearAttention(id); // the previous turn's sticky badge is no longer current
     return;
   }
+  // Reconciled from the screen (e.g. a stuck 'busy' cleared once the terminal went
+  // quiet). Nothing actually happened, so don't badge or push it.
+  if (silent) return;
   if (state === 'awaiting_input') fire(id, 'input');
   else if (state === 'response_ready') fire(id, 'finished');
   else if (state === 'idle' && prev === 'busy') fire(id, 'failed');

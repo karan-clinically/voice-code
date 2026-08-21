@@ -49,11 +49,24 @@ export function getMessages(sessionId, afterId = 0) {
 
 // Collapse consecutive same-role entries into one bubble (an assistant turn can
 // emit several text blocks around tool calls — show them as one message).
+// `activity` rows (tool calls) are not bubbles: they attach to the assistant
+// message they belong to as `steps`, so the client can show what the turn is
+// doing while it runs and tuck it away once it lands. A turn that has only made
+// tool calls so far has no text yet, so it gets an empty-text bubble to carry them.
 function mergeConsecutive(rows) {
   const out = [];
   for (const m of rows) {
+    if (m.role === 'activity') {
+      let host = out[out.length - 1];
+      if (!host || host.role !== 'assistant') {
+        host = { role: 'assistant', text: '', steps: [] };
+        out.push(host);
+      }
+      (host.steps ||= []).push(m.text);
+      continue;
+    }
     const prev = out[out.length - 1];
-    if (prev && prev.role === m.role) prev.text += '\n\n' + m.text;
+    if (prev && prev.role === m.role) prev.text += (prev.text ? '\n\n' : '') + m.text;
     else out.push({ role: m.role, text: m.text });
   }
   return out;
@@ -69,7 +82,16 @@ const transcriptCache = new Map(); // uuid -> { mtimeMs, size, messages }
 // Falls back to the harness-recorded `messages` table when there is no transcript
 // yet (uuid unknown / not written). `full:true` tells the client this is a whole-
 // conversation snapshot to replace, not an incremental append.
-export async function getLiveConversation(session, afterId = 0) {
+//
+// A transcript snapshot is the WHOLE conversation, and a phone polling it every
+// couple of seconds re-downloads all of it — 800KB on a session that has been
+// running an hour, growing with every turn, which is enough to saturate a mobile
+// link and starve the terminal socket sharing it. `delta` opts a client into the
+// tail instead: `version` short-circuits an untouched transcript to nothing, and
+// `afterId` returns only messages from there on. That last message is re-sent
+// rather than skipped, because a streaming answer keeps its id while its text
+// grows. Clients that don't ask still get the full snapshot.
+export async function getLiveConversation(session, afterId = 0, { delta = false, version = null } = {}) {
   const uuid = session?.claude_session_id;
   // A Grok session's complete record is its own on-disk context file (keyed by the
   // conv id we stored in claude_session_id). Read it directly — the symmetric of
@@ -83,13 +105,33 @@ export async function getLiveConversation(session, afterId = 0) {
   if (path) {
     try {
       const st = statSync(path);
+      const fileVersion = `${st.mtimeMs}:${st.size}`;
+      // Nothing has been written since this client last read: say so in a few
+      // bytes instead of shipping the conversation again.
+      if (delta && version && version === fileVersion) {
+        return { messages: [], lastId: Number(afterId) || 0, full: false, delta: true, unchanged: true, version: fileVersion };
+      }
       let cached = transcriptCache.get(uuid);
       if (!cached || cached.mtimeMs !== st.mtimeMs || cached.size !== st.size) {
-        const parsed = mergeConsecutive(await parseMessages(path));
-        cached = { mtimeMs: st.mtimeMs, size: st.size, messages: parsed.map((m, i) => ({ id: i + 1, role: m.role, text: m.text })) };
+        const parsed = mergeConsecutive(await parseMessages(path, { steps: true }));
+        cached = {
+          mtimeMs: st.mtimeMs,
+          size: st.size,
+          messages: parsed.map((m, i) => ({ id: i + 1, role: m.role, text: m.text, ...(m.steps ? { steps: m.steps } : {}) })),
+        };
         transcriptCache.set(uuid, cached);
       }
-      return { messages: cached.messages, lastId: cached.messages.length, full: true };
+      const lastId = cached.messages.length;
+      if (delta && Number(afterId) > 0) {
+        const from = Number(afterId);
+        const start = cached.messages.findIndex((m) => Number(m.id) >= from);
+        // A cursor that no longer exists means the transcript was re-parsed into a
+        // different shape; fall back to the whole snapshot rather than guess.
+        if (start >= 0) {
+          return { messages: cached.messages.slice(start), lastId, full: false, delta: true, version: fileVersion };
+        }
+      }
+      return { messages: cached.messages, lastId, full: true, version: fileVersion };
     } catch (err) {
       log.warn(`live transcript read failed for ${uuid?.slice(0, 8)}: ${err.message}`);
     }
@@ -103,9 +145,23 @@ export async function getLiveConversation(session, afterId = 0) {
 // cursor is the first message id already displayed, so the next page contains
 // only older turns. getLiveConversation's file cache keeps repeated JSONL pages
 // from re-reading disk while keeping this API provider-neutral.
-export async function getConversationPage(session, { before = null, limit = 40 } = {}) {
+export async function getConversationPage(session, { before = null, limit = 40, after = null, version = null } = {}) {
   const conv = await getLiveConversation(session, 0);
   const all = conv.messages || [];
+  // Tail refresh: this client already holds the page and only needs what changed
+  // since. Same contract as getLiveConversation's delta — see the note there for
+  // why the cursor message itself comes back.
+  if (Number(after) > 0) {
+    if (version && conv.version && version === conv.version) {
+      return { messages: [], delta: true, unchanged: true, version: conv.version, total: all.length };
+    }
+    const from = Number(after);
+    const start = all.findIndex((m) => Number(m.id) >= from);
+    if (start >= 0) {
+      return { messages: all.slice(start), delta: true, version: conv.version, total: all.length };
+    }
+    // Cursor gone (transcript re-parsed differently) — fall through to a full page.
+  }
   const pageSize = Math.max(10, Math.min(100, Number(limit) || 40));
   let end = all.length;
   if (before != null && before !== '') {
@@ -121,6 +177,7 @@ export async function getConversationPage(session, { before = null, limit = 40 }
     hasOlder: start > 0,
     total: all.length,
     full: true,
+    version: conv.version,
   };
 }
 
