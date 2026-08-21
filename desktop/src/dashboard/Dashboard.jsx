@@ -13,14 +13,31 @@ import {
   startSessionPreview,
 } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
-import Tabs, { NewTabButton } from './Tabs.jsx';
+import { speakUrl } from '../lib/speech.js';
+import { openExternal, urlPortLabel } from '../lib/open.js';
+import { setTabBadge } from '../lib/tabBadge.js';
+import { pickAttachments, quotePath } from '../lib/attachments.js';
+import Tabs, { NewTabButton, tabName } from './Tabs.jsx';
+import { clusterByFolder, folderColors, firstOfFolder, folderKey } from '../lib/folders.js';
 import TerminalPane from './TerminalPane.jsx';
 import ChatView from './ChatView.jsx';
 import LiveLog from './LiveLog.jsx';
 import HistoryOverlay from './HistoryOverlay.jsx';
 import ModelPicker from './ModelPicker.jsx';
+import FolderPicker from './FolderPicker.jsx';
+import SessionOverview from './SessionOverview.jsx';
 
 const TAB_ORDER_KEY = 'cvh-tab-order';
+const LAST_DIR_KEY = 'cvh-last-dir';
+// Terminal|Chat is one choice for the whole app: the header toggle sets it, every
+// session follows it, and it is remembered per device.
+const VIEW_MODE_KEY = 'cvh-view-mode';
+// Served in a browser (harness /desktop) rather than inside Electron, so there is
+// no native folder dialog — new sessions choose their folder in-app instead.
+const SERVED = typeof window !== 'undefined' && !window.cvh;
+// Session states worth flagging on the browser tab, as badge kinds.
+const TAB_PING = { awaiting_input: 'input', response_ready: 'finished', failed: 'failed' };
+const PING_ORDER = ['input', 'failed', 'finished'];
 
 export default function Dashboard({ onOpenWizard }) {
   const [sessions, setSessions] = useState([]);
@@ -30,9 +47,16 @@ export default function Dashboard({ onOpenWizard }) {
   const [showLog, setShowLog] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showMenu, setShowMenu] = useState(false); // the ☰ dropdown
-  const [viewModes, setViewModes] = useState({}); // sessionId -> 'terminal' | 'chat'
+  const [pickFor, setPickFor] = useState(null); // provider id awaiting a folder choice
+  const [showOverview, setShowOverview] = useState(false); // all sessions, over the terminal
+  const [focused, setFocused] = useState(true); // is this browser tab the one you're in?
+  const [liveFeed, setLiveFeed] = useState(false); // is the /ws push socket delivering?
+  const [viewMode, setViewMode] = useState(() => {
+    try { return localStorage.getItem(VIEW_MODE_KEY) === 'chat' ? 'chat' : 'terminal'; } catch { return 'terminal'; }
+  });
   const [speak, setSpeak] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false); // mic released, text not back yet
   const [msg, setMsg] = useState('');
   const [defaultSessionDir, setDefaultSessionDir] = useState('');
   // Manual tab order (drag to reorder), persisted per device.
@@ -41,7 +65,6 @@ export default function Dashboard({ onOpenWizard }) {
   });
 
   const termApis = useRef({}); // sessionId -> imperative terminal api
-  const audioRef = useRef(null);
   const recRef = useRef(null);
   const speakRef = useRef(false);
   const activeRef = useRef(null);
@@ -83,25 +106,37 @@ export default function Dashboard({ onOpenWizard }) {
         setSessions((prev) => prev.map((x) => (x.id === m.sessionId ? { ...x, state: m.state } : x)));
       else if (m.type === 'log') setLogs((l) => [...l.slice(-300), m]);
       else if (m.type === 'turn') maybeSpeak(m.sessionId, m.text);
-    });
-    return () => {
-      try {
-        ws.close();
-      } catch {
-        /* ignore */
-      }
-    };
+    }, setLiveFeed);
+    return () => ws.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
+
+  // Fallback for a socket that never opened (a proxy refusing the upgrade) or one
+  // that dropped: without this the dashboard only ever refreshed on mount, so the
+  // session list and every tab's state sat frozen until the page was reloaded by
+  // hand. Polling stops as soon as the socket is delivering pushes again, so the
+  // normal path stays push-driven rather than doing both.
+  useEffect(() => {
+    if (liveFeed) return undefined;
+    const t = setInterval(refresh, 4000);
+    return () => clearInterval(t);
+  }, [liveFeed, refresh]);
 
   // Keep an active tab pointed at a live session. Tabs render in the user's
   // dragged order (unknown ids keep their arrival order — Array.sort is stable).
   const live = sessions.filter((s) => s.alive);
-  const orderedLive = [...live].sort((a, b) => {
+  const draggedOrder = [...live].sort((a, b) => {
     const ia = tabOrder.indexOf(a.id);
     const ib = tabOrder.indexOf(b.id);
     return (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) - (ib === -1 ? Number.MAX_SAFE_INTEGER : ib);
   });
+  // Several sessions on one project is the normal way to work here, so the strip
+  // keeps them side by side: a folder holds the position of its first tab and its
+  // later tabs join it there. Dragging still decides the order of the folders
+  // themselves, and of the tabs within one.
+  const orderedLive = clusterByFolder(draggedOrder);
+  const tabColors = folderColors(live);
+  const folderStarts = firstOfFolder(orderedLive);
   const reorderTabs = useCallback((fromId, toId) => {
     setTabOrder((prev) => {
       const ids = orderedLive.map((s) => s.id);
@@ -115,24 +150,67 @@ export default function Dashboard({ onOpenWizard }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions, tabOrder]);
   const activeSession = live.find((s) => s.id === activeId) || null;
-  const modeOf = (id) => viewModes[id] || 'terminal';
-  const activeMode = activeSession?.capabilities?.chat === false ? 'terminal' : modeOf(activeId);
-  const setMode = (id, m) => setViewModes((prev) => ({ ...prev, [id]: m }));
+  // A session that can't do chat (a plain shell) stays on the terminal whatever
+  // the toggle says; the toggle itself keeps showing the app-wide choice.
+  const modeOf = (s) => (s?.capabilities?.chat === false ? 'terminal' : viewMode);
+  const setMode = (m) => {
+    setViewMode(m);
+    try { localStorage.setItem(VIEW_MODE_KEY, m); } catch { /* private mode */ }
+  };
+
+  // Header 📎 for the terminal view (the chat composer carries its own): put the
+  // chosen files' paths at the prompt, the same thing a drop or image paste does.
+  const attachToTerminal = useCallback(async () => {
+    const id = activeRef.current;
+    if (!id) return;
+    try {
+      const paths = await pickAttachments(id);
+      const api = termApis.current[id];
+      if (!paths.length) return;
+      if (!api) { notify('No active terminal to attach into'); return; }
+      api.write(paths.map(quotePath).join(' ') + ' ');
+      api.focus();
+    } catch (e) {
+      notify('Attach failed: ' + e.message);
+    }
+  }, [notify]);
   useEffect(() => {
     if (activeId && live.some((s) => s.id === activeId)) return;
     setActiveId(orderedLive.length ? orderedLive[0].id : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions]);
 
+  useEffect(() => {
+    const sync = () => setFocused(!document.hidden && document.hasFocus());
+    sync();
+    window.addEventListener('focus', sync);
+    window.addEventListener('blur', sync);
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      window.removeEventListener('focus', sync);
+      window.removeEventListener('blur', sync);
+      document.removeEventListener('visibilitychange', sync);
+    };
+  }, []);
+
+  // Flag waiting sessions on the Chrome tab (favicon dot + title). The session
+  // you're looking at doesn't count — its state is already on screen — but every
+  // session counts while this tab is in the background, which is the whole point.
+  useEffect(() => {
+    const waiting = live.filter((s) => TAB_PING[s.state] && !(focused && s.id === activeId));
+    const kind = PING_ORDER.find((k) => waiting.some((s) => TAB_PING[s.state] === k)) || null;
+    const first = waiting.find((s) => TAB_PING[s.state] === kind);
+    setTabBadge({ kind, count: waiting.length, name: first ? tabName(first) : '' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions, activeId, focused]);
+
   async function maybeSpeak(sessionId, text) {
     if (!speakRef.current || !text) return;
     if (activeRef.current != null && sessionId !== activeRef.current) return; // active session only
     try {
-      // Hand the URL to the element so it streams the mp3 as it renders.
-      if (audioRef.current) {
-        audioRef.current.src = ttsSayUrl(text);
-        audioRef.current.play().catch(() => {});
-      }
+      // Queued, so a reply landing mid-sentence waits its turn instead of
+      // cutting the one being read off.
+      speakUrl(ttsSayUrl(text));
     } catch {
       /* best-effort */
     }
@@ -150,34 +228,47 @@ export default function Dashboard({ onOpenWizard }) {
     setSessions((prev) => prev.map((s) => (s.id === id && s.state !== 'busy' ? { ...s, state: 'busy', attention: null } : s)));
   }, []);
 
+  // Electron has a native folder dialog; the served dashboard browses the PC's
+  // folders in-app instead (window.cvh is absent there, so asking it for a folder
+  // silently produced nothing at all).
   async function newSession(kind = 'claude') {
+    if (SERVED) {
+      setPickFor(kind);
+      return;
+    }
     const dir = defaultSessionDir || await window.cvh?.pickFolder();
-    if (!dir) return;
+    if (dir) startIn(dir, kind);
+  }
+
+  async function startIn(dir, kind = 'claude') {
     try {
       const base = dir.split(/[\\/]/).filter(Boolean).pop() || 'project';
       const provider = providers.find((p) => p.id === kind);
       const label = kind === 'claude' ? null : `${base} · ${provider?.name || kind}`;
       const s = await createSession(dir, label, kind);
+      try { localStorage.setItem(LAST_DIR_KEY, dir); } catch { /* private mode */ }
       setActiveId(s.id);
     } catch (e) {
       notify('Could not start session: ' + e.message);
     }
   }
 
+  // The tailnet URL is the one worth surfacing: it works from this PC and from
+  // every other device on the tailnet, which the 127.0.0.1 URL does not. Fall
+  // back to local only when Tailscale exposure failed.
+  const previewUrl = (p) => p?.tailscaleUrl || p?.localUrl || null;
+
   async function launchPreview() {
     if (!activeSession) return;
     const preview = activeSession.preview;
     if (preview?.state === 'ready') {
-      const url = preview.localUrl || preview.tailscaleUrl;
-      if (url) await window.cvh?.openExternal(url);
+      openExternal(previewUrl(preview));
       return;
     }
     try {
       const result = await startSessionPreview(activeSession.id);
       setSessions((prev) => prev.map((s) => s.id === activeSession.id ? { ...s, preview: result.preview } : s));
-      if (result.preview?.state === 'ready' && result.preview.localUrl) {
-        await window.cvh?.openExternal(result.preview.localUrl);
-      }
+      if (result.preview?.state === 'ready') openExternal(previewUrl(result.preview));
     } catch (e) {
       notify('Could not start app: ' + e.message);
     }
@@ -195,13 +286,22 @@ export default function Dashboard({ onOpenWizard }) {
     }
   }
 
+  // Colouring a tab colours its FOLDER — every live session in it, not just the
+  // one you right-clicked. The strip already renders a folder as one colour, so
+  // painting a single row would either look like nothing happened (another
+  // session in that folder is newer and still decides the shade) or leave the
+  // group disagreeing with itself the moment that session ends.
   async function setColor(id, color) {
-    const previous = sessions.find((s) => s.id === id)?.tab_color || null;
-    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, tab_color: color } : s)));
+    const target = sessions.find((s) => s.id === id);
+    const key = folderKey(target?.cwd);
+    const group = key ? live.filter((s) => folderKey(s.cwd) === key) : [target].filter(Boolean);
+    const previous = new Map(group.map((s) => [s.id, s.tab_color || null]));
+    const ids = new Set(group.map((s) => s.id));
+    setSessions((prev) => prev.map((s) => (ids.has(s.id) ? { ...s, tab_color: color } : s)));
     try {
-      await setSessionColor(id, color);
+      await Promise.all(group.map((s) => setSessionColor(s.id, color)));
     } catch (e) {
-      setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, tab_color: previous } : s)));
+      setSessions((prev) => prev.map((s) => (ids.has(s.id) ? { ...s, tab_color: previous.get(s.id) } : s)));
       notify('Tab color failed: ' + e.message);
     }
   }
@@ -231,6 +331,7 @@ export default function Dashboard({ onOpenWizard }) {
       const handle = recRef.current;
       recRef.current = null;
       setRecording(false);
+      setTranscribing(true);
       try {
         const blob = await handle.stop();
         const { text } = await transcribeAudio(blob, 'webm', { cleanup: true });
@@ -243,6 +344,8 @@ export default function Dashboard({ onOpenWizard }) {
         }
       } catch (e) {
         notify('Voice input failed: ' + e.message);
+      } finally {
+        setTranscribing(false);
       }
       return;
     }
@@ -269,6 +372,14 @@ export default function Dashboard({ onOpenWizard }) {
     <div className="term-app">
       <header className="term-topbar">
         <div className="term-tabs-row">
+          <button
+            className={'ov-btn' + (showOverview ? ' on' : '')}
+            onClick={() => setShowOverview((v) => !v)}
+            title={showOverview ? 'Back to the terminal' : 'All sessions'}
+            aria-pressed={showOverview}
+          >
+            {showOverview ? '←' : '⊞'}
+          </button>
           <div className="tabs-scroll">
             <Tabs
               sessions={orderedLive}
@@ -278,64 +389,104 @@ export default function Dashboard({ onOpenWizard }) {
               onColor={setColor}
               onClose={close}
               onReorder={reorderTabs}
+              tabColors={tabColors}
+              folderStarts={folderStarts}
+              providers={providers}
+              // A tab already knows its folder, so its own "+" skips the folder
+              // step the header's "+" needs — pick a CLI and you land in a second
+              // session on the same project.
+              onNewInFolder={(session, providerId) => startIn(session.cwd, providerId)}
             />
           </div>
           <NewTabButton providers={providers} onNew={newSession} />
+          {activeSession && <ModelPicker session={activeSession} providers={providers} notify={notify} />}
+          {activeSession && modeOf(activeSession) !== 'chat' && (
+            <button
+              className="hdr-btn"
+              onClick={attachToTerminal}
+              disabled={!activeSession.alive}
+              title="Attach a file to this session (or drop a file onto the terminal, or paste an image)"
+              aria-label="Attach a file"
+            >
+              📎
+            </button>
+          )}
+          <div className="seg view-seg" role="group" aria-label="View" title="Show every session as the raw terminal or as a chat">
+            <button
+              className={'seg-btn' + (viewMode !== 'chat' ? ' on' : '')}
+              onClick={() => setMode('terminal')}
+              aria-pressed={viewMode !== 'chat'}
+            >
+              Terminal
+            </button>
+            <button
+              className={'seg-btn' + (viewMode === 'chat' ? ' on' : '')}
+              onClick={() => setMode('chat')}
+              aria-pressed={viewMode === 'chat'}
+            >
+              Chat
+            </button>
+          </div>
           <div className="term-burger-wrap" ref={menuRef}>
             <button
-              className={'burger-btn' + (recording ? ' rec' : '')}
+              className={'burger-btn' + (recording ? ' rec' : '') + (transcribing ? ' stt' : '')}
               onClick={() => setShowMenu((v) => !v)}
-              title={recording ? 'Menu — recording in progress' : 'Menu'}
+              title={recording ? 'Menu — recording in progress' : transcribing ? 'Menu — transcribing…' : 'Menu'}
               aria-expanded={showMenu}
               aria-label="Menu"
             >
-              ☰
+              <span className="cbtn-glyph">☰</span>
             </button>
             {showMenu && (
               <div className="burger-menu" role="menu" aria-label="Session and app options">
                 {activeSession && (
                   <>
-                    {activeSession.capabilities?.chat !== false && (
-                      <div className="burger-row seg" title="Switch the active session between the raw terminal and a chat view">
-                        <button
-                          className={'seg-btn' + (activeMode !== 'chat' ? ' on' : '')}
-                          onClick={() => setMode(activeId, 'terminal')}
-                        >
-                          Terminal
-                        </button>
-                        <button
-                          className={'seg-btn' + (activeMode === 'chat' ? ' on' : '')}
-                          onClick={() => setMode(activeId, 'chat')}
-                        >
-                          Chat
-                        </button>
-                      </div>
-                    )}
-                    <div className="burger-row">
-                      <ModelPicker session={activeSession} notify={notify} />
-                    </div>
-                    <button
-                      className={'burger-item' + (activeSession.preview?.state === 'ready' ? ' on' : '')}
-                      role="menuitem"
-                      onClick={() => { setShowMenu(false); launchPreview(); }}
-                      disabled={activeSession.preview?.state === 'starting'}
-                      title={activeSession.preview?.error || 'Open this project app in your browser'}
-                    >
-                      {activeSession.preview?.state === 'starting'
-                        ? 'App starting…'
-                        : activeSession.preview?.state === 'ready'
-                          ? '↗ Open app'
+                    {activeSession.preview?.state === 'ready' && previewUrl(activeSession.preview) ? (
+                      <a
+                        className="burger-item on"
+                        role="menuitem"
+                        href={previewUrl(activeSession.preview)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={previewUrl(activeSession.preview)}
+                        onClick={(e) => {
+                          // Electron has no tab to open into — hand it to the OS browser.
+                          if (window.cvh?.openExternal) e.preventDefault();
+                          setShowMenu(false);
+                          openExternal(previewUrl(activeSession.preview));
+                        }}
+                      >
+                        ↗ Open app
+                        <span className="burger-hint">
+                          {activeSession.preview.tailscaleUrl
+                            ? urlPortLabel(activeSession.preview.tailscaleUrl) || 'ready'
+                            : 'local only'}
+                        </span>
+                      </a>
+                    ) : (
+                      <button
+                        className="burger-item"
+                        role="menuitem"
+                        onClick={() => { setShowMenu(false); launchPreview(); }}
+                        disabled={activeSession.preview?.state === 'starting'}
+                        title={activeSession.preview?.error || 'Serve this project app on your tailnet'}
+                      >
+                        {activeSession.preview?.state === 'starting'
+                          ? 'App starting…'
                           : activeSession.preview?.state === 'error'
                             ? '↻ Retry app'
                             : '▷ Start app'}
-                    </button>
+                        {activeSession.preview?.state === 'error' && <span className="burger-hint">failed</span>}
+                      </button>
+                    )}
                     <button
-                      className={'burger-item' + (recording ? ' rec' : '')}
+                      className={'burger-item' + (recording ? ' rec' : '') + (transcribing ? ' stt' : '')}
                       role="menuitem"
+                      disabled={transcribing}
                       onClick={() => { setShowMenu(false); toggleTalk(); }}
-                      title="Dictate into the active terminal"
+                      title={transcribing ? 'Waiting for the transcript' : 'Dictate into the active terminal'}
                     >
-                      {recording ? '● Stop listening' : '🎙 Talk'}
+                      {recording ? '● Stop listening' : transcribing ? '🎙 Transcribing…' : '🎙 Talk'}
                       <span className="burger-hint">Ctrl+`</span>
                     </button>
                     <button
@@ -379,14 +530,25 @@ export default function Dashboard({ onOpenWizard }) {
                   it just hides under the chat overlay in chat mode. */}
               <TerminalPane
                 session={s}
-                active={s.id === activeId && (s.capabilities?.chat === false || modeOf(s.id) !== 'chat')}
+                active={s.id === activeId && modeOf(s) !== 'chat'}
                 onApi={registerApi}
                 onWorking={markVisiblyWorking}
                 notify={notify}
               />
-              {s.capabilities?.chat !== false && modeOf(s.id) === 'chat' && <ChatView session={s} active={s.id === activeId} notify={notify} />}
+              {modeOf(s) === 'chat' && <ChatView session={s} active={s.id === activeId} notify={notify} />}
             </React.Fragment>
           ))
+        )}
+        {showOverview && (
+          <SessionOverview
+            sessions={orderedLive}
+            activeId={activeId}
+            providers={providers}
+            onOpen={(id) => { setActiveId(id); setShowOverview(false); }}
+            onClose={() => setShowOverview(false)}
+            onNew={(kind) => { setShowOverview(false); newSession(kind); }}
+            onKill={close}
+          />
         )}
         {showLog && (
           <div className="term-logwrap">
@@ -395,12 +557,23 @@ export default function Dashboard({ onOpenWizard }) {
         )}
       </main>
 
+      {pickFor && (
+        <FolderPicker
+          title={'New ' + (providers.find((p) => p.id === pickFor)?.name || pickFor) + ' session — choose a folder'}
+          start={(() => {
+            try { return localStorage.getItem(LAST_DIR_KEY) || defaultSessionDir; } catch { return defaultSessionDir; }
+          })()}
+          onPick={(dir) => { const kind = pickFor; setPickFor(null); startIn(dir, kind); }}
+          onClose={() => setPickFor(null)}
+          notify={notify}
+        />
+      )}
+
       {showHistory && (
         <HistoryOverlay onClose={() => setShowHistory(false)} onResume={onResumeArchive} notify={notify} />
       )}
 
       {msg && <div className="term-toast">{msg}</div>}
-      <audio ref={audioRef} hidden />
     </div>
   );
 }

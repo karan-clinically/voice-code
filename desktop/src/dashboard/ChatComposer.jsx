@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { sessionMode, sessionKey, replyUrl, transcribeAudio, configState, sttWsUrl } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
+import { speakUrl } from '../lib/speech.js';
 import { startSttStream } from '../lib/sttStream.js';
+import { clipboardImages, hasImageBridge, uploadImages, pickAttachments, quotePath } from '../lib/attachments.js';
 import PromptsModal from './PromptsModal.jsx';
 
 // Permission modes in Shift+Tab cycle order (verified): manual → accept edits →
@@ -17,6 +19,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   const [showPrompts, setShowPrompts] = useState(false);
   const [recording, setRecording] = useState(false);
   const [tidying, setTidying] = useState(false);
+  const [transcribing, setTranscribing] = useState(false); // mic released, text not back yet
   const [sttMode, setSttMode] = useState('batch');
   const recRef = useRef(null);
   const streamRef = useRef(null);
@@ -88,6 +91,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
       const s = streamRef.current;
       streamRef.current = null;
       setRecording(false);
+      setTranscribing(true);
       s.stop();
       return;
     }
@@ -96,12 +100,15 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
       const h = recRef.current;
       recRef.current = null;
       setRecording(false);
+      setTranscribing(true);
       try {
         const blob = await h.stop();
         const { text: t } = await transcribeAudio(blob, 'webm', { cleanup: true });
         if (t) insert(t);
       } catch (e) {
         notify?.('Voice input failed: ' + e.message);
+      } finally {
+        setTranscribing(false);
       }
       return;
     }
@@ -114,6 +121,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
           onPartial: applyStream,
           onFinal: (t, { tidying: willTidy } = {}) => {
             applyStream(t); // verbatim, instantly
+            setTranscribing(false);
             setTidying(!!willTidy);
             taRef.current?.focus();
           },
@@ -121,6 +129,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
           onError: async ({ spoken, recovered }) => {
             streamRef.current = null;
             setRecording(false);
+            setTranscribing(false);
             setTidying(false);
             notify?.(spoken || 'Voice input failed');
             if (recovered) {
@@ -156,7 +165,7 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
   function replay(mode) {
     if (!lastAssistantText) return notify?.('Nothing to replay yet');
     try {
-      new Audio(replyUrl(session.id, mode)).play().catch(() => {});
+      speakUrl(replyUrl(session.id, mode));
     } catch (e) {
       notify?.('Replay failed: ' + e.message);
     }
@@ -164,23 +173,27 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
 
   async function attach() {
     try {
-      const path = (await window.cvh?.pickFile?.()) || null;
-      if (path) insert(/\s/.test(path) ? `"${path}" ` : `${path} `);
+      const paths = await pickAttachments(session.id);
+      if (paths.length) insert(paths.map(quotePath).join(' ') + ' ');
     } catch (e) {
       notify?.('Attach failed: ' + e.message);
     }
   }
 
   async function pasteImage(e) {
-    const hasImage = Array.from(e.clipboardData?.items || [])
-      .some((item) => item.kind === 'file' && item.type?.startsWith('image/'))
-      || Array.from(e.clipboardData?.files || []).some((file) => file.type?.startsWith('image/'));
+    const images = clipboardImages(e.clipboardData);
+    const hasImage = images.length > 0 || Array.from(e.clipboardData?.items || [])
+      .some((item) => item.kind === 'file' && item.type?.startsWith('image/'));
     if (!hasImage) return; // let the textarea perform an ordinary text paste
     e.preventDefault();
     try {
-      const path = (await window.cvh?.clipboardImagePath?.()) || null;
-      if (!path) throw new Error('The clipboard image could not be read');
-      insert(/\s/.test(path) ? `"${path}" ` : `${path} `);
+      // Electron reads the OS clipboard directly; a served page uploads the pasted
+      // bitmap and uses the path the harness stored it at.
+      const paths = hasImageBridge()
+        ? [(await window.cvh.clipboardImagePath()) || null].filter(Boolean)
+        : await uploadImages(session.id, images);
+      if (!paths.length) throw new Error('The clipboard image could not be read');
+      insert(paths.map((p) => (/\s/.test(p) ? `"${p}"` : p)).join(' ') + ' ');
     } catch (err) {
       notify?.('Image paste failed: ' + err.message);
     }
@@ -227,12 +240,13 @@ export default function ChatComposer({ session, onSubmit, lastAssistantText, not
         {isGrok && <span className="mode-pill" title="Native Grok coding agent">Grok</span>}
         <div className="composer-spacer" />
         <button
-          className={'cbtn' + (recording ? ' rec' : '') + (tidying ? ' tidying' : '')}
+          className={'cbtn' + (recording ? ' rec' : '') + (transcribing ? ' stt' : '') + (tidying ? ' tidying' : '')}
           onClick={toggleMic}
-          disabled={tidying}
-          title={recording ? 'Stop dictating' : tidying ? 'Tidying up what you said…' : 'Dictate'}
+          disabled={tidying || transcribing}
+          aria-busy={transcribing || tidying}
+          title={recording ? 'Stop dictating' : transcribing ? 'Transcribing…' : tidying ? 'Tidying up what you said…' : 'Dictate'}
         >
-          {tidying ? '✨' : '🎙'}
+          <span className="cbtn-glyph">{tidying ? '✨' : '🎙'}</span>
         </button>
         <button className="cbtn" onClick={() => replay('summary')} title="Replay the spoken summary">🔊</button>
         <button className="cbtn" onClick={() => replay('full')} title="Read the full reply aloud">📖</button>

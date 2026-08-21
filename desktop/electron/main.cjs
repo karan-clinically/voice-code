@@ -44,6 +44,9 @@ function createWindow() {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      // Chromium slows a hidden window's timers to once a minute; the chat view
+      // polls the harness on a timer, so a minimised window came back stale.
+      backgroundThrottling: false,
     },
   });
 

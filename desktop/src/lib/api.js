@@ -37,8 +37,12 @@ async function handle(r) {
   return data;
 }
 
+// `no-store`: every GET here reads LIVE state, and the polls hit a fixed URL
+// (the chat view asks for `?after=0` for the whole of a conversation). With no
+// cache directive the browser is free to keep serving its stored copy of that
+// URL, which showed up as a chat that only updated when the page was reloaded.
 export async function apiGet(path) {
-  return handle(await fetch(baseUrl + path));
+  return handle(await fetch(baseUrl + path, { cache: 'no-store' }));
 }
 
 export async function apiPost(path, body) {
@@ -63,16 +67,69 @@ export async function health() {
   return apiGet('/api/health');
 }
 
-export function openWs(onMessage) {
-  const ws = new WebSocket(baseUrl.replace(/^http/, 'ws') + '/ws');
-  ws.onmessage = (e) => {
-    try {
-      onMessage(JSON.parse(e.data));
-    } catch {
-      /* ignore malformed */
-    }
+// The live session feed. This socket is the ONLY push channel the dashboard has
+// (session list, per-session state, logs, spoken turns), so when it never opens
+// the whole UI silently freezes until the page is reloaded. That is not
+// hypothetical: corporate proxies routinely pass ordinary HTTPS but refuse the
+// WebSocket upgrade, and any connection can drop. So: reconnect with backoff, and
+// tell the caller whether the socket is currently delivering, so it can fall back
+// to polling instead of showing stale state indefinitely.
+export function openWs(onMessage, onStatus) {
+  let socket = null;
+  let retry = null;
+  let delay = 1000;
+  let stopped = false;
+
+  const schedule = () => {
+    if (stopped || retry) return;
+    retry = setTimeout(() => {
+      retry = null;
+      connect();
+    }, delay);
+    delay = Math.min(delay * 2, 15000); // a blocked proxy must not be retried hot
   };
-  return ws;
+
+  function connect() {
+    if (stopped) return;
+    let next;
+    try {
+      next = new WebSocket(baseUrl.replace(/^http/, 'ws') + '/ws');
+    } catch {
+      schedule(); // some browsers throw outright when the scheme is blocked
+      return;
+    }
+    socket = next;
+    next.onopen = () => {
+      if (socket !== next) return;
+      delay = 1000;
+      onStatus?.(true);
+    };
+    next.onmessage = (e) => {
+      try {
+        onMessage(JSON.parse(e.data));
+      } catch {
+        /* ignore malformed */
+      }
+    };
+    next.onerror = () => {
+      if (socket === next) try { next.close(); } catch { /* onclose retries */ }
+    };
+    next.onclose = () => {
+      if (socket !== next) return;
+      socket = null;
+      onStatus?.(false);
+      schedule();
+    };
+  }
+
+  connect();
+  return {
+    close() {
+      stopped = true;
+      clearTimeout(retry);
+      try { socket?.close(); } catch { /* already gone */ }
+    },
+  };
 }
 
 export function ttsUrl(interactionId) {
@@ -132,6 +189,10 @@ export async function previewVoiceUrl(voiceId, provider) {
   return URL.createObjectURL(await r.blob());
 }
 
+// Directory listing for the served dashboard's folder picker (no Electron bridge,
+// so no native dialog). Empty path returns the drive letters.
+export const fsList = (path) => apiGet('/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : ''));
+
 // --- sessions / command ---
 export const listSessions = () => apiGet('/api/sessions');
 export const listProviders = () => apiGet('/api/providers');
@@ -148,6 +209,13 @@ export const stopSessionPreview = (id) => apiPost(`/api/sessions/${id}/preview/s
 export const renameSession = (id, label) => apiPost(`/api/sessions/${id}/rename`, { label });
 export const setSessionColor = (id, color) => apiPost(`/api/sessions/${id}/color`, { color });
 export const sendCommand = (sessionId, text) => apiPost('/api/command', { sessionId, text });
+// Store a file on the harness host and get back its local path — what the CLIs
+// read. Used for pasted screenshots when there is no Electron clipboard bridge.
+export const attachFile = (id, file) => {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  return apiPostForm(`/api/sessions/${id}/attach`, fd);
+};
 
 // --- session archive (past transcripts) ---
 export const searchArchive = (q = '', project = '') =>

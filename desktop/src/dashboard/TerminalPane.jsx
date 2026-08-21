@@ -3,6 +3,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { termWsUrl } from '../lib/api.js';
+import { openExternal } from '../lib/open.js';
+import { clipboardImages, hasImageBridge, uploadImages, droppedPaths } from '../lib/attachments.js';
 import '@xterm/xterm/css/xterm.css';
 
 // Dark IDE terminal theme (brand-green cursor/accent).
@@ -33,6 +35,32 @@ const THEME = {
 // Quote a path for the prompt if it contains spaces.
 const quote = (p) => (/\s/.test(p) ? `"${p}"` : p);
 
+// The async clipboard API needs a secure context, which http://<tailnet-ip>:4620
+// is not — fall back to the old selection+execCommand trick so copy still works
+// there rather than failing silently.
+const copyText = (text) => {
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+    return;
+  }
+  legacyCopy(text);
+};
+
+const legacyCopy = (text) => {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+  } catch {
+    /* nothing more we can do */
+  }
+  ta.remove();
+};
+
 // One live xterm.js terminal bound to a session's PTY over /ws/term. Every pane
 // stays mounted (hidden when inactive) so scrollback and the socket survive tab
 // switches. Registers an imperative { focus, write, paste } via onApi so the
@@ -58,7 +86,7 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon((_e, uri) => window.cvh?.openExternal(uri)));
+    term.loadAddon(new WebLinksAddon((_e, uri) => openExternal(uri)));
     term.open(wrapRef.current);
     termRef.current = term;
     fitRef.current = fit;
@@ -78,7 +106,7 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
         }
         const tail = lines.join('\n');
         const stableBusy = /esc to interrupt|thinking…|working…/i.test(tail);
-        const rotatingSpinner = /(?:^|\n)\s*[·✻✽✶*]\s+[^\n…]{1,60}…\s*\([^\n)]*(?:\d+\s*[ms]\b|tokens?\b)[^\n)]*\)/i.test(tail);
+        const rotatingSpinner = /(?:^|\n)\s*[·✢✻✽✶*]\s+[^\n…]{1,60}…\s*\([^\n)]*(?:\d+\s*[ms]\b|tokens?\b)[^\n)]*\)/i.test(tail);
         if (stableBusy || rotatingSpinner) onWorking?.(session.id);
       }, 80);
     };
@@ -123,8 +151,7 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || !e.ctrlKey) return true;
       if (e.key.toLowerCase() === 'c' && (e.shiftKey || term.hasSelection())) {
-        const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        copyText(term.getSelection());
         if (!e.shiftKey) term.clearSelection();
         return false; // copy, not SIGINT
       }
@@ -152,7 +179,10 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
         term.focus();
         return;
       }
-      insertPastedText(await window.cvh?.clipboardText?.());
+      let text = '';
+      if (window.cvh?.clipboardText) text = await window.cvh.clipboardText();
+      else if (navigator.clipboard?.readText) text = await navigator.clipboard.readText().catch(() => '');
+      insertPastedText(text);
     };
     const onPaste = (e) => {
       const cd = e.clipboardData;
@@ -168,24 +198,46 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
         else pasteFromSystem().catch(() => {});
         return;
       }
-      window.cvh
-        ?.clipboardImagePath?.()
-        .then((p) => {
-          if (p) {
-            sendInput(quote(p) + ' ');
-            term.focus();
-          }
+      if (hasImageBridge()) {
+        window.cvh
+          .clipboardImagePath()
+          .then((p) => {
+            if (p) {
+              sendInput(quote(p) + ' ');
+              term.focus();
+            }
+          })
+          .catch(() => {});
+        return;
+      }
+      // Served in a browser: the paste carries the bitmap itself, so upload it and
+      // drop the path the harness wrote it to at the prompt.
+      const images = clipboardImages(cd);
+      if (!images.length) return;
+      notify?.(`Uploading ${images.length === 1 ? 'image' : images.length + ' images'}…`);
+      uploadImages(session.id, images)
+        .then((paths) => {
+          if (!paths.length) throw new Error('nothing was stored');
+          sendInput(paths.map(quote).join(' ') + ' ');
+          term.focus();
+          notify?.('');
         })
-        .catch(() => {});
+        .catch((err) => notify?.('Image paste failed: ' + err.message));
     };
-    // Electron does not consistently dispatch a populated paste event to xterm's
-    // hidden textarea. Handle keyboard paste directly through the preload bridge;
-    // context-menu paste still comes through onPaste above.
+    // Ctrl+V must never reach xterm: it encodes plain ctrl+letter as a control
+    // code (^V) and cancels the event, which also kills the browser's own paste.
+    // Under Electron the preload bridge reads the clipboard, because Electron does
+    // not consistently dispatch a populated paste event to xterm's hidden textarea.
+    // Served as a plain web page (/desktop in a browser) there is no bridge, so we
+    // let the default action run and pick the text up in onPaste below — that keeps
+    // paste working without asking for the clipboard-read permission.
     const onPasteKey = (e) => {
       if (e.type !== 'keydown' || (!e.ctrlKey && !e.metaKey) || e.altKey || e.key.toLowerCase() !== 'v') return;
-      e.preventDefault();
       e.stopImmediatePropagation();
-      pasteFromSystem().catch(() => {});
+      if (window.cvh?.clipboardText) {
+        e.preventDefault();
+        pasteFromSystem().catch(() => {});
+      }
     };
     el.addEventListener('paste', onPaste, true);
     el.addEventListener('keydown', onPasteKey, true);
@@ -197,13 +249,13 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
     };
     const onDrop = (e) => {
       e.preventDefault();
-      const paths = Array.from(e.dataTransfer.files || [])
-        .map((f) => f.path)
-        .filter(Boolean);
-      if (paths.length) {
-        sendInput(paths.map(quote).join(' ') + ' ');
-        term.focus();
-      }
+      droppedPaths(session.id, e.dataTransfer.files)
+        .then((paths) => {
+          if (!paths.length) return;
+          sendInput(paths.map(quote).join(' ') + ' ');
+          term.focus();
+        })
+        .catch((err) => notify?.('Attach failed: ' + err.message));
     };
     el.addEventListener('dragover', onDragOver);
     el.addEventListener('drop', onDrop);

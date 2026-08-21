@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { setSessionModel } from '../lib/api.js';
 
-// Options mirror harness/src/services/models.js — kept in sync by hand since
-// the alias list rarely changes and this avoids a round trip just to render it.
+// The server's provider list carries each CLI's switchable models; this copy of
+// harness/src/services/models.js only covers the moment before it has loaded.
 const OPTIONS = [
   { alias: 'default', label: 'Default' },
   { alias: 'sonnet', label: 'Sonnet' },
@@ -16,8 +16,8 @@ const OPTIONS = [
 // Code has no query API for it, so the harness infers it from settings.json at
 // spawn and from the confirmation line `/model` prints on a change). Click opens
 // a dropdown of the switchable aliases; picking one sends `/model <alias>` into
-// the session's PTY.
-export default function ModelPicker({ session, notify }) {
+// the session's PTY. Same affordance as the phone's model pill.
+export default function ModelPicker({ session, providers = [], notify }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const wrapRef = useRef(null);
@@ -33,12 +33,20 @@ export default function ModelPicker({ session, notify }) {
 
   if (!session?.capabilities?.models) return null;
 
+  const provider = providers.find((p) => p.id === (session.provider_id || session.kind || 'claude'));
+  const options = provider?.models?.length ? provider.models : OPTIONS;
+  const current = session.model || '';
+  // The harness reports the model as Claude prints it ("Opus 4.6 (1M)"), so an
+  // option matches on its label as a prefix, not by equality.
+  const isCurrent = (opt) => current === opt.label || current.startsWith(opt.label + ' ');
+
   async function pick(opt) {
     setOpen(false);
-    if (opt.label === session.model) return;
+    if (isCurrent(opt) || switching) return;
     setSwitching(true);
     try {
-      await setSessionModel(session.id, opt.alias);
+      const result = await setSessionModel(session.id, opt.alias);
+      notify?.(`Model changed to ${result?.model || opt.label}`);
     } catch (e) {
       notify?.('Model switch failed: ' + e.message);
     } finally {
@@ -51,23 +59,24 @@ export default function ModelPicker({ session, notify }) {
       <button
         className="model-pill"
         onClick={() => setOpen((v) => !v)}
-        disabled={!session.alive}
-        title="Model — click to switch"
+        disabled={!session.alive || switching}
+        title={`Current model: ${current || 'unknown'}. Click to switch.`}
         aria-expanded={open}
       >
-        {switching ? 'Switching…' : session.model || 'Model'}
+        <span className="model-name">{switching ? 'Switching…' : current || 'Model'}</span>
         <span className="model-caret">▾</span>
       </button>
       {open && (
         <div className="model-pick-menu" role="menu">
-          {OPTIONS.map((opt) => (
+          {options.map((opt) => (
             <button
               key={opt.alias}
               role="menuitem"
-              className={opt.label === session.model ? 'on' : ''}
+              className={isCurrent(opt) ? 'on' : ''}
               onClick={() => pick(opt)}
             >
-              {opt.label}
+              <span>{opt.label}</span>
+              {isCurrent(opt) && <span aria-hidden="true">✓</span>}
             </button>
           ))}
         </div>
