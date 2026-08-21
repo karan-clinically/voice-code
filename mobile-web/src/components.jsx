@@ -533,6 +533,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
   const onUserTurnsRef = useRef(onUserTurns);
   useEffect(() => { onUserTurnsRef.current = onUserTurns; }, [onUserTurns]);
   const [displayState, setDisplayState] = useState('loading'); // loading | cached | live
+  const [unreachable, setUnreachable] = useState(false); // live refresh keeps failing
   const [connectionState, setConnectionState] = useState('connecting'); // connecting | live | reconnecting
   const [showReconnect, setShowReconnect] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -614,6 +615,8 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
   useEffect(() => {
     let stop = false;
     let busy = false;
+    let busySince = 0;
+    let paintFailures = 0; // consecutive; the chip stops claiming "updating" after a few
     let again = false;
     let repaintTimer = null;
     let lastPaintStarted = 0;
@@ -778,6 +781,9 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
 
     const paint = async () => {
       if (stop) return;
+      // Every request in here is timed, so a guard held this long is wedged, not
+      // working — release it rather than wait on a visibility flip to do it.
+      if (busy && Date.now() - busySince > 20000) busy = false;
       if (busy) { again = true; return; }
       // Direct keypad input is latency-sensitive: bypass the normal burst throttle
       // during its short force window so cursor movement feels immediate.
@@ -795,7 +801,8 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         return;
       }
       busy = true;
-      lastPaintStarted = Date.now();
+      busySince = Date.now();
+      lastPaintStarted = busySince;
       try {
         const [screen, transcriptChanged] = await Promise.all([
           sessionScreen(sessionId),
@@ -821,12 +828,16 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
             replaceRendered({ preservePosition: true });
           }
         }
+        paintFailures = 0;
+        setUnreachable(false);
         setDisplayState('live');
       } catch (err) {
         // The pty is gone. Same fact the terminal socket reports with {t:'exit'},
         // but this path still arrives when that socket is the thing that's wedged.
-        // Anything else here is transient and the next poll retries.
+        // Anything else here is transient and the next poll retries — but say so
+        // once it keeps happening, instead of an "updating…" that never lands.
         if (err?.ended || err?.status === 409 || /no live PTY/i.test(err?.message || '')) setEnded(true);
+        else if (++paintFailures >= 3) setUnreachable(true);
       }
       busy = false;
       if (again && !stop) { again = false; paint(); }
@@ -1025,7 +1036,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         // pill (same spot as the reconnect status; the two states are mutually
         // exclusive) is enough to signal freshness.
         <div className="term-reconnect-status" role="status" aria-live="polite">
-          <span className="load-spinner" /> Saved view · updating…
+          <span className="load-spinner" /> {unreachable ? 'Saved view · harness not answering, retrying…' : 'Saved view · updating…'}
         </div>
       )}
       {showReconnect && (

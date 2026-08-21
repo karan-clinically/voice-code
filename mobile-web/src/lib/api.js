@@ -236,7 +236,9 @@ export const sessionMessages = (id, after = 0, { version = null } = {}) => {
     qs.set('delta', '1');
     if (version) qs.set('v', version);
   }
-  return jget(`/api/sessions/${id}/messages?${qs}`);
+  // Polled from inside the terminal's busy-guarded paint: without a timeout one
+  // hung request froze the guard and left "Saved view · updating…" up for good.
+  return jget(`/api/sessions/${id}/messages?${qs}`, { timeoutMs: 8000 });
 };
 // `after`/`version` ask for the tail instead of the whole page — see the note on
 // getLiveConversation. Both pollers below run every few seconds, and a snapshot
