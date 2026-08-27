@@ -958,10 +958,22 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       const completedHtml = terminalHistoryExhausted ? completedTurnsHtml(transcriptMessages, terminalHtml) : '';
       return [completedHtml, terminalHtml].filter(Boolean).join('\n\n');
     };
+    // A repaint replaces every node in the pane, which destroys any selection
+    // sitting in it: the handles you just placed lose their text and the browser
+    // re-anchors the range at the top of the document, so the copy takes the whole
+    // screen. Hold the paint while a selection is live; the next socket push or the
+    // backstop poll lands it as soon as the selection is dropped.
+    const selectingInPane = () => {
+      const outer = outerRef.current;
+      const selection = window.getSelection?.();
+      if (!outer || !selection || selection.isCollapsed || !selection.rangeCount) return false;
+      return outer.contains(selection.anchorNode) || outer.contains(selection.focusNode);
+    };
     const replaceRendered = ({ preserveTop = false, preservePosition = false } = {}) => {
       const outer = outerRef.current;
       const inner = innerRef.current;
       if (!outer || !inner) return;
+      if (selectingInPane()) return;
       const renderedHtml = linkifyTerminalHtml(composedHtml());
       if (inner.dataset.h === renderedHtml) return;
       const oldHeight = outer.scrollHeight;
