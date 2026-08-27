@@ -43,10 +43,12 @@ const SETTLE_MS = 3000;
 const insertSession = db.prepare(`
   INSERT INTO sessions (
     tmux_session, tmux_pane, label, cwd, git_repo, git_branch, state,
-    last_seen_at, kind, provider_id, adapter_version, capabilities_json, origin
+    last_seen_at, kind, provider_id, adapter_version, capabilities_json, origin,
+    handoff_parent_id, handoff_root_id
   ) VALUES (
     @tmux_session, @tmux_pane, @label, @cwd, @git_repo, @git_branch, @state,
-    @last_seen_at, @kind, @provider_id, @adapter_version, @capabilities_json, @origin
+    @last_seen_at, @kind, @provider_id, @adapter_version, @capabilities_json, @origin,
+    @handoff_parent_id, @handoff_root_id
   )
 `);
 const updState = db.prepare('UPDATE sessions SET state = ?, last_seen_at = ? WHERE id = ?');
@@ -197,7 +199,7 @@ function decorate(row) {
 // original directory or Claude reports "No conversation found". The correlation
 // token is injected as CVH_SESSION_ID so a Stop hook can map back to this session
 // (primary matching is by cwd).
-export async function createSession({ cwd, label = null, kind = 'claude', providerId = null, resumeId = null, externalSessionId = null, grokConv = null, continueSession = false, origin = 'harness', agentView = false, credentialRef = null } = {}) {
+export async function createSession({ cwd, label = null, kind = 'claude', providerId = null, resumeId = null, externalSessionId = null, grokConv = null, continueSession = false, origin = 'harness', agentView = false, credentialRef = null, model = null, handoffParentId = null, handoffRootId = null } = {}) {
   const adapter = requireAdapter(providerId || kind || 'claude');
   const token = randomUUID();
   // A Grok session's stable conversation id: reuse an existing one to resume with
@@ -212,6 +214,7 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
     continueSession,
     agentView,
     credentialRef,
+    model,
   });
   const credentialEnv = spawnEnvironment(adapter, allAdapters());
   // agentView launches Claude's background-agent view (`claude agents`) so the phone
@@ -262,7 +265,12 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
     dbId = adopt.id;
     log.info(`re-adopted session db#${dbId} for resumed conversation ${resumeUuid}`);
   } else {
-    const info = insertSession.run({ ...fields, origin: origin === 'remote' ? 'remote' : 'harness' });
+    const info = insertSession.run({
+      ...fields,
+      origin: origin === 'remote' ? 'remote' : 'harness',
+      handoff_parent_id: handoffParentId == null ? null : Number(handoffParentId),
+      handoff_root_id: handoffRootId == null ? null : Number(handoffRootId),
+    });
     dbId = Number(info.lastInsertRowid);
   }
   // Sessions in one folder share a tab colour: colour a project once and every
@@ -279,7 +287,7 @@ export async function createSession({ cwd, label = null, kind = 'claude', provid
   else agentViewByDb.delete(dbId); // a dead agent-view row may be re-adopted normally
   tokenByDb.set(dbId, token);
   dbByToken.set(token, dbId);
-  if (adapter.id === 'claude') modelByDb.set(dbId, guessInitialModel(view.cwd));
+  if (adapter.id === 'claude') modelByDb.set(dbId, model ? friendlyModelName(model) : guessInitialModel(view.cwd));
   // A resumed session already knows its Claude UUID — link it to its archive row
   // up front (the Stop hook does the same for freshly-started sessions).
   const providerSessionId = launch.externalSessionId || externalSessionId || resumeId || null;

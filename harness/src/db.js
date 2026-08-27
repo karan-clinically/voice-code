@@ -104,6 +104,8 @@ function migrate(db) {
     'ALTER TABLE sessions ADD COLUMN capabilities_json TEXT',
     'ALTER TABLE sessions ADD COLUMN tab_color TEXT',
     'ALTER TABLE sessions ADD COLUMN title_locked INTEGER DEFAULT 0',
+    'ALTER TABLE sessions ADD COLUMN handoff_parent_id INTEGER',
+    'ALTER TABLE sessions ADD COLUMN handoff_root_id INTEGER',
   ]) {
     try { db.exec(sql); } catch { /* column already exists */ }
   }
@@ -113,6 +115,7 @@ function migrate(db) {
       WHERE external_session_id IS NULL AND claude_session_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_sessions_provider ON sessions(provider_id, last_seen_at);
     CREATE INDEX IF NOT EXISTS idx_sessions_external ON sessions(provider_id, external_session_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_handoff ON sessions(handoff_root_id, id);
   `);
 
   // Additive migration: characters billed for this interaction's TTS, so voice

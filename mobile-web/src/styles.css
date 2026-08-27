@@ -148,16 +148,19 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   background: var(--error); color: #fff; font-size: 15px; font-weight: 600;
 }
 .cc-kill:active { filter: brightness(0.9); }
-/* Where the session was started, as a text tag rather than a glyph. Kept neutral
-   and uniform across origins — it's a category, not a state, so it gets a muted
-   label and a plain border, not colour. Also the anchor for the attention dot. */
-.cc-tag {
-  position: relative;
-  flex: 0 0 auto; min-width: 52px; height: 24px; padding: 0 8px; border-radius: 7px;
-  display: flex; align-items: center; justify-content: center;
-  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
-  letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;
-  color: var(--muted); background: var(--surface-2); border: 1px solid var(--border);
+/* Provider identity is more useful here than the launch device. Official marks sit
+   on a quiet neutral tile; source stays available in the accessible label/tooltip. */
+.cc-provider {
+  position: relative; flex: 0 0 auto; width: 34px; height: 34px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border);
+  overflow: hidden;
+}
+.cc-provider img { display: block; width: 24px; height: 24px; object-fit: contain; }
+.cc-provider-kimi-k3 img { width: 28px; height: 28px; border-radius: 6px; }
+.cc-provider-fallback {
+  font-family: var(--mono); font-size: 10px; line-height: 1; font-weight: 800;
+  letter-spacing: -0.04em;
 }
 /* attention badge, like the app's blue dot — colour tells you which ping it is */
 .cc-unread {
@@ -400,7 +403,11 @@ button.ghost:hover { background: var(--surface-2); }
 }
 /* Copy affordance rendered right after a link. Inline so it flows with the
    terminal text, and deliberately small — terminals can be link-dense. */
+/* The glyph is CSS content, not a text node: selecting a line by hand to copy the
+   URL then never drags the icon into the clipboard with it. */
+.terminal-link-copy::before { content: '9C9'; }
 .terminal-link-copy {
+  user-select: none; -webkit-user-select: none;
   display: inline; margin: 0 0 0 2px; padding: 0 3px;
   border: 1px solid var(--border, #3a3a44); border-radius: 4px;
   background: rgba(255, 255, 255, .06); color: inherit;
@@ -411,6 +418,24 @@ button.ghost:hover { background: var(--surface-2); }
 .terminal-link-copy[data-copied]::after {
   content: attr(data-copied); margin-left: 4px; font-size: .9em; color: var(--accent);
 }
+/* A folded tool call. The summary is the handle: tapping it opens or closes the
+   block. Dimmed and borderless, because the point of folding these is that the
+   model's own words win the reader's attention. */
+.tool-block { display: block; }
+.tool-block > .tool-summary {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--term-muted, #8a8a96); cursor: pointer; user-select: none; -webkit-user-select: none;
+}
+.tool-block > .tool-summary::before {
+  content: '\25B8'; display: inline-block; width: 1.1em; color: inherit;
+}
+.tool-block.open > .tool-summary::before { content: '\25BE'; }
+.tool-block > .tool-summary .tool-lines { margin-left: .6em; font-size: .85em; opacity: .75; }
+/* Open, the summary is only a handle — the body repeats the arguments anyway. */
+.tool-block.open > .tool-summary .tool-lines,
+.tool-block.open > .tool-summary .tool-args { display: none; }
+.tool-block > .tool-full { display: none; }
+.tool-block.open > .tool-full { display: block; }
 .terminal-copy-code {
   position: relative; display: inline; margin: 0; padding: 0 3px; border: 1px solid #3a3a44;
   border-radius: 4px; background: rgba(255,255,255,.06); color: inherit; box-shadow: none;
@@ -505,6 +530,25 @@ button.ghost:hover { background: var(--surface-2); }
 }
 .sv-model-option.on { border-color: var(--accent); color: var(--accent); font-weight: 650; }
 .sv-model-empty { padding: 18px 12px; color: var(--muted); font-size: 13px; text-align: center; }
+
+.handoff-mobile-sheet { max-height: min(82vh, 720px); overflow: auto; }
+.handoff-mobile-copy { margin: 2px 6px 13px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.handoff-mobile-providers { display: flex; flex-direction: column; gap: 5px; }
+.handoff-mobile-provider {
+  display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  width: 100%; min-height: 58px; padding: 9px 11px; border: 1px solid var(--border);
+  border-radius: 11px; background: var(--surface-2); color: var(--text); box-shadow: none; text-align: left;
+}
+.handoff-mobile-provider.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.handoff-mobile-provider img, .handoff-mobile-fallback { width: 32px; height: 32px; object-fit: contain; border-radius: 7px; }
+.handoff-mobile-fallback { display: grid; place-items: center; background: var(--border); font-size: 10px; font-weight: 700; }
+.handoff-mobile-provider > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.handoff-mobile-provider small { overflow: hidden; color: var(--muted); font-size: 11px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.handoff-mobile-provider em { color: #a46000; font-size: 10px; font-style: normal; }
+.handoff-mobile-model { display: grid; gap: 6px; margin: 12px 3px 0; color: var(--muted); font-size: 12px; font-weight: 650; }
+.handoff-mobile-model select { width: 100%; min-height: 45px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface); color: var(--text); }
+.handoff-mobile-error { margin: 10px 3px 0; padding: 9px 10px; border: 1px solid #d87c7c; border-radius: 8px; background: #fff1f1; color: #8b1d1d; font-size: 12px; }
+.handoff-mobile-submit { width: 100%; min-height: 48px; margin-top: 13px; }
 
 /* ⋯ overflow menu: the session's on/off settings, kept out of the top bar. */
 .sv-menu-backdrop { position: fixed; inset: 0; z-index: 60; }
@@ -606,11 +650,6 @@ button.ghost:hover { background: var(--surface-2); }
 }
 .sw-item.current { border-color: var(--accent); background: var(--accent-tint); }
 .sw-item:active { background: var(--surface-2); }
-.sw-ic {
-  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; font-size: 16px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--surface-2); border: 1px solid var(--border);
-}
 .sw-body { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
 .sw-name { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sw-meta {
@@ -710,8 +749,7 @@ button.ghost:hover { background: var(--surface-2); }
   background: var(--accent); color: var(--accent-fg); border: none; font-size: 20px; box-shadow: var(--shadow); }
 .micbtn.rec { background: var(--error); color: #fff; animation: pulse 1.1s infinite; }
 .sv-input { flex: 1 1 auto; resize: none; height: 48px; max-height: 42vh; line-height: 1.35; overflow-y: auto;
-  transition: height 0.15s ease; font-family: var(--mono); font-size: 14px; }
-.sv-input.expanded { height: 150px; }
+  font-family: var(--mono); font-size: 14px; }
 .sv-send { flex: 0 0 auto; height: 48px; }
 .sv-state { flex: 0 0 auto; text-align: center; font-size: 12px; color: var(--muted); }
 .sv-state.busy { color: var(--warn-text); }
@@ -1496,3 +1534,19 @@ label { font-size: 13px; color: var(--muted); font-weight: 500; }
 .engine-option.on { border-color: var(--accent); background: var(--accent-tint); }
 .engine-name { font-size: 15px; font-weight: 600; }
 .engine-note { font-size: 12px; color: var(--muted); }
+
+/* Phone fit — see lib/view.js. The document is scaled up so a desktop-width
+   layout viewport works out at phone proportions. Viewport units keep measuring
+   the *unscaled* viewport, so every rule sized in vh/vw has to be restated
+   against the real one: --fit-vh, or a percentage of the parent. Without this a
+   bottom sheet is roughly 2.5x the screen tall and its buttons sit below the
+   fold. */
+.phone-fit .handoff-mobile-sheet { max-height: min(calc(var(--fit-vh) * 0.82), 720px); }
+.phone-fit .pd-drawer { max-height: calc(var(--fit-vh) * 0.82); }
+.phone-fit .sv-keypop { max-height: calc(var(--fit-vh) * 0.52); }
+.phone-fit .sv-input { max-height: calc(var(--fit-vh) * 0.42); }
+.phone-fit .chat-input { max-height: calc(var(--fit-vh) * 0.4); }
+.phone-fit .rename-modal,
+.phone-fit .term-load-modal { width: min(92%, 420px); }
+.phone-fit .qsw-modal { width: min(94%, 720px); }
+.phone-fit .playbar { max-width: calc(100% - 24px); }

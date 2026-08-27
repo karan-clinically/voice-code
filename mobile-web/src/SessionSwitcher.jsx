@@ -6,8 +6,7 @@ import { readSessionCards, writeSessionCards } from './lib/localCache.js';
 import { listenForResume } from './lib/resume.js';
 import { cwdName, groupByFolder } from './lib/folders.js';
 import { NewInFolderButton } from './components.jsx';
-
-const ORIGIN_ICON = { phone: '📱', pc: '🖥️', terminal: '⌨️', cloud: '☁️' };
+import ProviderBadge from './ProviderBadge.jsx';
 
 // Left slide-out list of connected sessions, opened from inside a session so you can
 // jump between them without going Home. The one you're in is marked "Here"; tapping
@@ -62,7 +61,7 @@ export default function SessionSwitcher({ session, onOpen, onClose, onHome, noti
     if (starting) return;
     setStarting(true);
     try {
-      const fresh = await startSessionInFolder(provider, cwd);
+      const fresh = await startSessionInFolder(provider, cwd, rows);
       onOpen(fresh);
       onClose();
     } catch (e) {
@@ -80,7 +79,7 @@ export default function SessionSwitcher({ session, onOpen, onClose, onHome, noti
     const att = attentionOf(it);
     return (
       <button key={it.key} className={'sw-item' + (here ? ' current' : '')} onClick={() => pick(it)} disabled={!!openingKey}>
-        <span className="sw-ic">{it.bgAgent ? '🤖' : ORIGIN_ICON[it.origin] || '⌨️'}</span>
+        <ProviderBadge session={it} />
         <span className="sw-body">
           <span className="sw-name">{it.name}</span>
           <span className="sw-meta">

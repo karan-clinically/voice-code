@@ -1,15 +1,16 @@
 // setup.mjs — one-command install for the voice harness (`npm run setup`).
 //
-// Four things a fresh clone needs that nothing else does for you:
+// Five things a fresh clone needs that nothing else does for you:
 //   1. mobile-web/dist  — the phone app is gitignored, so a fresh clone serves NOTHING at /m.
 //   2. the `claude` PowerShell alias — without it a terminal session is a bare, un-attachable
 //      process, so opening it on the phone can only `--resume` it into a FORK.
 //   3. the Claude Code Stop hook — without it the harness never learns a turn finished and
 //      waits out the 10-minute output-stabilization timeout instead.
-//   4. VAPID keys — push.js reads them from .env; nothing generates them, so push silently dies.
+//   4. Codex lifecycle hooks — desktop-entered turns otherwise never publish their state.
+//   5. VAPID keys — push.js reads them from .env; nothing generates them, so push silently dies.
 //
 // Everything here is idempotent (safe to re-run) and reversible (`--uninstall`). Nothing is
-// written until you confirm — this touches your PowerShell profile and your Claude settings.
+// written until you confirm — this touches your PowerShell profile plus Claude/Codex settings.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -18,6 +19,7 @@ import { homedir } from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import readline from 'node:readline';
 import webpush from 'web-push';
+import { CODEX_HOOK_EVENTS, isVoiceHarnessCodexHook, mergeCodexHooks } from '../src/services/codexHooks.js';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const HCLAUDE = join(REPO, 'harness', 'bin', 'hclaude.mjs');
@@ -25,6 +27,8 @@ const ENV_FILE = join(REPO, 'harness', '.env');
 const DIST_INDEX = join(REPO, 'mobile-web', 'dist', 'index.html');
 const SETTINGS = join(homedir(), '.claude', 'settings.json');
 const HOOK_URL = 'http://127.0.0.1:4620/api/hooks/stop';
+const CODEX_HOOKS = join(homedir(), '.codex', 'hooks.json');
+const CODEX_HOOK_SCRIPT = join(REPO, 'harness', 'bin', 'codex-hook.mjs');
 
 const BEGIN = '# >>> voice-harness (managed by `npm run setup`) >>>';
 const END = '# <<< voice-harness <<<';
@@ -162,6 +166,41 @@ function readSettings() {
   }
 }
 
+// ---------------------------------------------------------------- Codex lifecycle hooks
+
+function readCodexHooks() {
+  if (!existsSync(CODEX_HOOKS)) return {};
+  try {
+    return JSON.parse(readFileSync(CODEX_HOOKS, 'utf8'));
+  } catch {
+    return null; // unparseable - refuse to touch it
+  }
+}
+
+function quoteCommandArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+// Codex passes commandWindows through a Windows command shell. A quoted executable
+// path ("C:\Program Files\nodejs\node.exe") can be re-wrapped by that launcher and
+// fail before Node starts. setup itself was launched through Node, so node.exe is
+// already resolvable on PATH; leaving only the script argument quoted is robust.
+const codexHookCommand = process.platform === 'win32'
+  ? `node.exe ${quoteCommandArg(CODEX_HOOK_SCRIPT)}`
+  : `${quoteCommandArg(process.execPath)} ${quoteCommandArg(CODEX_HOOK_SCRIPT)}`;
+const hasCodexHook = (config, eventName) =>
+  Array.isArray(config?.hooks?.[eventName]) && config.hooks[eventName].some((group) =>
+    Array.isArray(group?.hooks) && group.hooks.some((handler) => isVoiceHarnessCodexHook(handler, CODEX_HOOK_SCRIPT))
+  );
+const hasDesiredCodexHook = (config, eventName) =>
+  Array.isArray(config?.hooks?.[eventName]) && config.hooks[eventName].some((group) =>
+    Array.isArray(group?.hooks) && group.hooks.some((handler) =>
+      isVoiceHarnessCodexHook(handler, CODEX_HOOK_SCRIPT)
+      && handler.command === codexHookCommand
+      && handler.commandWindows === codexHookCommand
+    )
+  );
+
 // ---------------------------------------------------------------- main
 
 async function confirm(question) {
@@ -174,10 +213,13 @@ async function confirm(question) {
 
 const profiles = planProfiles();
 const settings = readSettings();
+const codexHooks = readCodexHooks();
 const envText = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : '';
 const haveVapid = /^VAPID_PUBLIC_KEY=.+$/m.test(envText);
 const haveDist = existsSync(DIST_INDEX);
 const hookInstalled = Array.isArray(settings?.hooks?.Stop) && settings.hooks.Stop.some(isOurHook);
+const codexHooksInstalled = codexHooks !== null && CODEX_HOOK_EVENTS.every((eventName) => hasDesiredCodexHook(codexHooks, eventName));
+const codexHooksPresent = codexHooks !== null && CODEX_HOOK_EVENTS.some((eventName) => hasCodexHook(codexHooks, eventName));
 
 say();
 say(UNINSTALL ? 'voice-harness setup — UNINSTALL' : 'voice-harness setup');
@@ -187,14 +229,20 @@ if (settings === null) {
   say(c.warn(`! ${SETTINGS} is not valid JSON — I will not touch it.`));
 }
 
+if (codexHooks === null) {
+  say(c.warn(`! ${CODEX_HOOKS} is not valid JSON - I will not touch it.`));
+}
+
 const plan = [];
 if (UNINSTALL) {
   for (const p of profiles) if (p.had) plan.push(`remove the claude alias from ${p.path}`);
   if (hookInstalled && settings) plan.push(`remove the Stop hook from ${SETTINGS}`);
+  if (codexHooksPresent && codexHooks) plan.push(`remove the Codex lifecycle hooks from ${CODEX_HOOKS}`);
 } else {
   if (!haveDist) plan.push('build the phone app (mobile-web → dist/)  [required: /m serves nothing without it]');
   for (const p of profiles) plan.push(`${p.had ? 'update' : 'install'} the claude alias in ${p.path}`);
   if (settings !== null && !hookInstalled) plan.push(`add the Claude Code Stop hook to ${SETTINGS}  [backed up first]`);
+  if (codexHooks !== null && !codexHooksInstalled) plan.push(`add Codex lifecycle hooks to ${CODEX_HOOKS}  [backed up first]`);
   if (!haveVapid) plan.push(`generate VAPID keys into ${ENV_FILE}  [push notifications]`);
 }
 
@@ -250,7 +298,20 @@ if (settings !== null) {
   }
 }
 
-// 4. VAPID keys
+// 4. Codex lifecycle hooks
+if (codexHooks !== null && (UNINSTALL ? codexHooksPresent : !codexHooksInstalled)) {
+  const next = mergeCodexHooks(codexHooks, {
+    command: codexHookCommand,
+    scriptPath: CODEX_HOOK_SCRIPT,
+    uninstall: UNINSTALL,
+  });
+  if (existsSync(CODEX_HOOKS)) copyFileSync(CODEX_HOOKS, CODEX_HOOKS + '.bak');
+  mkdirSync(dirname(CODEX_HOOKS), { recursive: true });
+  writeFileSync(CODEX_HOOKS, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  say(c.ok(`  ${UNINSTALL ? 'removed' : 'added'} Codex lifecycle hooks -> ${CODEX_HOOKS}  ${c.dim('(backup: hooks.json.bak)')}`));
+}
+
+// 5. VAPID keys
 if (!UNINSTALL && !haveVapid) {
   const { publicKey, privateKey } = webpush.generateVAPIDKeys();
   const block =

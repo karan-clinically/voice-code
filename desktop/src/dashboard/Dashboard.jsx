@@ -11,11 +11,13 @@ import {
   ttsSayUrl,
   configState,
   startSessionPreview,
+  handoffSession,
 } from '../lib/api.js';
 import { startRecording } from '../lib/record.js';
 import { speakUrl } from '../lib/speech.js';
 import { openExternal, urlPortLabel } from '../lib/open.js';
 import { setTabBadge } from '../lib/tabBadge.js';
+import { switchView } from '../../../mobile-web/src/lib/view.js';
 import { pickAttachments, quotePath } from '../lib/attachments.js';
 import Tabs, { NewTabButton, tabName } from './Tabs.jsx';
 import { clusterByFolder, folderColors, firstOfFolder, folderKey } from '../lib/folders.js';
@@ -26,12 +28,15 @@ import HistoryOverlay from './HistoryOverlay.jsx';
 import ModelPicker from './ModelPicker.jsx';
 import FolderPicker from './FolderPicker.jsx';
 import SessionOverview from './SessionOverview.jsx';
+import HandoffPicker from './HandoffPicker.jsx';
+import PromptHistoryBar from './PromptHistoryBar.jsx';
 
 const TAB_ORDER_KEY = 'cvh-tab-order';
 const LAST_DIR_KEY = 'cvh-last-dir';
 // Terminal|Chat is one choice for the whole app: the header toggle sets it, every
 // session follows it, and it is remembered per device.
 const VIEW_MODE_KEY = 'cvh-view-mode';
+const PROMPT_HISTORY_KEY = 'cvh-prompt-history:';
 // Served in a browser (harness /desktop) rather than inside Electron, so there is
 // no native folder dialog — new sessions choose their folder in-app instead.
 const SERVED = typeof window !== 'undefined' && !window.cvh;
@@ -49,6 +54,8 @@ export default function Dashboard({ onOpenWizard }) {
   const [showMenu, setShowMenu] = useState(false); // the ☰ dropdown
   const [pickFor, setPickFor] = useState(null); // provider id awaiting a folder choice
   const [showOverview, setShowOverview] = useState(false); // all sessions, over the terminal
+  const [showHandoff, setShowHandoff] = useState(false);
+  const [showPromptHistory, setShowPromptHistory] = useState(true);
   const [focused, setFocused] = useState(true); // is this browser tab the one you're in?
   const [liveFeed, setLiveFeed] = useState(false); // is the /ws push socket delivering?
   const [viewMode, setViewMode] = useState(() => {
@@ -153,6 +160,16 @@ export default function Dashboard({ onOpenWizard }) {
   // A session that can't do chat (a plain shell) stays on the terminal whatever
   // the toggle says; the toggle itself keeps showing the app-wide choice.
   const modeOf = (s) => (s?.capabilities?.chat === false ? 'terminal' : viewMode);
+  useEffect(() => {
+    if (!activeId) return;
+    try { setShowPromptHistory(localStorage.getItem(PROMPT_HISTORY_KEY + activeId) !== 'off'); }
+    catch { setShowPromptHistory(true); }
+  }, [activeId]);
+  const setPromptHistoryVisible = (visible) => {
+    setShowPromptHistory(visible);
+    if (!activeId) return;
+    try { localStorage.setItem(PROMPT_HISTORY_KEY + activeId, visible ? 'on' : 'off'); } catch { /* private mode */ }
+  };
   const setMode = (m) => {
     setViewMode(m);
     try { localStorage.setItem(VIEW_MODE_KEY, m); } catch { /* private mode */ }
@@ -232,6 +249,10 @@ export default function Dashboard({ onOpenWizard }) {
   // folders in-app instead (window.cvh is absent there, so asking it for a folder
   // silently produced nothing at all).
   async function newSession(kind = 'claude') {
+    // A plain terminal has no project to choose: it opens in the harness default
+    // folder and you cd from there, the same as the phone's "Start shell". A tab's
+    // own "+" still starts one in that tab's folder, which is the "here" case.
+    if (kind === 'shell') return startIn(null, 'shell');
     if (SERVED) {
       setPickFor(kind);
       return;
@@ -240,13 +261,18 @@ export default function Dashboard({ onOpenWizard }) {
     if (dir) startIn(dir, kind);
   }
 
+  // dir null = let the harness pick its default folder (a terminal with no project).
   async function startIn(dir, kind = 'claude') {
     try {
-      const base = dir.split(/[\\/]/).filter(Boolean).pop() || 'project';
+      const base = (dir || '').split(/[\\/]/).filter(Boolean).pop() || 'project';
       const provider = providers.find((p) => p.id === kind);
-      const label = kind === 'claude' ? null : `${base} · ${provider?.name || kind}`;
+      // Shell is not in `providers`, so naming it here would read '. shell'. The
+      // harness already labels a shell after its folder when the label is empty.
+      const label = kind === 'claude' || kind === 'shell' ? null : `${base} · ${provider?.name || kind}`;
       const s = await createSession(dir, label, kind);
-      try { localStorage.setItem(LAST_DIR_KEY, dir); } catch { /* private mode */ }
+      if (dir) {
+        try { localStorage.setItem(LAST_DIR_KEY, dir); } catch { /* private mode */ }
+      }
       setActiveId(s.id);
     } catch (e) {
       notify('Could not start session: ' + e.message);
@@ -278,8 +304,8 @@ export default function Dashboard({ onOpenWizard }) {
     setSessions((prev) => prev.map((x) => (x.id === id ? { ...x, label } : x)));
     try {
       const result = await renameSession(id, label);
-      if (result.kind === 'claude' && result.alive && !result.claudeSynced) {
-        notify('Tab renamed, but Claude title sync failed' + (result.syncError ? ': ' + result.syncError : ''));
+      if (result.syncAttempted && !result.nativeSynced) {
+        notify(`Tab renamed, but ${result.kind === 'codex' ? 'Codex' : 'Claude'} title sync failed` + (result.syncError ? ': ' + result.syncError : ''));
       }
     } catch (e) {
       notify('Rename failed: ' + e.message);
@@ -312,6 +338,17 @@ export default function Dashboard({ onOpenWizard }) {
     } catch (e) {
       notify('Could not close: ' + e.message);
     }
+  }
+
+  async function switchLlm(providerId, model) {
+    const source = activeRef.current;
+    if (!source) return;
+    const result = await handoffSession(source, providerId, model);
+    const next = result.session;
+    setSessions((prev) => (prev.some((item) => item.id === next.id) ? prev : [next, ...prev]));
+    setActiveId(next.id);
+    setShowHandoff(false);
+    notify(`Continued in ${next.provider?.name || next.kind}`);
   }
 
   // A resumed archive session comes back live — add it optimistically (so the
@@ -399,6 +436,32 @@ export default function Dashboard({ onOpenWizard }) {
             />
           </div>
           <NewTabButton providers={providers} onNew={newSession} />
+          {activeSession && activeSession.kind !== 'shell' && (
+            <button
+              className="hdr-btn handoff-btn"
+              onClick={() => setShowHandoff(true)}
+              disabled={!activeSession.alive || activeSession.state === 'busy' || activeSession.state === 'awaiting_input'}
+              title={activeSession.state === 'busy'
+                ? 'Wait for the current response or stop it before switching LLM'
+                : activeSession.state === 'awaiting_input'
+                  ? 'Answer the pending prompt before switching LLM'
+                  : 'Switch LLM and continue this work in a linked session'}
+              aria-label="Switch LLM"
+            >
+              ⇄
+            </button>
+          )}
+          {activeSession && activeSession.kind !== 'shell' && modeOf(activeSession) !== 'chat' && (
+            <button
+              className={'hdr-btn prompt-history-toggle' + (showPromptHistory ? ' on' : '')}
+              onClick={() => setPromptHistoryVisible(!showPromptHistory)}
+              title={showPromptHistory ? 'Hide previous prompts' : 'Show previous prompts'}
+              aria-label={showPromptHistory ? 'Hide previous prompts' : 'Show previous prompts'}
+              aria-pressed={showPromptHistory}
+            >
+              ❯
+            </button>
+          )}
           {activeSession && <ModelPicker session={activeSession} providers={providers} notify={notify} />}
           {activeSession && modeOf(activeSession) !== 'chat' && (
             <button
@@ -510,13 +573,34 @@ export default function Dashboard({ onOpenWizard }) {
                 <button className="burger-item" role="menuitem" onClick={() => { setShowMenu(false); onOpenWizard(); }} title="Settings">
                   ⚙ Settings
                 </button>
+                {/* Served in a plain browser (harness /desktop), this page can be
+                    open on a phone, where the terminal UI is far too small. Inside
+                    Electron there is no other client to switch to. */}
+                {!window.cvh && (
+                  <button
+                    className="burger-item"
+                    role="menuitem"
+                    onClick={() => { setShowMenu(false); switchView('mobile'); }}
+                    title="Switch this device to the touch UI (it will open there next time too)"
+                  >
+                    📱 Mobile view
+                  </button>
+                )}
               </div>
             )}
           </div>
         </div>
       </header>
 
-      <main className="term-main">
+      <main className={'term-main' + (activeSession && modeOf(activeSession) !== 'chat' && showPromptHistory ? ' has-prompt-history' : '')}>
+        {activeSession && activeSession.kind !== 'shell' && modeOf(activeSession) !== 'chat' && showPromptHistory && (
+          <PromptHistoryBar
+            key={activeSession.id}
+            session={activeSession}
+            active
+            onHide={() => setPromptHistoryVisible(false)}
+          />
+        )}
         {live.length === 0 ? (
           <div className="term-empty">
             <p>
@@ -571,6 +655,15 @@ export default function Dashboard({ onOpenWizard }) {
 
       {showHistory && (
         <HistoryOverlay onClose={() => setShowHistory(false)} onResume={onResumeArchive} notify={notify} />
+      )}
+
+      {showHandoff && activeSession && (
+        <HandoffPicker
+          session={activeSession}
+          providers={providers}
+          onClose={() => setShowHandoff(false)}
+          onSwitch={switchLlm}
+        />
       )}
 
       {msg && <div className="term-toast">{msg}</div>}

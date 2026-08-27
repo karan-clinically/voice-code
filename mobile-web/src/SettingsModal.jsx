@@ -3,6 +3,7 @@ import { SttModeToggle, SummariseToggle, SpeechEnginePicker, ThemePicker, KeepAw
 import { pushSupported, notificationsOn, enableNotifications, disableNotifications } from './lib/push.js';
 import { apiKeyState, saveApiKeys, pushTest } from './lib/api.js';
 import BrainSettings from './BrainSettings.jsx';
+import { switchView, setView, wideViewport, phoneFitActive, setPhoneFitMode } from './lib/view.js';
 
 // Voice settings, behind the header ☰ menu. Dictation mode + which ElevenLabs
 // voice reads replies. Changes are shared harness-side, so they follow you to the
@@ -81,6 +82,15 @@ export default function SettingsModal({ onClose, notify, onProvidersChanged }) {
           </div>
           <NotificationsSetting notify={notify} />
         </div>
+        <LayoutSetting />
+        <div className="set-item">
+          <strong>Open by default</strong>
+          <div className="muted">
+            Phone is this touch UI; Desktop is the full terminal dashboard — readable on a tablet or a laptop,
+            tiny on a phone. Whichever you pick is what the bare address opens on this device from now on.
+          </div>
+          <ViewPicker notify={notify} />
+        </div>
         <div className="set-item">
           <strong>App version</strong>
           <div className="muted">
@@ -90,6 +100,47 @@ export default function SettingsModal({ onClose, notify, onProvidersChanged }) {
           <BuildStamp />
         </div>
       </div>
+    </div>
+  );
+}
+
+// Only worth showing on a device that has the problem: a touch screen whose
+// browser is laying the page out at desktop width, which shrinks the whole app to
+// about a third of its size. Turning that off in the browser is the clean fix, so
+// say where it lives — the scaling here is the fallback for when you'd rather not.
+function LayoutSetting() {
+  const [fit, setFit] = useState(phoneFitActive);
+  if (!wideViewport()) return null;
+  const choose = (mode) => { setPhoneFitMode(mode); setFit(phoneFitActive()); };
+  return (
+    <div className="set-item">
+      <strong>Layout</strong>
+      <div className="muted">
+        This browser is drawing the page at desktop width, which is why everything looks shrunk. The clean fix is
+        the browser’s own setting — in Chrome, ⋮ menu → untick <strong>Desktop site</strong>. Fit to phone scales
+        the app back to phone proportions without it.
+      </div>
+      <div className="seg" title="How to handle a desktop-width viewport on a touch screen">
+        <button className={'seg-btn' + (fit ? ' on' : '')} onClick={() => choose('on')}>Fit to phone</button>
+        <button className={'seg-btn' + (fit ? '' : ' on')} onClick={() => choose('off')}>Browser default</button>
+      </div>
+    </div>
+  );
+}
+
+// Which of the two clients this device opens by default. Choosing Phone here is
+// not a no-op: it pins the choice, so a device the '/' shim guessed wrong about
+// stops being sent to the terminal UI.
+function ViewPicker({ notify }) {
+  return (
+    <div className="seg" title="Which client this device opens">
+      <button
+        className="seg-btn on"
+        onClick={() => { setView('mobile'); notify?.('This device will open the phone view'); }}
+      >
+        Phone
+      </button>
+      <button className="seg-btn" onClick={() => switchView('desktop')}>Desktop</button>
     </div>
   );
 }

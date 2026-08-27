@@ -30,7 +30,7 @@ function labelFor(id) {
 
 const COPY = {
   input: (name) => ({ title: `🔔 ${name} needs your input`, body: 'Tap to answer.' }),
-  finished: (name) => ({ title: `✓ ${name} finished`, body: 'Claude completed this turn.' }),
+  finished: (name) => ({ title: `✓ ${name} finished`, body: 'The agent completed this turn.' }),
   failed: (name) => ({ title: `⚠ ${name} — something went wrong`, body: 'The last turn errored.' }),
 };
 
@@ -61,6 +61,7 @@ sessionEvents.on('state', ({ id, state, silent }) => {
   if (silent) return;
   if (state === 'awaiting_input') fire(id, 'input');
   else if (state === 'response_ready') fire(id, 'finished');
+  else if (state === 'failed') fire(id, 'failed');
   else if (state === 'idle' && prev === 'busy') fire(id, 'failed');
 });
 

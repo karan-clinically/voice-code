@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { commandText, mediaUrl, replyUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq, listProviders, setSessionModel, selectPromptOption, selectPromptOptions, prewarmReplySpeech, dismissSessionAttention, startSessionPreview } from './lib/api.js';
+import { commandText, mediaUrl, replyUrl, termWsUrl, sessionInfo, sessionPrompt, sayUrl, muteSession, recentSessions, killSession, sessionKey, sessionKeySeq, listProviders, setSessionModel, handoffSession, selectPromptOption, selectPromptOptions, prewarmReplySpeech, dismissSessionAttention, startSessionPreview } from './lib/api.js';
 import { ATTENTION_SHORT, isAlert } from './lib/attention.js';
 import { playUrl, stopAudio, ding } from './lib/audio.js';
 import { Terminal, basename } from './components.jsx';
@@ -10,6 +10,7 @@ import TerminalKeypad from './TerminalKeypad.jsx';
 import SessionSwitcher from './SessionSwitcher.jsx';
 import QuickSessionSwitcher from './QuickSessionSwitcher.jsx';
 import PromptDrawer from './PromptDrawer.jsx';
+import HandoffSheet from './HandoffSheet.jsx';
 import { normalizeSpokenSlash } from './lib/slashCommands.js';
 import { readSessionCards, writeSessionCards, recordSessionView } from './lib/localCache.js';
 import { useWakeLock, keepAwakeEnabled } from './lib/wakeLock.js';
@@ -120,6 +121,8 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   const [showQuickSwitch, setShowQuickSwitch] = useState(false); // native back-swipe Alt-Tab modal
   const [showMenu, setShowMenu] = useState(false); // ⋯ overflow: speak-replies + notifications
   const [showModels, setShowModels] = useState(false);
+  const [showHandoff, setShowHandoff] = useState(false);
+  const [providers, setProviders] = useState([]);
   const [model, setModel] = useState(session.model || 'Model');
   const [modelOptions, setModelOptions] = useState([]);
   const [switchingModel, setSwitchingModel] = useState(false);
@@ -245,13 +248,13 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
   }, [session.id, session.label]);
 
   useEffect(() => {
-    if (!modelsSupported) return undefined;
     let stop = false;
     listProviders()
       .then(({ providers = [] }) => {
         if (stop) return;
+        setProviders(providers);
         const provider = providers.find((p) => p.id === (session.provider_id || session.kind || 'claude'));
-        setModelOptions(provider?.models || []);
+        setModelOptions(modelsSupported ? provider?.models || [] : []);
       })
       .catch(() => {});
     return () => { stop = true; };
@@ -272,6 +275,12 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
     }
   }
   const isCurrentModel = (option) => model === option.label || model.startsWith(option.label + ' ');
+  async function switchLlm(providerId, nextModel) {
+    const result = await handoffSession(session.id, providerId, nextModel);
+    setShowHandoff(false);
+    notify?.(`Continued in ${result.session.provider?.name || result.session.kind}`, 'info');
+    onOpen(result.session);
+  }
   async function toggleMute() {
     const next = !muted;
     setMuted(next); // optimistic
@@ -894,6 +903,16 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
                 </button>
               )}
               <div className="sv-menu-sep" />
+              <button
+                className="sv-menu-item"
+                role="menuitem"
+                disabled={!sessionAlive || isWorking || promptPending}
+                onClick={() => { setShowMenu(false); setShowHandoff(true); }}
+              >
+                <span className="sv-menu-ico">⇄</span>
+                <span className="sv-menu-label">Switch LLM</span>
+                <span className="sv-menu-state">{isWorking || promptPending ? 'Finish turn first' : 'Continue'}</span>
+              </button>
               <button className="sv-menu-item" role="menuitem" onClick={endSession}>
                 <span className="sv-menu-ico">🛑</span>
                 <span className="sv-menu-label">End session</span>
@@ -929,6 +948,15 @@ export default function SessionView({ session, onBack, onOpen, onNewSession, qui
             </div>
           </div>
         </div>
+      )}
+
+      {showHandoff && (
+        <HandoffSheet
+          session={session}
+          providers={providers}
+          onClose={() => setShowHandoff(false)}
+          onSwitch={switchLlm}
+        />
       )}
 
       {/* Another session wants you. The banner opens that session directly; a

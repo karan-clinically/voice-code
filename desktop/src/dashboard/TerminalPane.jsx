@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -70,6 +70,7 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
   const termRef = useRef(null);
   const fitRef = useRef(null);
   const wsRef = useRef(null);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   useEffect(() => {
     const term = new Terminal({
@@ -90,6 +91,12 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
     term.open(wrapRef.current);
     termRef.current = term;
     fitRef.current = fit;
+
+    const updateScrollPosition = () => {
+      const buffer = term.buffer.active;
+      setAwayFromBottom(buffer.viewportY < buffer.baseY);
+    };
+    const scrollDisp = term.onScroll(updateScrollPosition);
 
     const ws = new WebSocket(termWsUrl(session.id));
     wsRef.current = ws;
@@ -132,7 +139,10 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
       } catch {
         return;
       }
-      if (m.t === 'data') term.write(m.d, reconcileActivity);
+      if (m.t === 'data') term.write(m.d, () => {
+        reconcileActivity();
+        updateScrollPosition();
+      });
       else if (m.t === 'exit') term.write('\r\n\x1b[2m— session ended —\x1b[0m\r\n');
     };
     ws.onopen = () => sendResize();
@@ -275,6 +285,7 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
       clearTimeout(activityTimer);
       ro.disconnect();
       dataDisp.dispose();
+      scrollDisp.dispose();
       el.removeEventListener('paste', onPaste, true);
       el.removeEventListener('keydown', onPasteKey, true);
       el.removeEventListener('dragover', onDragOver);
@@ -308,5 +319,28 @@ export default function TerminalPane({ session, active, onApi, onWorking, notify
     });
   }, [active]);
 
-  return <div ref={wrapRef} className={'term-pane' + (active ? ' active' : '')} />;
+  const jumpToBottom = () => {
+    const term = termRef.current;
+    if (!term) return;
+    term.scrollToBottom();
+    setAwayFromBottom(false);
+    term.focus();
+  };
+
+  return (
+    <div className={'term-pane' + (active ? ' active' : '')}>
+      <div ref={wrapRef} className="term-surface" />
+      {active && awayFromBottom && (
+        <button
+          type="button"
+          className="term-scroll-latest"
+          onClick={jumpToBottom}
+          aria-label="Scroll terminal to latest output"
+          title="Scroll to latest output"
+        >
+          <span aria-hidden="true">↓</span> Latest
+        </button>
+      )}
+    </div>
+  );
 }

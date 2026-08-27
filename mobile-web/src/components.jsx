@@ -64,7 +64,7 @@ function linkifyTerminalText(value) {
     html += escapeTerminalHtml(text.slice(offset, match.index));
     const href = escapeTerminalHtml(url).replace(/"/g, '&quot;');
     html += `<a class="terminal-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeTerminalHtml(url)}</a>`
-      + `<button type="button" class="terminal-link-copy" data-copy="${href}" title="Copy link" aria-label="Copy link">⧉</button>`
+      + `<button type="button" class="terminal-link-copy" data-copy="${href}" title="Copy link" aria-label="Copy link"></button>`
       + escapeTerminalHtml(trailing);
     offset = match.index + raw.length;
   }
@@ -85,6 +85,85 @@ function copyableTerminalText(value) {
     offset = match.index + match[0].length;
   }
   return html + linkifyTerminalText(text.slice(offset));
+}
+
+// The live TUI hard-wraps at the pane's column count, so a long URL arrives split
+// across physical lines: only its first piece linkifies, and tapping or copying it
+// yields a truncated address. Rejoin the pieces. A URL ending exactly at the end of
+// a FULL line was cut by the wrap, so the run of URL-legal characters opening the
+// next line belongs to it. Visible text stays as the terminal drew it; the href and
+// the copy value are made whole, and each continuation run becomes part of the link
+// so tapping any piece opens the same address.
+const URL_TAIL_RE = /^[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/;
+
+function terminalTextMap(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let full = '';
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    nodes.push({ node, start: full.length });
+    full += node.nodeValue || '';
+  }
+  return { nodes, full };
+}
+
+function joinWrappedTerminalLinks(root) {
+  for (const anchor of [...root.querySelectorAll('a.terminal-link')]) {
+    // Rebuilt per anchor: splitting a text node below invalidates earlier offsets.
+    const { nodes, full } = terminalTextMap(root);
+    // Terminal output is padded to the pane width, so the longest line IS the wrap
+    // column. With no full-width line there is nothing to tell a wrap apart from a
+    // URL that merely ended a sentence, so those are left alone.
+    const lines = full.split('\n');
+    const width = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    // One long line proves nothing — it is its own maximum. Two lines reaching the
+    // same column is the wrap column, which a terminal always supplies (box borders,
+    // rules, the input frame). Without that corroboration, leave the link alone.
+    if (width < 20 || lines.filter((line) => line.length >= width).length < 2) break;
+
+    const own = [...anchor.childNodes].filter((n) => n.nodeType === 3).pop();
+    const entry = own && nodes.find((e) => e.node === own);
+    if (!entry) continue;
+
+    const runs = [];
+    let cursor = entry.start + (own.nodeValue || '').length;
+    while (cursor < full.length && runs.length < 6) {
+      const lineStart = full.lastIndexOf('\n', cursor - 1) + 1;
+      if (cursor !== full.indexOf('\n', cursor)) break; // not flush with the wrap
+      if (cursor - lineStart < width - 1) break; // the line had room to spare
+      const nextEnd = full.indexOf('\n', cursor + 1);
+      const line = full.slice(cursor + 1, nextEnd < 0 ? full.length : nextEnd);
+      const indent = line.length - line.replace(/^\s+/, '').length;
+      const run = line.slice(indent).match(URL_TAIL_RE)?.[0];
+      if (!run) break;
+      runs.push({ start: cursor + 1 + indent, length: run.length, text: run });
+      if (indent + run.length !== line.length) break; // prose resumed on this line
+      cursor = cursor + 1 + line.length;
+    }
+    if (!runs.length) continue;
+
+    const href = anchor.href + runs.map((r) => r.text).join('');
+    anchor.href = href;
+    const button = anchor.nextElementSibling;
+    if (button?.classList.contains('terminal-link-copy')) button.dataset.copy = href;
+    // Dress each continuation as part of the link, so it reads as one address and
+    // tapping the tail opens the same page as tapping the head.
+    for (const run of runs) {
+      const { nodes: fresh } = terminalTextMap(root);
+      const host = fresh.find((e) => e.start <= run.start && run.start + run.length <= e.start + (e.node.nodeValue || '').length);
+      if (!host) continue;
+      const tail = host.node.splitText(run.start - host.start);
+      tail.splitText(run.length);
+      const piece = document.createElement('a');
+      piece.className = 'terminal-link';
+      piece.href = href;
+      piece.target = '_blank';
+      piece.rel = 'noopener noreferrer';
+      piece.textContent = tail.nodeValue;
+      tail.replaceWith(piece);
+    }
+  }
 }
 
 // Rolling upgrades may leave the phone on a newer client while the harness process
@@ -121,14 +200,16 @@ function linkifyTerminalHtml(value) {
       copy.dataset.copy = url;
       copy.title = 'Copy link';
       copy.setAttribute('aria-label', 'Copy link');
-      copy.textContent = '⧉';
+      // No text node: the glyph comes from CSS, so selecting the line to copy it
+      // by hand never drags the icon into the clipboard along with the URL.
       fragment.append(anchor, copy, document.createTextNode(trailing));
       offset = match.index + raw.length;
     }
     fragment.append(document.createTextNode(text.slice(offset)));
     node.replaceWith(fragment);
   }
-  return copyableLiveTerminalCommands(template.innerHTML);
+  joinWrappedTerminalLinks(template.content);
+  return foldTerminalTools(copyableLiveTerminalCommands(template.innerHTML));
 }
 
 // Claude's live TUI removes Markdown fences before the rendered terminal reaches
@@ -165,6 +246,147 @@ function copyableLiveTerminalCommands(html) {
   }
   return result.join('\n');
 }
+// A tool call in Claude Code's TUI opens with a bullet, the tool's name and its
+// arguments in parentheses -- "● Bash(cd ... && cat ...)" -- and its result follows
+// on ⎿-prefixed lines. The model's own prose carries the same bullet but never the
+// Name( form, which is what tells the two apart. Codex marks its tool output with
+// the same result glyph and the same "+N lines" fold hint.
+const TOOL_HEAD_RE = /^\s*[●•▪◆]?\s*\*{0,2}[A-Z][A-Za-z0-9_.-]{1,24}\*{0,2}\(/;
+const TOOL_RESULT_RE = /^\s*[⎿└├]/;
+const TOOL_FOLD_RE = /\(ctrl\+o to expand\)|^\s*…\s*\+\d+ lines/m;
+// Stable enough to survive a repaint, which is all an open/closed flag needs.
+function toolKey(text) {
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+  return hash.toString(36);
+}
+
+// Only tool calls get a container; every other line is emitted exactly as it
+// arrived, newlines and all, so the flow of the output is untouched.
+const TERMINAL_CHROME_RE = /^\s*[\u2500-\u257f\u2580-\u259f]/;
+const TERMINAL_RULE_RE = /^[\s\u2500-\u257f\u2580-\u259f=_~]*$/;
+
+// Split the top level into rendered lines. A text node can span several, so it is cut
+// at each newline; an element that itself spans lines (a multi-line command button)
+// stays whole and ends the line it sits on.
+function terminalLines(root) {
+  const lines = [[]];
+  for (const node of [...root.childNodes]) {
+    node.remove();
+    if (node.nodeType === 3) {
+      const parts = (node.nodeValue || '').split('\n');
+      parts.forEach((part, i) => {
+        if (i) lines.push([]);
+        if (part) lines[lines.length - 1].push(document.createTextNode(part));
+      });
+      continue;
+    }
+    lines[lines.length - 1].push(node);
+    if ((node.textContent || '').includes('\n')) lines.push([]);
+  }
+  return lines;
+}
+
+function foldTerminalTools(html) {
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '');
+  const lines = terminalLines(template.content);
+  const out = document.createDocumentFragment();
+  let run = [];
+  let blanks = 0; // blank lines banked since the last thing emitted
+  let last = 'none'; // 'none' | 'plain' | 'fold'
+
+  // Blank lines are counted rather than written as they arrive, because a fold is a
+  // block element and the browser treats the newlines around one asymmetrically: the
+  // newline before it is absorbed into the block's own break, the one after it is
+  // not. Deciding the count at emit time keeps the terminal's own spacing on both
+  // sides — a run of plain lines comes back byte-identical.
+  const separate = () => {
+    const count = (last === 'plain' ? 1 : 0) + blanks;
+    if (last !== 'none' && count > 0) out.append(document.createTextNode('\n'.repeat(count)));
+    blanks = 0;
+  };
+  const emitPlain = (line) => {
+    separate();
+    line.forEach((node) => out.append(node));
+    last = 'plain';
+  };
+  const emitFold = (box) => {
+    separate();
+    out.append(box);
+    last = 'fold';
+  };
+
+  const flush = () => {
+    if (!run.length) return;
+    const texts = run.map((line) => line.map((node) => node.textContent || '').join(''));
+    const body = texts.join('\n');
+    // Tool calls and their output are the bulk of a session and almost never what
+    // you scrolled back to read. Fold each one behind a single-line summary so the
+    // model's own words are what the eye lands on. Everything else is left alone.
+    if (!(TOOL_HEAD_RE.test(texts[0]) || texts.some((t) => TOOL_RESULT_RE.test(t)) || TOOL_FOLD_RE.test(body))) {
+      run.forEach(emitPlain);
+      run = [];
+      return;
+    }
+    const resultAt = texts.findIndex((t) => TOOL_RESULT_RE.test(t));
+    const head = (resultAt > 0 ? texts.slice(0, resultAt) : texts).join(' ')
+      .replace(/^\s*[●•▪◆]\s*/, '').replace(/\s+/g, ' ').trim();
+    const box = document.createElement('div');
+    box.className = 'tool-block';
+    box.dataset.key = toolKey(body);
+    const summary = document.createElement('div');
+    summary.className = 'tool-summary';
+    summary.setAttribute('role', 'button');
+    summary.tabIndex = 0;
+    summary.title = 'Tap to expand';
+    // Split so an OPEN fold can shrink back to just the tool's name: the arguments
+    // are the first thing the body itself shows, and repeating them reads as a bug.
+    const name = head.match(/^([A-Za-z0-9_.-]{1,24})\(/)?.[1] || head.slice(0, 28);
+    const rest = head.slice(name.length);
+    const nameEl = document.createElement('span');
+    nameEl.className = 'tool-name';
+    nameEl.textContent = name;
+    const argsEl = document.createElement('span');
+    argsEl.className = 'tool-args';
+    argsEl.textContent = rest.length > 64 ? rest.slice(0, 63) + '…' : rest;
+    const count = document.createElement('span');
+    count.className = 'tool-lines';
+    count.textContent = texts.length + (texts.length === 1 ? ' line' : ' lines');
+    summary.append(nameEl, argsEl, count);
+    const full = document.createElement('div');
+    full.className = 'tool-full';
+    run.forEach((line, i) => {
+      if (i) full.append(document.createTextNode('\n'));
+      line.forEach((node) => full.append(node));
+    });
+    box.append(summary, full);
+    emitFold(box);
+    run = [];
+  };
+
+  for (const line of lines) {
+    const text = line.map((node) => node.textContent || '').join('');
+    // A blank line or the CLI's own frame ends a run: neither belongs inside a fold.
+    if (!text.trim()) {
+      flush();
+      blanks += 1;
+    } else if (TERMINAL_CHROME_RE.test(text) || TERMINAL_RULE_RE.test(text)) {
+      flush();
+      emitPlain(line);
+    } else {
+      run.push(line);
+    }
+  }
+  flush();
+  // The newest tool is usually the one still running: leave that one open, so a long
+  // command is not hidden behind a summary while you are waiting on it.
+  const tools = out.querySelectorAll('.tool-block');
+  if (tools.length) tools[tools.length - 1].dataset.live = '1';
+  template.content.replaceChildren(out);
+  return template.innerHTML;
+}
+
 const comparableTerminalText = (value) => String(value || '')
   .replace(/<[^>]*>/g, ' ')
   .replace(/&(amp|lt|gt|quot|#39);/g, (_, entity) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity])
@@ -525,6 +747,16 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
   const outerRef = useRef(null);
   const innerRef = useRef(null);
   const reviewingRef = useRef(false);
+  // Which tool blocks the reader has explicitly opened or closed. The pane rebuilds
+  // its whole innerHTML on every repaint, so the flag cannot live in the DOM; a block
+  // with no entry falls back to its default (open only if it is the newest one).
+  const openToolsRef = useRef(new Map());
+  const restoreOpenTools = (inner) => {
+    for (const box of inner.querySelectorAll('.tool-block')) {
+      const chosen = openToolsRef.current.get(box.dataset.key);
+      box.classList.toggle('open', chosen === undefined ? box.dataset.live === '1' : chosen);
+    }
+  };
   const forcePaintRef = useRef(null);
   const promptPendingRef = useRef(promptPending);
   useEffect(() => { promptPendingRef.current = promptPending; }, [promptPending]);
@@ -569,7 +801,14 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font-family:${getComputedStyle(outer).fontFamily};font-size:${fontPx}px`;
     probe.textContent = 'X'.repeat(40);
     document.body.appendChild(probe);
-    const charW = probe.getBoundingClientRect().width / 40;
+    // getBoundingClientRect reports VISUAL pixels and clientWidth reports LAYOUT
+    // pixels. Those are the same number until the phone-fit scale is on (see
+    // lib/view.js), and then the ratio between them is the scale — measure it off
+    // the box itself rather than reading the scale, so this stays a no-op without
+    // it. Mixing the two collapsed the terminal to its 20-column floor.
+    const outerRect = outer.getBoundingClientRect();
+    const scale = outerRect.width / outer.clientWidth || 1;
+    const charW = probe.getBoundingClientRect().width / 40 / scale;
     probe.remove();
     if (!charW) return;
     const cols = Math.max(20, Math.min(120, Math.floor((outer.clientWidth - 20) / charW)));
@@ -642,6 +881,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       if (!outer || !inner || inner.dataset.h) return;
       const cachedHtml = linkifyTerminalHtml(cached.html);
       inner.innerHTML = cachedHtml;
+      restoreOpenTools(inner);
       inner.dataset.h = cachedHtml;
       outer.scrollTop = outer.scrollHeight;
       setDisplayState('cached');
@@ -728,6 +968,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       const oldTop = outer.scrollTop;
       const sx = outer.scrollLeft;
       inner.innerHTML = renderedHtml;
+      restoreOpenTools(inner);
       inner.dataset.h = renderedHtml;
       outer.scrollLeft = sx;
       outer.scrollTop = preservePosition
@@ -1007,6 +1248,18 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     if (outer) reviewingRef.current = outer.scrollHeight - outer.scrollTop - outer.clientHeight > FOLLOW_TAIL_PX;
   };
   const copyTerminalCommand = async (event) => {
+    // The summary line is the fold's handle, so a tap there opens or closes rather
+    // than copying. The body underneath still copies, the same as any other block.
+    const summary = event.target.closest?.('.tool-summary');
+    if (summary && outerRef.current?.contains(summary)) {
+      const box = summary.parentElement;
+      const open = !box.classList.contains('open');
+      box.classList.toggle('open', open);
+      openToolsRef.current.set(box.dataset.key, open);
+      return;
+    }
+    // Copy targets are deliberately narrow: a link, or a command. Prose is read, not
+    // copied, and making every paragraph a button turned ordinary taps into copies.
     const button = event.target.closest?.('.terminal-copy-code, .terminal-link-copy');
     if (!button || !outerRef.current?.contains(button)) return;
     event.preventDefault(); // a link-copy tap must not also follow the adjacent anchor

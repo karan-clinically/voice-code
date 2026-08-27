@@ -31,3 +31,17 @@ export function groupByFolder(rows) {
   }
   return entries;
 }
+
+export function uniqueLabelInFolder(rows, cwd, preferredLabel) {
+  const base = String(preferredLabel || '').trim() || 'New session';
+  const folder = cwdKey(cwd);
+  const used = new Set((rows || [])
+    .filter((row) => row?.alive !== false && cwdKey(row?.cwd) === folder)
+    .map((row) => String(row?.name || row?.label || '').trim().toLowerCase())
+    .filter(Boolean));
+  if (!used.has(base.toLowerCase())) return base;
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base} ${suffix}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+}

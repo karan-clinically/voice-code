@@ -9,13 +9,7 @@ import SettingsModal from './SettingsModal.jsx';
 import { readSessionCards, writeSessionCards } from './lib/localCache.js';
 import { cwdName, groupByFolder } from './lib/folders.js';
 import { listenForResume } from './lib/resume.js';
-
-// Where a session was started, as a short text tag. RC = remote control (a terminal
-// Claude reachable via claude.ai); "Local" (set below, off it.local) is the same kind
-// of terminal Claude but NOT bridged — the harness can only offer to kill it, so it
-// gets its own tag to set it apart from an RC row. Reads at a glance without decoding
-// a glyph; the full label stays as the tag's title.
-const ORIGIN_TAG = { phone: 'Phone', pc: 'PC', terminal: 'RC', cloud: 'Cloud', saved: 'Saved' };
+import ProviderBadge from './ProviderBadge.jsx';
 
 // Compact relative time, like the Claude Code app ("now", "4m", "8h", "3d").
 function shortAgo(ts) {
@@ -135,9 +129,7 @@ function SessionRow({ it, openable, opening, onOpen, onRename, onKill, onDelete,
         onClick={onClick}
         disabled={!openable && !swipeable}
       >
-        <span className={'cc-tag cc-' + it.origin} title={it.originLabel}>
-          {it.bgAgent ? 'Agent' : it.local ? 'Local' : ORIGIN_TAG[it.origin] || 'RC'}
-        </span>
+        <ProviderBadge session={it} />
         <span className="cc-body">
           <span className="cc-line1">
             <span className="cc-name">{it.name}</span>
@@ -249,7 +241,7 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
     setStarting(true);
     try {
       const p = String(dir ?? path).trim().replace(/["']/g, '');
-      const s = await startSessionInFolder(provider, p);
+      const s = await startSessionInFolder(provider, p, sessions);
       if (p) localStorage.setItem('cvh_lastpath', p);
       onOpen(s);
     } catch (e) {
@@ -343,8 +335,8 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
       updateName(result.label || label);
       setRenameTarget(null);
       setRenameDraft('');
-      if (result.kind === 'claude' && result.alive && !result.claudeSynced) {
-        notify?.('Session renamed in the app, but Claude Remote Control did not update' + (result.syncError ? ': ' + result.syncError : ''));
+      if (result.syncAttempted && !result.nativeSynced) {
+        notify?.(`Session renamed in the app, but ${result.kind === 'codex' ? 'Codex' : 'Claude Remote Control'} did not update` + (result.syncError ? ': ' + result.syncError : ''));
       }
     } catch (err) {
       updateName(previousName);
@@ -374,8 +366,8 @@ export default function Home({ onOpen, onHistory, newSessionRequested = false, o
           <form className="rename-modal" onSubmit={saveRename} onClick={(e) => e.stopPropagation()}>
             <div className="rename-title">Rename session</div>
             <div className="rename-help">
-              {(renameTarget.agentKind || 'claude') === 'claude' && !renameTarget.shell
-                ? 'This also updates the title in Claude Code Remote Control.'
+              {['claude', 'codex'].includes(renameTarget.agentKind || 'claude') && !renameTarget.shell
+                ? `This also updates the title in ${(renameTarget.agentKind || 'claude') === 'codex' ? 'Codex CLI' : 'Claude Code Remote Control'}.`
                 : 'This updates the session name everywhere in Voice Harness.'}
             </div>
             <input

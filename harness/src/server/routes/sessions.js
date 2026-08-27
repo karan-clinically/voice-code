@@ -26,7 +26,12 @@ import { MODEL_OPTIONS } from '../../services/models.js';
 import { isLocalhost } from '../auth.js';
 import { getArchiveMeta, findArchiveByTitle } from '../../services/archiveIndex.js';
 import { bridgeSuffixMap, liveClaudeSessions } from '../../services/claudeSessions.js';
-import { isBackgroundAgentSession, processForHarnessSession } from '../../services/sessionIdentity.js';
+import {
+  dedupeProviderSessions,
+  isBackgroundAgentSession,
+  processForHarnessSession,
+  uniqueSessionLabel,
+} from '../../services/sessionIdentity.js';
 import { codeSessions } from '../../services/codeSessions.js';
 import { backgroundAgents } from '../../services/agentRegistry.js';
 import { listGrokConversations, getGrokMeta, deleteGrokConversation, isGrokConvId } from '../../services/grokArchive.js';
@@ -38,7 +43,8 @@ import { detectPrompt, detectTerminalActivity, multiSelectPlan } from '../../ser
 import { buildReplyResponse, recordUserInteraction, latestSpokenReply, spokenRepliesAfter } from '../../services/reply.js';
 import { getQueuedCommands, submitChatCommand } from './command.js';
 import { makeLogger } from '../../util/logger.js';
-import { getAdapter } from '../../agents/registry.js';
+import { getAdapter, publicAdapter } from '../../agents/registry.js';
+import { buildHandoffPrompt, readWorkspaceCheckpoint } from '../../services/handoff.js';
 
 const log = makeLogger('sessions-route');
 const router = Router();
@@ -192,7 +198,9 @@ router.get('/recent', (req, res) => {
   // A pty opened to peek a background agent lives in that agent's worktree; it's the
   // same work as the agent's own row (whose tap reuses this very pty), so skip it.
   const backgroundUuids = new Set(bgList.map((agent) => agent.sessionId).filter(Boolean));
-  const harness = listSessions()
+  // Two PTYs are one visible row only when both provider and conversation id
+  // match. Titles, folders, and raw ids from different providers are not identity.
+  const harness = dedupeProviderSessions(listSessions()
     .filter((s) => s.alive)
     // Agent-view PTYs are marked when spawned. Never infer this from cwd: a stale
     // background agent at C:\AI previously hid every ordinary session in C:\AI.
@@ -248,20 +256,11 @@ router.get('/recent', (req, res) => {
       attention: getAttention(s.id)?.kind || null,
       muted: isMutedById(s.id),
       };
-    })
-    // Two harness PTYs can land on the SAME conversation — e.g. the phone resumed it
-    // and a terminal `claude -c` continued it. That's one conversation, so show one
-    // row (the most recently active). A session with no uuid yet can't be matched, so
-    // it passes through. The duplicate PROCESS is prevented in POST / below; this just
-    // keeps the list honest if one slips through.
-    .reduce((acc, r) => {
-      if (!r.sessionId) return acc.concat(r);
-      const prev = acc.find((x) => x.sessionId === r.sessionId);
-      if (!prev) return acc.concat(r);
-      if (Date.parse(r.ts || 0) > Date.parse(prev.ts || 0)) Object.assign(prev, r);
-      return acc;
-    }, []);
-  const harnessUuids = new Set(harness.map((h) => h.sessionId).filter(Boolean));
+    }));
+  const harnessClaudeUuids = new Set(harness
+    .filter((row) => row.agentKind === 'claude')
+    .map((row) => row.sessionId)
+    .filter(Boolean));
 
   // ---- ELSEWHERE: sessions the harness doesn't own (tap = explicit branch) ----
   const remote = collapseGhosts(codeSessions()
@@ -288,7 +287,7 @@ router.get('/recent', (req, res) => {
       }
       // The harness already owns this conversation and lists it as ATTACHABLE — drop
       // the redundant API twin so one session is one row.
-      if (openUuid && harnessUuids.has(openUuid)) return null;
+      if (openUuid && harnessClaudeUuids.has(openUuid)) return null;
 
       const cwd = local?.cwd || meta?.cwd || null;
       // A conversation the harness itself started (phone/PC) can reappear on this
@@ -334,7 +333,10 @@ router.get('/recent', (req, res) => {
   // Surface those from the pid-backed live list so a running session is always shown.
   // Not attachable (the harness doesn't own it), so a tap branches like any other
   // remote row. Deduped against everything already shown, by transcript uuid.
-  const shownUuids = new Set([...harness, ...remote].map((r) => r.sessionId).filter(Boolean));
+  const shownUuids = new Set([
+    ...harness.filter((row) => row.agentKind === 'claude'),
+    ...remote,
+  ].map((r) => r.sessionId).filter(Boolean));
   const local = live
     .filter((s) => s.sessionId && !shownUuids.has(s.sessionId))
     // Exact UUID only. A background agent and an interactive session may share cwd.
@@ -382,9 +384,13 @@ router.get('/recent', (req, res) => {
   // Grok isn't a Claude transcript, so it never appears in History; its saved
   // context file is the only record. Surface each one that isn't currently live as a
   // resumable row (tap = reopen a Grok PTY with its memory restored). A live Grok
-  // session already shows in the harness bucket (its conv id is in harnessUuids).
+  // session already shows in the harness bucket for the Grok provider.
+  const liveGrokIds = new Set(harness
+    .filter((row) => row.agentKind === 'grok')
+    .map((row) => row.sessionId)
+    .filter(Boolean));
   const grokSaved = listGrokConversations()
-    .filter((c) => !harnessUuids.has(c.id))
+    .filter((c) => !liveGrokIds.has(c.id))
     .map((c) => ({
       key: 'g' + c.id,
       kind: 'grok-saved',
@@ -484,7 +490,13 @@ router.post('/', async (req, res) => {
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
       return res.status(400).json({ error: `folder not found: ${cwd}` });
     }
-    const label = req.body?.label || null;
+    const requestedLabel = String(req.body?.label || '').replace(/[\r\n\0]+/g, ' ').trim().slice(0, 120);
+    const adapter = getAdapter(kind);
+    const label = uniqueSessionLabel(
+      listSessions().filter((session) => session.alive),
+      cwd,
+      requestedLabel || `${baseName(cwd)} · ${adapter.name}`
+    );
     // `claude --continue` (from the hclaude alias) → a harness-owned session that
     // resumes the most-recent conversation in cwd, so terminal + phone share it.
     const continueSession = req.body?.continue === true;
@@ -875,6 +887,82 @@ router.post('/:id/model', async (req, res) => {
   }
 });
 
+// Cross-provider continuation. Provider-native thread ids are deliberately not
+// reused: Claude and Codex cannot read each other's session stores. Instead we
+// preserve the original session, start the target CLI in the same workspace and
+// seed it with a compact transcript + Git checkpoint. The persisted parent/root
+// ids let every client show that these technically separate sessions are one
+// Voice Harness work chain.
+router.post('/:id/handoff', async (req, res) => {
+  const source = getSession(req.params.id);
+  if (!source) return res.status(404).json({ error: 'session not found' });
+  if (!source.alive) return res.status(409).json({ error: 'the source session has ended' });
+  if (source.kind === 'shell') return res.status(409).json({ error: 'start an AI CLI before switching providers' });
+  if (source.state === 'busy') {
+    return res.status(409).json({ error: 'wait for the current response or stop it before switching LLM' });
+  }
+  if (source.state === 'awaiting_input') {
+    return res.status(409).json({ error: 'answer or dismiss the pending CLI prompt before switching LLM' });
+  }
+
+  let providerId;
+  try {
+    providerId = normalizeKind(req.body?.providerId);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (providerId === 'shell') return res.status(400).json({ error: 'choose an AI CLI provider' });
+  if (providerId === source.kind) return res.status(400).json({ error: 'choose a different LLM provider' });
+
+  const targetAdapter = getAdapter(providerId);
+  const requestedModel = String(req.body?.model || '').trim();
+  let model = null;
+  if (requestedModel) {
+    const option = (targetAdapter.models || []).find((item) => item.alias === requestedModel);
+    if (!targetAdapter.capabilities?.models || !option) {
+      return res.status(400).json({ error: 'that model is not available for the selected provider' });
+    }
+    model = option.alias;
+  }
+
+  try {
+    const [conversation, workspace] = await Promise.all([
+      getLiveConversation(source),
+      readWorkspaceCheckpoint(source.cwd),
+    ]);
+    const requestedLabel = String(req.body?.label || '').replace(/[\r\n\0]+/g, ' ').trim().slice(0, 120);
+    const baseLabel = source.label || baseName(source.cwd) || 'Session';
+    const label = uniqueSessionLabel(
+      listSessions().filter((session) => session.alive),
+      source.cwd,
+      requestedLabel || `${baseLabel} · ${targetAdapter.name}`
+    );
+    const session = await createSession({
+      cwd: source.cwd,
+      label,
+      providerId,
+      model,
+      origin: source.origin || (isLocalhost(req) ? 'harness' : 'remote'),
+      handoffParentId: source.id,
+      handoffRootId: source.handoff_root_id || source.id,
+    });
+    const prompt = buildHandoffPrompt({
+      source,
+      targetProvider: publicAdapter(targetAdapter),
+      messages: conversation.messages || [],
+      workspace,
+    });
+    await submitChatCommand(session, prompt);
+    res.status(201).json({
+      session: getSession(session.id),
+      handoff: { from: source.id, to: session.id, root: source.handoff_root_id || source.id },
+    });
+  } catch (err) {
+    log.error(`LLM handoff from db#${source.id} failed: ${err.message}`);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // Current permission mode, read off the TUI footer.
 router.get('/:id/mode', async (req, res) => {
   const session = getSession(req.params.id);
@@ -979,9 +1067,15 @@ router.post('/:id/launch-provider', async (req, res) => {
     const screen = await readScreen(shell.id, { full: false });
     const cwd = parsePromptCwd(screen) || shell.cwd;
     const adapter = getAdapter(providerId);
+    const requestedLabel = String(req.body?.label || '').replace(/[\r\n\0]+/g, ' ').trim().slice(0, 120);
+    const label = uniqueSessionLabel(
+      listSessions().filter((session) => session.alive && session.id !== shell.id),
+      cwd,
+      requestedLabel || `${baseName(cwd)} · ${adapter.name}`
+    );
     const session = await createSession({
       cwd,
-      label: req.body?.label || `${baseName(cwd)} · ${adapter.name}`,
+      label,
       providerId,
       origin: shell.origin || (isLocalhost(req) ? 'harness' : 'remote'),
     });
@@ -1049,23 +1143,36 @@ router.post('/:id/kill', (req, res) => {
 router.post('/:id/rename', async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: 'session not found' });
-  const label = String(req.body?.label || '').trim().slice(0, 120) || null;
+  const label = String(req.body?.label || '').replace(/[\r\n\0]+/g, ' ').trim().slice(0, 120) || null;
   const renamed = renameSession(req.params.id, label, { locked: !!label });
-  let claudeSynced = false;
+  let nativeSynced = false;
+  let syncAttempted = false;
   let syncError = null;
-  // Claude's supported /rename command updates the prompt bar, local transcript,
-  // resume picker, and Remote Control title. The harness label remains useful for
-  // non-Claude providers, but shared Claude sessions must carry the name with them.
-  if (label && session.kind === 'claude' && session.alive) {
+  // Providers that support native thread names must receive the rename as well as
+  // the harness DB update. In particular Codex's /rename persists the name used by
+  // `codex resume`; a DB-only rename appears to work until the next surface opens.
+  const renameInput = label && session.alive
+    ? getAdapter(session.kind)?.buildRenameInput?.(label)
+    : null;
+  if (renameInput) {
+    syncAttempted = true;
     try {
-      await sendInput(req.params.id, `/rename ${label}`);
-      claudeSynced = true;
+      await sendInput(req.params.id, renameInput);
+      nativeSynced = true;
     } catch (err) {
       syncError = err.message;
-      log.warn(`Claude title sync failed for db#${session.id}: ${err.message}`);
+      log.warn(`${session.kind} title sync failed for db#${session.id}: ${err.message}`);
     }
   }
-  res.json({ ...renamed, claudeSynced, syncError });
+  res.json({
+    ...renamed,
+    syncAttempted,
+    nativeSynced,
+    // Retained for older mobile clients that use this field to detect whether
+    // the backend knows how to forward Claude's native rename.
+    claudeSynced: session.kind === 'claude' && nativeSynced,
+    syncError,
+  });
 });
 
 router.post('/:id/color', (req, res) => {

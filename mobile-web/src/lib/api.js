@@ -160,6 +160,8 @@ export const sessionInfo = (id, { afterReply = null } = {}) =>
 export const startSessionPreview = (id) => jpost(`/api/sessions/${id}/preview/start`);
 export const stopSessionPreview = (id) => jpost(`/api/sessions/${id}/preview/stop`);
 export const setSessionModel = (id, alias) => jpost(`/api/sessions/${id}/model`, { alias });
+export const handoffSession = (id, providerId, model = null) =>
+  jpost(`/api/sessions/${id}/handoff`, { providerId, ...(model ? { model } : {}) });
 export const renameSession = (id, label) => jpost(`/api/sessions/${id}/rename`, { label });
 export const killSession = (id) => jpost(`/api/sessions/${id}/kill`);
 export const killLocal = (pid) => jpost('/api/sessions/kill-local', { pid });

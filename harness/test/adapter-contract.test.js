@@ -55,6 +55,9 @@ test('built-in providers expose normalized public contracts', async () => {
   }
   const codex = requireAdapter('codex').buildLaunchSpec({ cwd: process.cwd() });
   assert.ok(codex.args.includes('--yolo'));
+  assert.equal(requireAdapter('codex').capabilities.rename, true);
+  assert.equal(requireAdapter('codex').buildRenameInput('auth refactor'), '/rename auth refactor');
+  assert.equal(requireAdapter('claude').buildRenameInput('auth refactor'), '/rename auth refactor');
 
   const custom = saveCustomProvider({
     id: 'local-brain',

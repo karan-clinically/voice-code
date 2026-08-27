@@ -5,9 +5,11 @@ import { initAudio } from './lib/audio.js';
 import { registerSW, syncPushSubscription } from './lib/push.js';
 import { applyTheme, getTheme } from './lib/theme.js';
 import { startUpdater } from './lib/updater.js';
+import { initPhoneFit } from './lib/view.js';
 import './styles.css';
 
 applyTheme(getTheme()); // paint the saved sci-fi skin before first render (no flash)
+initPhoneFit(); // undo a browser laying the page out at desktop width, before anything measures itself
 initAudio();
 registerSW(); // make the app installable + ready the push machinery (idempotent)
 syncPushSubscription(); // re-assert this device's push subscription so a rotated/pruned endpoint keeps receiving

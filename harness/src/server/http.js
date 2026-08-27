@@ -59,8 +59,15 @@ export function buildApp() {
   // to be able to reach it. It rate-limits itself (see routes/authRoutes.js).
   app.use('/api/auth', authRouter);
   app.get('/login', (req, res) => res.sendFile(join(__dirname, 'login.html')));
-  // Convenience: the bare domain lands on the terminal UI (or its login).
-  app.get('/', (req, res) => res.redirect('/desktop/'));
+  // Convenience: the bare domain lands on whichever client suits the device —
+  // the touch UI at /m on a phone, the terminal UI at /desktop otherwise. Only
+  // the browser can answer that (screen size plus a per-device override written
+  // by either client's "switch view" item), so serve a shim that decides there.
+  // no-store: a proxy holding this page would pin an old redirect rule.
+  app.get('/', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(join(__dirname, 'view.html'));
+  });
 
   // Every API response reads live state — sessions, screens, conversations — and
   // none of it is ever safe to re-serve from a store. Express sends only a weak

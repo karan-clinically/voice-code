@@ -1,6 +1,60 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { folderKey } from '../lib/folders.js';
+import anthropicIcon from '../../../mobile-web/src/assets/providers/anthropic.png';
+import openaiIcon from '../../../mobile-web/src/assets/providers/openai.png';
+import xaiIcon from '../../../mobile-web/src/assets/providers/xai.png';
+import kimiIcon from '../../../mobile-web/src/assets/providers/kimi.png';
+
+const PROVIDER_ICONS = {
+  claude: { label: 'Anthropic Claude', icon: anthropicIcon },
+  codex: { label: 'OpenAI Codex', icon: openaiIcon },
+  grok: { label: 'xAI Grok', icon: xaiIcon },
+  'kimi-k3': { label: 'Moonshot Kimi K3', icon: kimiIcon },
+};
+
+function providerKind(session) {
+  return session.kind || session.provider_id || 'claude';
+}
+
+function providerInitials(label) {
+  return String(label || 'AI').trim().split(/\s+/).filter(Boolean)
+    .slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'AI';
+}
+
+function TabProviderIcon({ session, color, onColor }) {
+  const kind = providerKind(session);
+  const provider = PROVIDER_ICONS[kind];
+  const label = provider?.label || session.provider?.name || kind;
+  return (
+    <span
+      className={`tab-provider tab-provider-${kind}`}
+      title={`${label} · click to choose the folder colour; right-click to clear`}
+    >
+      {provider?.icon ? (
+        <img src={provider.icon} alt="" aria-hidden="true" />
+      ) : (
+        <span className="tab-provider-fallback" aria-hidden="true">
+          {kind === 'shell' ? '>_' : providerInitials(label)}
+        </span>
+      )}
+      <input
+        type="color"
+        className="tab-provider-picker"
+        value={color || '#3fb950'}
+        aria-label={`Choose the colour for the ${folderName(session)} folder`}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        onChange={(event) => onColor(session.id, event.target.value)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onColor(session.id, null);
+        }}
+      />
+    </span>
+  );
+}
 
 export const tabName = (s) =>
   s.label || s.git_repo || (s.cwd || '').split(/[\\/]/).filter(Boolean).pop() || `session ${s.id}`;
@@ -22,13 +76,25 @@ export const attentionStatus = (s) => {
 
 // The provider list both "+" buttons show. One definition so the header's new-tab
 // picker and a tab's own "another session here" picker can never drift apart.
+// The AI CLIs come from the server; Terminal is added here, because a plain shell
+// is hidden from /api/providers (it is not a coding agent and has nothing to
+// authenticate) and so never arrives with the rest.
 function CliChoices({ providers = [], onPick }) {
-  return (providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider) => (
-    <button key={provider.id} role="menuitem" className="tab-new-item" onClick={() => onPick(provider.id)}>
-      {provider.name}
-      {provider.authentication?.status === 'required' && <span className="tab-new-note">key required</span>}
-    </button>
-  ));
+  return (
+    <>
+      {(providers.length ? providers : [{ id: 'claude', name: 'Claude Code' }]).map((provider) => (
+        <button key={provider.id} role="menuitem" className="tab-new-item" onClick={() => onPick(provider.id)}>
+          {provider.name}
+          {provider.authentication?.status === 'required' && <span className="tab-new-note">key required</span>}
+        </button>
+      ))}
+      <div className="tab-new-sep" />
+      <button role="menuitem" className="tab-new-item" onClick={() => onPick('shell')}>
+        Terminal
+        <span className="tab-new-note">{navigator.platform.startsWith('Win') ? 'PowerShell' : 'shell'}</span>
+      </button>
+    </>
+  );
 }
 
 // Terminal-style tab strip: one tab per live session. Drag a tab to reorder
@@ -97,7 +163,7 @@ export default function Tabs({ sessions, activeId, onSelect, onRename, onColor, 
         return (
           <div
             key={s.id}
-            className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '') + (s.kind === 'kimi-k3' ? ' kimi' : '') + (color ? ' has-color' : '') + (groupStart ? ' folder-start' : '') + (s.id === dragId ? ' dragging' : '')}
+            className={'tab' + (s.id === activeId ? ' active' : '') + (s.kind === 'grok' ? ' grok' : '') + (s.kind === 'codex' ? ' codex' : '') + (s.kind === 'kimi-k3' ? ' kimi' : '') + (color ? ' has-color' : '') + (groupStart ? ' folder-start' : '') + (status ? ` status-${status.kind}` : '') + (s.id === dragId ? ' dragging' : '')}
             style={color ? { '--tab-color': color } : undefined}
             draggable={editing !== s.id}
             onDragStart={(e) => {
@@ -131,25 +197,9 @@ export default function Tabs({ sessions, activeId, onSelect, onRename, onColor, 
             />
           ) : (
             <span className="tab-label">
-              <input
-                type="color"
-                className="tab-color"
-                value={color || '#3fb950'}
-                title="Choose the colour for this folder's tabs; right-click to clear"
-                aria-label={`Colour for the ${folderName(s)} folder`}
-                onClick={(e) => e.stopPropagation()}
-                onDoubleClick={(e) => e.stopPropagation()}
-                onChange={(e) => onColor(s.id, e.target.value)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onColor(s.id, null);
-                }}
-              />
-              {s.kind === 'grok' && <span className="tab-kind" title="Grok">G</span>}
-              {s.kind === 'codex' && <span className="tab-kind" title="Codex">C</span>}
-              {s.kind === 'kimi-k3' && <span className="tab-kind" title="Kimi K3">K</span>}
-              {tabName(s)}
+              <TabProviderIcon session={s} color={color} onColor={onColor} />
+              <span className="tab-name">{tabName(s)}</span>
+              {folderTag(s) && <span className="tab-folder">[{folderTag(s)}]</span>}
             </span>
           )}
             {status && (
@@ -210,6 +260,19 @@ export default function Tabs({ sessions, activeId, onSelect, onRename, onColor, 
 
 // What to call the folder a tab is working in. The label can be renamed to
 // anything, so the "+" names the directory it will actually launch in.
+// The project a tab belongs to, for the strip. Renaming a tab is what makes this
+// worth showing — an untouched tab is already named after its folder, and
+// repeating it there would just eat the width.
+function folderTag(s) {
+  const folder = (s?.cwd || '').split(/[\\/]/).filter(Boolean).pop();
+  if (!folder) return null;
+  // The harness auto-labels a session "<folder>" or "<folder> · <CLI>", so those
+  // already say it. A name someone typed is what the chip exists for.
+  const name = tabName(s).toLowerCase();
+  const f = folder.toLowerCase();
+  return name === f || name.startsWith(f + ' · ') ? null : folder;
+}
+
 export const folderName = (s) => (s?.cwd || '').split(/[\\/]/).filter(Boolean).pop() || s?.cwd || 'this folder';
 
 // The "+" new-tab button with its CLI picker. Rendered OUTSIDE the scrolling

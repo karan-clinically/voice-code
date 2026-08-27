@@ -43,7 +43,7 @@ registerAdapter({
   description: 'Anthropic Claude Code CLI',
   capabilities: {
     chat: true, resume: true, continue: true, history: true, models: true,
-    permissionModes: true, prompts: true, structuredCompletion: true,
+    permissionModes: true, prompts: true, rename: true, structuredCompletion: true,
   },
   auth: {
     // Spawned interactive sessions must use Claude's CLI-managed login. A
@@ -64,7 +64,11 @@ registerAdapter({
     const args = ctx.agentView ? ['agents']
       : ctx.continueSession ? ['--continue']
       : ctx.resumeId ? ['--resume', ctx.resumeId] : [];
+    if (ctx.model && !ctx.agentView) args.push('--model', ctx.model);
     return { command: claudeCommand(), args, env: {}, externalSessionId: ctx.resumeId || null };
+  },
+  buildRenameInput(label) {
+    return `/rename ${label}`;
   },
 });
 
@@ -97,13 +101,13 @@ registerAdapter({
   id: 'codex',
   name: 'Codex CLI',
   description: 'OpenAI Codex terminal agent',
-  // Codex has no native completion hook in the harness yet, but the shared
-  // stabilization watcher can still delimit a turn and scrape its final answer.
+  // Native lifecycle hooks cover turns entered directly in the desktop TUI;
+  // stabilization remains the fallback for older Codex installs or untrusted hooks.
   // Advertising chat here routes mobile sends through that pipeline instead of
   // writing raw keys, which is what enables reply history, summaries and TTS.
-  capabilities: { chat: true, prompts: true, structuredCompletion: true },
+  capabilities: { chat: true, prompts: true, rename: true, structuredCompletion: true },
   auth: { methods: ['existing-cli-login', 'environment-token', 'interactive-cli'], secretKeys: ['OPENAI_API_KEY'], inheritedEnv: ['OPENAI_API_KEY'] },
-  completion: { strategies: ['stabilization'], quietMs: 1800 },
+  completion: { strategies: ['agent-event', 'native-hook', 'stabilization'], quietMs: 1800 },
   buildLaunchSpec() {
     return {
       command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
@@ -111,6 +115,9 @@ registerAdapter({
       env: {},
       externalSessionId: null,
     };
+  },
+  buildRenameInput(label) {
+    return `/rename ${label}`;
   },
 });
 
@@ -134,6 +141,7 @@ registerAdapter({
   },
   buildLaunchSpec(ctx) {
     const args = ctx.continueSession ? ['--continue'] : ctx.resumeId ? ['--resume', ctx.resumeId] : [];
+    if (ctx.model) args.push('--model', ctx.model);
     return { command: kimiK3Command(), args, env: {}, externalSessionId: ctx.resumeId || null };
   },
 });
@@ -242,6 +250,7 @@ function adapterFromDefinition(raw) {
     },
     buildLaunchSpec(ctx) {
       const args = ctx.continueSession ? ['--continue'] : ctx.resumeId ? ['--resume', ctx.resumeId] : [];
+      if (ctx.model) args.push('--model', ctx.model);
       const model = definition.model;
       return {
         command: claudeCommand(),

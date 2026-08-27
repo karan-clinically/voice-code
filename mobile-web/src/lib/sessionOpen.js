@@ -1,5 +1,5 @@
 import { resumeArchive, openAgentView, resumeGrok, createSession } from './api.js';
-import { cwdName } from './folders.js';
+import { cwdName, uniqueLabelInFolder } from './folders.js';
 
 // Whether a /recent row can be opened / switched to.
 export const canOpenRow = (it) =>
@@ -47,8 +47,9 @@ export async function openSessionRow(it, onOpen, notify, onStatus) {
 // Start a NEW session in a known folder — the folder headings' ＋ on both the Home
 // list and the switcher drawer. Kept beside the open logic (and away from either
 // caller) so the two entry points can't drift on how a session gets named.
-export async function startSessionInFolder(provider, cwd) {
+export async function startSessionInFolder(provider, cwd, existingRows = []) {
   const dir = String(cwd || '').trim().replace(/["']/g, '');
   const label = dir ? `${cwdName(dir)} · ${provider.name}` : provider.name;
-  return createSession({ providerId: provider.id, cwd: dir || undefined, label, forceNew: true });
+  const uniqueLabel = uniqueLabelInFolder(existingRows, dir, label);
+  return createSession({ providerId: provider.id, cwd: dir || undefined, label: uniqueLabel, forceNew: true });
 }

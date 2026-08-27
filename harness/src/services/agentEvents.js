@@ -23,7 +23,8 @@ export function acceptAgentEvent(event = {}) {
 
   if (event.type === 'turn.completed') {
     return signalStop({
-      sessionId: correlationId || event.externalSessionId || null,
+      sessionId: event.externalSessionId || null,
+      token: correlationId,
       cwd: event.cwd,
       lastAssistantMessage: event.responseText ?? event.text,
       stopReason: event.stopReason,

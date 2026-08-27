@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Voice Harness</title>
+<!-- The bare origin has two clients behind it: the touch UI at /m and the xterm
+     terminal UI at /desktop. Which one a device wants can only be answered in the
+     browser (screen + stored preference), so the server hands over this shim
+     instead of guessing from a User-Agent header. -->
+<noscript><meta http-equiv="refresh" content="0; url=/desktop/"></noscript>
+<style>html,body{background:#0b0d10;color:#8a939b;font:14px system-ui,sans-serif;margin:0}</style>
+</head>
+<body>
+<script>
+(function () {
+  var KEY = 'cvh:view';
+  // ?view=mobile / ?view=desktop both switches now and sticks for next time.
+  var q = new URLSearchParams(location.search).get('view');
+  var pref = q === 'mobile' || q === 'desktop' ? q : null;
+  try {
+    if (pref) localStorage.setItem(KEY, pref);
+    else pref = localStorage.getItem(KEY);
+  } catch (e) {
+    /* private mode — fall through to the device guess every time */
+  }
+  if (pref !== 'mobile' && pref !== 'desktop') {
+    // No stored choice. A coarse pointer on a small screen is a phone or tablet;
+    // the terminal UI is unusable at that size, so send it to the touch client.
+    var coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+    var narrow = Math.min(screen.width, screen.height) < 820;
+    var phoneUA = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    pref = (coarse && narrow) || phoneUA ? 'mobile' : 'desktop';
+  }
+  location.replace(pref === 'mobile' ? '/m/' : '/desktop/');
+})();
+</script>
+</body>
+</html>

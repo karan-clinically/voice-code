@@ -208,6 +208,8 @@ export const startSessionPreview = (id) => apiPost(`/api/sessions/${id}/preview/
 export const stopSessionPreview = (id) => apiPost(`/api/sessions/${id}/preview/stop`, {});
 export const renameSession = (id, label) => apiPost(`/api/sessions/${id}/rename`, { label });
 export const setSessionColor = (id, color) => apiPost(`/api/sessions/${id}/color`, { color });
+export const handoffSession = (id, providerId, model = null) =>
+  apiPost(`/api/sessions/${id}/handoff`, { providerId, ...(model ? { model } : {}) });
 export const sendCommand = (sessionId, text) => apiPost('/api/command', { sessionId, text });
 // Store a file on the harness host and get back its local path — what the CLIs
 // read. Used for pasted screenshots when there is no Electron clipboard bridge.
@@ -226,6 +228,7 @@ export const resumeArchive = (uuid) => apiPost(`/api/archive/${encodeURIComponen
 
 // --- chat view (conversation log) ---
 export const sessionMessages = (id, after = 0) => apiGet(`/api/sessions/${id}/messages?after=${after}`);
+export const sessionPromptHistory = (id) => apiGet(`/api/sessions/${id}/messages?limit=100`);
 export const sendChat = (id, text) => apiPost(`/api/sessions/${id}/chat`, { text });
 
 // --- chat composer controls ---

@@ -13,6 +13,7 @@ export const DEFAULT_CAPABILITIES = Object.freeze({
   models: false,
   permissionModes: false,
   prompts: false,
+  rename: false,
   usage: false,
   structuredCompletion: false,
 });
