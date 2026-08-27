@@ -108,26 +108,49 @@ function terminalTextMap(root) {
   return { nodes, full };
 }
 
+// The text node holding a given offset. `nodes` is in document order, so this is a
+// binary search rather than the linear scan the per-anchor rebuild used to hide.
+function nodeHolding(nodes, offset) {
+  let low = 0;
+  let high = nodes.length - 1;
+  let found = null;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (nodes[mid].start <= offset) {
+      found = nodes[mid];
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return found;
+}
+
 function joinWrappedTerminalLinks(root) {
-  for (const anchor of [...root.querySelectorAll('a.terminal-link')]) {
-    // Rebuilt per anchor: splitting a text node below invalidates earlier offsets.
-    const { nodes, full } = terminalTextMap(root);
-    // Terminal output is padded to the pane width, so the longest line IS the wrap
-    // column. With no full-width line there is nothing to tell a wrap apart from a
-    // URL that merely ended a sentence, so those are left alone.
-    const lines = full.split('\n');
-    const width = lines.reduce((max, line) => Math.max(max, line.length), 0);
-    // One long line proves nothing — it is its own maximum. Two lines reaching the
-    // same column is the wrap column, which a terminal always supplies (box borders,
-    // rules, the input frame). Without that corroboration, leave the link alone.
-    if (width < 20 || lines.filter((line) => line.length >= width).length < 2) break;
+  const anchors = [...root.querySelectorAll('a.terminal-link')];
+  if (!anchors.length) return;
+  // Built ONCE for the whole pane. Rebuilding it per anchor made a repaint cost
+  // O(anchors x characters): past a few thousand lines of scrollback that overran
+  // the repaint throttle, and the paint loop then re-entered with no gap and pinned
+  // the main thread until the app was restarted.
+  const { nodes, full } = terminalTextMap(root);
+  const lines = full.split('\n');
+  const width = lines.reduce((max, line) => Math.max(max, line.length), 0);
+  // One long line proves nothing — it is its own maximum. Two lines reaching the
+  // same column is the wrap column, which a terminal always supplies (box borders,
+  // rules, the input frame). Without that corroboration, leave the links alone.
+  if (width < 20 || lines.filter((line) => line.length >= width).length < 2) return;
+  const offsetOf = new Map(nodes.map((entry) => [entry.node, entry.start]));
 
+  // Work out every join first, touching nothing: splitting a text node would move
+  // the offsets the next anchor is about to be measured against.
+  const joins = [];
+  for (const anchor of anchors) {
     const own = [...anchor.childNodes].filter((n) => n.nodeType === 3).pop();
-    const entry = own && nodes.find((e) => e.node === own);
-    if (!entry) continue;
-
+    const from = own && offsetOf.get(own);
+    if (from === undefined) continue;
     const runs = [];
-    let cursor = entry.start + (own.nodeValue || '').length;
+    let cursor = from + (own.nodeValue || '').length;
     while (cursor < full.length && runs.length < 6) {
       const lineStart = full.lastIndexOf('\n', cursor - 1) + 1;
       if (cursor !== full.indexOf('\n', cursor)) break; // not flush with the wrap
@@ -141,28 +164,35 @@ function joinWrappedTerminalLinks(root) {
       if (indent + run.length !== line.length) break; // prose resumed on this line
       cursor = cursor + 1 + line.length;
     }
-    if (!runs.length) continue;
+    if (runs.length) joins.push({ anchor, runs });
+  }
+  if (!joins.length) return;
 
-    const href = anchor.href + runs.map((r) => r.text).join('');
+  const cuts = [];
+  for (const { anchor, runs } of joins) {
+    const href = anchor.href + runs.map((run) => run.text).join('');
     anchor.href = href;
     const button = anchor.nextElementSibling;
     if (button?.classList.contains('terminal-link-copy')) button.dataset.copy = href;
+    for (const run of runs) cuts.push({ run, href });
+  }
+  // Apply the splits from the END of the pane backwards. A split only disturbs the
+  // offsets after it, so working in reverse keeps the single map valid throughout.
+  cuts.sort((a, b) => b.run.start - a.run.start);
+  for (const { run, href } of cuts) {
+    const host = nodeHolding(nodes, run.start);
+    if (!host || run.start + run.length > host.start + (host.node.nodeValue || '').length) continue;
+    const tail = host.node.splitText(run.start - host.start);
+    tail.splitText(run.length);
     // Dress each continuation as part of the link, so it reads as one address and
     // tapping the tail opens the same page as tapping the head.
-    for (const run of runs) {
-      const { nodes: fresh } = terminalTextMap(root);
-      const host = fresh.find((e) => e.start <= run.start && run.start + run.length <= e.start + (e.node.nodeValue || '').length);
-      if (!host) continue;
-      const tail = host.node.splitText(run.start - host.start);
-      tail.splitText(run.length);
-      const piece = document.createElement('a');
-      piece.className = 'terminal-link';
-      piece.href = href;
-      piece.target = '_blank';
-      piece.rel = 'noopener noreferrer';
-      piece.textContent = tail.nodeValue;
-      tail.replaceWith(piece);
-    }
+    const piece = document.createElement('a');
+    piece.className = 'terminal-link';
+    piece.href = href;
+    piece.target = '_blank';
+    piece.rel = 'noopener noreferrer';
+    piece.textContent = tail.nodeValue;
+    tail.replaceWith(piece);
   }
 }
 
