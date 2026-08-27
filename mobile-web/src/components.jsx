@@ -15,6 +15,16 @@ export const basename = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() ||
 // log. Apart from duplicating output, that log exposed every intermediate TUI
 // redraw (thinking/tool progress) as ordinary text. Keep the mobile client clean
 // during rolling upgrades by retaining only the native screen after its marker.
+// How much paged-back output the pane will hold. Render cost is linear in the size
+// of the pane, so without a ceiling a long session's scrollback eventually makes
+// every repaint expensive no matter how cheap each stage is. Older output than this
+// is still there — History searches the archive.
+const SCROLLBACK_LINE_CAP = 4000;
+// The floor between repaints. The 300ms cadence below is measured from the START of
+// a paint, so a paint that overruns it re-enters with no gap at all; this guarantees
+// the main thread gets a breath in between whatever the work costs.
+const PAINT_IDLE_MS = 120;
+
 const LEGACY_SCREEN_MARKER = '===== Current terminal screen =====';
 function nativeTerminalHtml(html) {
   const value = String(html || '');
@@ -799,6 +809,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
   const [connectionState, setConnectionState] = useState('connecting'); // connecting | live | reconnecting
   const [showReconnect, setShowReconnect] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [scrollbackCapped, setScrollbackCapped] = useState(false);
   // The session's PTY is gone (server sent {t:'exit'}). Shown as a banner over the
   // stale screen instead of freezing silently; cleared the moment data flows again
   // (a resumed conversation re-adopts the same db row, so it CAN come back).
@@ -889,6 +900,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     let again = false;
     let repaintTimer = null;
     let lastPaintStarted = 0;
+    let lastPaintEnded = 0;
     let cacheTimer = null;
     let forcePaintUntil = 0;
     let queuedCacheHtml = '';
@@ -918,6 +930,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     });
     let latestScreen = null;
     let olderTerminalHtml = '';
+    let olderLines = 0; // what the cap counts, tracked rather than re-measured
     let transcriptMessages = [];
     let transcriptBefore = null;
     let transcriptHasOlder = false;
@@ -1025,6 +1038,12 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     const loadOlder = async () => {
       const outer = outerRef.current;
       if (stop || pagingOlder || !outer || outer.scrollTop > 140) return;
+      // Stop paging once the pane holds its ceiling. Say so rather than just going
+      // quiet: silently refusing to load more reads as the app having hung.
+      if (olderLines >= SCROLLBACK_LINE_CAP) {
+        setScrollbackCapped(true);
+        return;
+      }
       // A pre-upgrade server reports its synthetic raw log as a terminal prelude.
       // Never page into that log; after restart this flag is false and native xterm
       // history pages normally.
@@ -1037,6 +1056,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         if (canPageTerminal) {
           const page = await sessionScreen(sessionId, { before: latestScreen.startLine, lines: 400 });
           olderTerminalHtml = [page.html || '', olderTerminalHtml].filter(Boolean).join('\n');
+          olderLines += (page.html || '').split('\n').length;
           latestScreen = {
             ...latestScreen,
             startLine: page.startLine,
@@ -1045,6 +1065,8 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         } else {
           const page = await sessionMessagePage(sessionId, { before: transcriptBefore, limit: 40 });
           transcriptMessages = [...(page.messages || []), ...transcriptMessages];
+          // Transcript turns render as terminal lines too, so they share the ceiling.
+          olderLines += (page.messages || []).reduce((n, m) => n + String(m.text || '').split('\n').length, 0);
           transcriptBefore = page.before;
           transcriptHasOlder = !!page.hasOlder;
         }
@@ -1071,7 +1093,11 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       // Direct keypad input is latency-sensitive: bypass the normal burst throttle
       // during its short force window so cursor movement feels immediate.
       const forcedInputPaint = Date.now() < forcePaintUntil;
-      const delay = forcedInputPaint ? 0 : 300 - (Date.now() - lastPaintStarted);
+      // Whichever is further off: one paint per 300ms, and never two back to back.
+      const delay = forcedInputPaint ? 0 : Math.max(
+        300 - (Date.now() - lastPaintStarted),
+        PAINT_IDLE_MS - (Date.now() - lastPaintEnded),
+      );
       if (delay > 0) {
         again = true;
         if (!repaintTimer) {
@@ -1103,6 +1129,8 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
           if ((atBottom && !reviewingRef.current) || forcePaint) {
             latestScreen = screen;
             olderTerminalHtml = '';
+            olderLines = 0;
+            setScrollbackCapped(false); // back at the tail: the ceiling is free again
             replaceRendered();
           } else if (transcriptChanged) {
             // Completed transcript turns can grow after the final PTY redraw. Do
@@ -1122,6 +1150,7 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
         if (err?.ended || err?.status === 409 || /no live PTY/i.test(err?.message || '')) setEnded(true);
         else if (++paintFailures >= 3) setUnreachable(true);
       }
+      lastPaintEnded = Date.now();
       busy = false;
       if (again && !stop) { again = false; paint(); }
     };
@@ -1347,6 +1376,11 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
       {loadingOlder && (
         <div className="term-history-status" role="status">
           <span className="load-spinner" /> Loading earlier output…
+        </div>
+      )}
+      {scrollbackCapped && !loadingOlder && (
+        <div className="term-history-status" role="status">
+          Oldest output this view will hold — search History for more
         </div>
       )}
       <div className="term-fontctl">
