@@ -416,6 +416,10 @@ label {
 /* Depth, not just colour: the open session's tab stands proud of the strip while
    the rest sit lower, dimmer and flatter, as though stacked behind it. */
 .tab {
+  /* Queried below, so a crowded tab can drop the status text without the strip's
+     width having anything to do with it — eight tabs on a wide screen are just as
+     tight as three on a narrow one. */
+  container-type: inline-size;
   position: relative;
   display: flex;
   flex: 1 1 0;
@@ -562,6 +566,20 @@ label {
   font-size: 9.5px;
   font-weight: 650;
   line-height: 1.35;
+}
+/* Squeezed, the name is what identifies the tab and the status is what you can
+   infer from colour — so the chip drops to a dot and gives its width to the name.
+   The label stays on title/aria-label, so nothing is lost to a reader or a hover. */
+@container (max-width: 250px) {
+  .tab-status {
+    width: 9px;
+    height: 9px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 0;
+    line-height: 0;
+  }
+  .tab-folder { display: none; }
 }
 .tab-status.working {
   background: #2563eb;
