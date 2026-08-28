@@ -79,15 +79,24 @@ if (typeof document !== 'undefined') {
   window.addEventListener('online', () => { resumedAt = Date.now(); });
 }
 
+// `cache: 'no-store'`: every read here is live state, and the pollers hit fixed URLs
+// (the chat view asks for `?after=0`, then repeats the same delta URL while nothing
+// changes). The harness marks these no-store, but Cloudflare's zone-level Browser
+// Cache TTL REWRITES that header on the way out, so through the front door the
+// browser is free to serve its stored copy for hours — which showed up as a chat
+// that only updated when the page was reloaded. This flag is decided by the client
+// and no proxy can override it. Reads only: POSTs are never cached.
+const readOpts = () => ({ headers: H, cache: 'no-store' });
+
 export const jget = async (p, { timeoutMs } = {}) => {
   if (resumedAt && Date.now() - resumedAt < RESUME_WINDOW_MS) {
     try {
-      return parse(await fetchTimeout(base + p, { headers: H }, Math.min(timeoutMs || 2500, 2500)));
+      return parse(await fetchTimeout(base + p, readOpts(), Math.min(timeoutMs || 2500, 2500)));
     } catch {
-      return parse(await fetchTimeout(base + p, { headers: H }, timeoutMs || 8000));
+      return parse(await fetchTimeout(base + p, readOpts(), timeoutMs || 8000));
     }
   }
-  return parse(await fetchTimeout(base + p, { headers: H }, timeoutMs));
+  return parse(await fetchTimeout(base + p, readOpts(), timeoutMs));
 };
 export const jpost = async (p, b) =>
   parse(await fetch(base + p, { method: 'POST', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }));
