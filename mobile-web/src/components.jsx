@@ -24,6 +24,15 @@ const SCROLLBACK_LINE_CAP = 4000;
 // a paint, so a paint that overruns it re-enters with no gap at all; this guarantees
 // the main thread gets a breath in between whatever the work costs.
 const PAINT_IDLE_MS = 120;
+// How long the saved-view pill may sit there before the app reboots itself. A wedged
+// client is fixed by a reload and nothing else, and waiting for a person to notice
+// and do it by hand is the whole complaint. Long enough that a slow cold open over
+// the tunnel finishes on its own rather than being reloaded out from under you.
+const STUCK_RELOAD_MS = 5000;
+// ...but only once in this window. If a reload does not clear it the cause is not
+// client state — the harness is down, or the link is just slow — and reloading on a
+// timer would spin forever, which is worse than the pill.
+const STUCK_RELOAD_COOLDOWN_MS = 90000;
 
 const LEGACY_SCREEN_MARKER = '===== Current terminal screen =====';
 function nativeTerminalHtml(html) {
@@ -873,6 +882,25 @@ export function Terminal({ sessionId, className, promptPending = false, sessionK
     window.addEventListener('resize', onResize); // rotation (a real width change) re-fits
     return () => { clearTimeout(t); clearTimeout(rt); window.removeEventListener('resize', onResize); };
   }, [fitPty]);
+
+  // Stuck on the saved view: reload the whole app, which is what fixes it by hand.
+  // Guarded three ways, because an automatic reload that fires on a loop is a worse
+  // failure than the one it is fixing: once per cooldown, never while backgrounded,
+  // and never once the pty is known to be gone (the ended banner is the true story
+  // then, and no amount of reloading brings it back).
+  useEffect(() => {
+    if (displayState !== 'cached' || ended) return undefined;
+    const timer = setTimeout(() => {
+      if (document.hidden) return; // reloading a backgrounded tab helps nobody
+      const key = `cvh:stuck-reload:${sessionId}`;
+      let last = 0;
+      try { last = Number(sessionStorage.getItem(key)) || 0; } catch { /* private mode */ }
+      if (Date.now() - last < STUCK_RELOAD_COOLDOWN_MS) return;
+      try { sessionStorage.setItem(key, String(Date.now())); } catch { /* private mode */ }
+      location.reload();
+    }, STUCK_RELOAD_MS);
+    return () => clearTimeout(timer);
+  }, [displayState, ended, sessionId]);
 
   // Normal resume handshakes complete in a few hundred milliseconds. Avoid
   // flashing a scary reconnect banner for those; retain it for a genuine delay.
